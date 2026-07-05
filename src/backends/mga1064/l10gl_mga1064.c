@@ -170,9 +170,9 @@ static void mga_be_draw_triangle(struct l10gl_ctx *ctx,
 {
     struct mga1064_private *priv = MGA_PRIV(ctx);
 
-    struct mga_vertex m0 = { v0.x, v0.y, v0.z, v0.r, v0.g, v0.b };
-    struct mga_vertex m1 = { v1.x, v1.y, v1.z, v1.r, v1.g, v1.b };
-    struct mga_vertex m2 = { v2.x, v2.y, v2.z, v2.r, v2.g, v2.b };
+    struct mga_vertex m0 = { v0.x, v0.y, v0.z, v0.w, v0.r, v0.g, v0.b, v0.u, v0.v };
+    struct mga_vertex m1 = { v1.x, v1.y, v1.z, v1.w, v1.r, v1.g, v1.b, v1.u, v1.v };
+    struct mga_vertex m2 = { v2.x, v2.y, v2.z, v2.w, v2.r, v2.g, v2.b, v2.u, v2.v };
 
     /* If depth test is disabled, fall through to the existing function
      * which uses ZLTE. A proper implementation would program DWGCTL

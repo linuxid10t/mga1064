@@ -23,7 +23,9 @@
 struct l10gl_vertex {
     float x, y;       /* Screen coordinates (pixels) */
     float z;          /* Depth value (0.0 = near, 1.0 = far) */
+    float w;          /* 1/Z_eye for perspective correction (1.0 = disable) */
     float r, g, b, a; /* Color (0.0 to 1.0) */
+    float u, v;       /* Texture coordinates (0.0 to 1.0) */
 };
 
 /* Primitive types */
@@ -61,6 +63,49 @@ enum l10gl_blend_func {
 };
 
 /* ========================================================================
+ * Texture Types
+ * ======================================================================== */
+
+/* Texture pixel formats */
+enum l10gl_tex_format {
+    L10GL_TEX_FMT_NONE = 0,
+    L10GL_TEX_FMT_ARGB8888,  /* 32 bits/pixel */
+    L10GL_TEX_FMT_RGB565,    /* 16 bits/pixel, no alpha */
+    L10GL_TEX_FMT_ARGB1555,  /* 16 bits/pixel, 1-bit alpha */
+    L10GL_TEX_FMT_ARGB4444,  /* 16 bits/pixel, 4-bit alpha */
+    L10GL_TEX_FMT_PAL8,      /* 8 bits/pixel, palettized */
+};
+
+/* Texture minification/magnification filters */
+enum l10gl_tex_filter {
+    L10GL_FILTER_NEAREST,
+    L10GL_FILTER_LINEAR,                /* bilinear */
+    L10GL_FILTER_NEAREST_MIPMAP_NEAREST,
+    L10GL_FILTER_LINEAR_MIPMAP_NEAREST,
+    L10GL_FILTER_NEAREST_MIPMAP_LINEAR,
+    L10GL_FILTER_LINEAR_MIPMAP_LINEAR,  /* trilinear */
+};
+
+/* Texture coordinate wrapping */
+enum l10gl_tex_wrap {
+    L10GL_WRAP_REPEAT,
+    L10GL_WRAP_CLAMP,
+};
+
+/*
+ * Texture object. Allocated by the application, filled by the backend.
+ * The backend stores its private data (VRAM address, hardware format)
+ * in backend_data.
+ */
+struct l10gl_texture {
+    int width;
+    int height;
+    enum l10gl_tex_format format;
+    int bytes_per_texel;
+    void *backend_data;   /* backend-private (e.g. VRAM byte offset) */
+};
+
+/* ========================================================================
  * Backend Interface
  *
  * Each hardware driver implements this struct. Fields set to NULL mean
@@ -71,7 +116,7 @@ enum l10gl_blend_func {
 struct l10gl_ctx;  /* forward decl */
 
 struct l10gl_backend {
-    const char *name;     /* e.g. "mga1064" */
+    const char *name;     /* e.g. "mga1064", "virge" */
 
     /* --- Lifecycle --- */
     int  (*init)(struct l10gl_ctx *ctx, int width, int height, int bpp);
@@ -96,11 +141,25 @@ struct l10gl_backend {
                           struct l10gl_vertex v0,
                           struct l10gl_vertex v1,
                           struct l10gl_vertex v2);
+    void (*draw_textured_triangle)(struct l10gl_ctx *ctx,
+                                    struct l10gl_vertex v0,
+                                    struct l10gl_vertex v1,
+                                    struct l10gl_vertex v2);
     void (*draw_line)(struct l10gl_ctx *ctx,
                       struct l10gl_vertex v0,
                       struct l10gl_vertex v1);
     void (*fill_rect)(struct l10gl_ctx *ctx,
                       int x, int y, int w, int h, uint32_t color);
+
+    /* --- Texture management --- */
+    int  (*tex_image_2d)(struct l10gl_ctx *ctx, struct l10gl_texture *tex,
+                         int width, int height,
+                         enum l10gl_tex_format format,
+                         const void *data);
+    void (*bind_texture)(struct l10gl_ctx *ctx, struct l10gl_texture *tex);
+    void (*tex_parameter)(struct l10gl_ctx *ctx,
+                          enum l10gl_tex_filter filter,
+                          enum l10gl_tex_wrap wrap);
 
     /* --- Synchronization --- */
     void (*wait_engine)(struct l10gl_ctx *ctx);
@@ -119,6 +178,7 @@ struct l10gl_backend {
 #define L10GL_CAP_DITHER      (1 << 5)  /* Hardware color dithering */
 #define L10GL_CAP_TRILINEAR   (1 << 6)  /* Trilinear texture filtering */
 #define L10GL_CAP_BILINEAR    (1 << 7)  /* Bilinear texture filtering */
+#define L10GL_CAP_PERSPECTIVE (1 << 8)  /* Perspective-correct texture mapping */
 
 /* ========================================================================
  * Context
@@ -141,25 +201,28 @@ struct l10gl_ctx {
     float clear_r, clear_g, clear_b;
     float clear_z;
 
-    /* Cached state */
+    /* Cached depth state */
     enum l10gl_depth_func depth_func_val;
     int depth_test_enabled;
     int depth_writes_enabled;
+
+    /* Cached blend state */
     int blend_enabled;
+    enum l10gl_blend_func blend_sfactor;
+    enum l10gl_blend_func blend_dfactor;
+
+    /* Current texture (NULL = no texture bound) */
+    struct l10gl_texture *current_texture;
 };
 
 /* ========================================================================
  * Public API — hardware-agnostic frontend
  *
  * These are thin wrappers that call through backend->func.
- * Future versions can add software fallback, vertex arrays, etc.
  * ======================================================================== */
 
 /*
  * l10gl_create - Create a context with a specified backend.
- * @backend:  The hardware backend vtable (e.g. &mga1064_backend).
- * @width, height, bpp: Screen dimensions.
- *
  * Returns 0 on success, negative on failure.
  */
 int l10gl_create(struct l10gl_ctx *ctx,
@@ -182,14 +245,29 @@ void l10gl_blend_func(struct l10gl_ctx *ctx,
                       enum l10gl_blend_func sfactor,
                       enum l10gl_blend_func dfactor);
 
-/* Drawing primitives (dispatch to backend triangles/lines) */
+/* Drawing primitives */
 void l10gl_draw_triangle(struct l10gl_ctx *ctx,
                           struct l10gl_vertex v0,
                           struct l10gl_vertex v1,
                           struct l10gl_vertex v2);
 
+void l10gl_draw_textured_triangle(struct l10gl_ctx *ctx,
+                                   struct l10gl_vertex v0,
+                                   struct l10gl_vertex v1,
+                                   struct l10gl_vertex v2);
+
 void l10gl_draw_rect(struct l10gl_ctx *ctx,
                      int x, int y, int w, int h, uint32_t color);
+
+/* Texture management */
+int l10gl_tex_image_2d(struct l10gl_ctx *ctx, struct l10gl_texture *tex,
+                        int width, int height,
+                        enum l10gl_tex_format format,
+                        const void *data);
+void l10gl_bind_texture(struct l10gl_ctx *ctx, struct l10gl_texture *tex);
+void l10gl_tex_parameter(struct l10gl_ctx *ctx,
+                         enum l10gl_tex_filter filter,
+                         enum l10gl_tex_wrap wrap);
 
 /* Sync */
 void l10gl_wait_engine(struct l10gl_ctx *ctx);

@@ -1,5 +1,6 @@
 *.o
 cube
+textured_cube
 *.a
 *.so
 *.elf

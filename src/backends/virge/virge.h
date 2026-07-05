@@ -352,6 +352,15 @@ struct virge_ctx {
 
     /* Cached CMD_SET destination format field */
     uint32_t dest_format;   /* VIRGE_DEST_16BPP, etc. */
+
+    /* VRAM bump allocator for textures (offscreen heap after Z buffer) */
+    uint32_t tex_heap_next; /* Next free byte offset for texture allocation */
+
+    /* Cached texture state */
+    uint32_t tex_cmd_bits;  /* Pre-shifted CMD_SET bits for current texture:
+                               format [7-5], mipmap size [11-8],
+                               filter [14-12], blend [16-15], wrap [26] */
+    int      tex_bound;     /* Non-zero if a texture is currently bound */
 };
 
 /* ========================================================================
@@ -361,7 +370,9 @@ struct virge_ctx {
 struct virge_vertex {
     float x, y;       /* Screen coordinates (pixels) */
     float z;          /* Depth value (0.0 = near, 1.0 = far) */
+    float w;          /* 1/Z_eye for perspective correction (1.0 = disable) */
     float r, g, b, a; /* Color (0.0 to 1.0) */
+    float u, v;       /* Texture coordinates */
 };
 
 /* ========================================================================
@@ -441,6 +452,32 @@ void virge_draw_triangle_gouraud(struct virge_ctx *ctx,
  */
 void virge_draw_line(struct virge_ctx *ctx,
                       int x0, int y0, int x1, int y1, uint32_t color);
+
+/*
+ * virge_upload_texture - Copy texture data into offscreen VRAM.
+ * @ctx:      Driver context.
+ * @dest:     Destination byte offset in VRAM (quadword aligned).
+ * @data:     Source pixel data.
+ * @size:     Size in bytes.
+ *
+ * Uses a 2D BitBLT (SRCCOPY) to write texture data into offscreen VRAM.
+ */
+void virge_upload_texture(struct virge_ctx *ctx, uint32_t dest,
+                           const void *data, size_t size);
+
+/*
+ * virge_draw_textured_triangle - Perspective-correct textured, lit triangle.
+ * @ctx:       Driver context.
+ * @v0, v1, v2: Vertices with screen coords + UV + color.
+ *
+ * Uses the lit texture triangle with perspective correction.
+ * The current texture (set via virge_bind_texture) provides texels.
+ * The vertex RGBA modulates the texel color (modulate blending mode).
+ */
+void virge_draw_textured_triangle(struct virge_ctx *ctx,
+                                   struct virge_vertex v0,
+                                   struct virge_vertex v1,
+                                   struct virge_vertex v2);
 
 /* ========================================================================
  * Inline MMIO accessors.

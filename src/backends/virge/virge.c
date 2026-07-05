@@ -620,6 +620,251 @@ void virge_draw_line(struct virge_ctx *ctx,
 }
 
 /* ========================================================================
+ * Texture Upload
+ *
+ * Copies texture pixel data into offscreen VRAM using the CPU directly
+ * through the linear addressing window. This is simpler than a 2D BitBLT
+ * for uploading a contiguous texture image — we just memcpy into the
+ * framebuffer aperture since the first 4MB of BAR0 IS the linear VRAM.
+ *
+ * The texture heap starts after the framebuffer + Z buffer and grows
+ * upward. A simple bump allocator is sufficient for demos.
+ * ======================================================================== */
+
+void virge_upload_texture(struct virge_ctx *ctx, uint32_t dest,
+                           const void *data, size_t size)
+{
+    virge_wait_engine(ctx);
+
+    /* dest is a byte offset in VRAM. The linear framebuffer aperture
+     * (ctx->fb) maps VRAM linearly, so we can write directly. */
+    char *dst = (char *)ctx->fb + dest;
+    memcpy(dst, data, size);
+}
+
+/* ========================================================================
+ * Textured Triangle
+ *
+ * Draws a perspective-correct, lit textured triangle using the ViRGE's
+ * native 3D triangle primitive with 3D command = 0101 (lit texture
+ * with perspective).
+ *
+ * The key difference from the Gouraud triangle is that we must program:
+ *   - Texture base address (TEX_BASE)
+ *   - U/V/W start values and deltas (perspective-correct)
+ *   - D (mipmap level interpolation, set to 0 for non-mipmapped)
+ *   - CMD_SET with texture format, filter mode, and blend mode
+ *
+ * Texture coordinate interpolation with perspective:
+ *   The ViRGE interpolates U/W, V/W, and 1/W across the triangle, then
+ *   divides to get perspective-correct U,V. We provide U, V, W as:
+ *     U_texel = u * (tex_width - 1)
+ *     V_texel = v * (tex_height - 1)
+ *     W = 1.0 / Z_eye (or 1.0 if perspective correction is disabled)
+ *
+ * The color values modulate the texel (modulate blending mode).
+ * ======================================================================== */
+
+/*
+ * The ViRGE texture U/V format with perspective enabled is:
+ *   S(4+s).(27-s) where s = mipmap level size from CMD_SET bits 11-8.
+ * For a single-level texture (s=0, meaning 1×1 base — not useful),
+ * or more commonly, we use s = log2(tex_width) for a power-of-2 texture.
+ *
+ * For a 64×64 texture (s=6): format is S10.21.
+ * For a 128×128 texture (s=7): format is S11.20.
+ * For a 256×256 texture (s=8): format is S12.19.
+ *
+ * We convert float U/V to the hardware format by left-shifting by
+ * (27 - s) fractional bits.
+ */
+
+/* Helper: convert float to ViRGE texture coordinate with perspective.
+ * s_val = mipmap level parameter from CMD_SET bits 11-8.
+ * frac_bits = 27 - s_val.
+ */
+static int32_t tex_coord_fixed(float val, int s_val)
+{
+    int frac_bits = 27 - s_val;
+    return (int32_t)(val * (float)(1 << frac_bits));
+}
+
+void virge_draw_textured_triangle(struct virge_ctx *ctx,
+                                   struct virge_vertex v0,
+                                   struct virge_vertex v1,
+                                   struct virge_vertex v2)
+{
+    /* Sort vertices by Y descending: v0 = bottom (largest Y) */
+    if (v0.y < v1.y) { struct virge_vertex t = v0; v0 = v1; v1 = t; }
+    if (v1.y < v2.y) { struct virge_vertex t = v1; v1 = v2; v2 = t; }
+    if (v0.y < v1.y) { struct virge_vertex t = v0; v0 = v1; v1 = t; }
+
+    int y_bot = (int)v0.y;
+    int y_mid = (int)v1.y;
+    int y_top = (int)v2.y;
+
+    if (y_bot == y_top)
+        return;
+
+    /* Edge slopes (same as Gouraud triangle) */
+    int32_t dXdY02 = compute_dxdy((int)v0.x, y_bot, (int)v2.x, y_top);
+    int32_t dXdY01 = compute_dxdy((int)v0.x, y_bot, (int)v1.x, y_mid);
+    int32_t dXdY12 = compute_dxdy((int)v1.x, y_mid, (int)v2.x, y_top);
+
+    /* L/R direction */
+    int lr_direction;
+    float cross = (v2.x - v0.x) * (v1.y - v0.y) - (v1.x - v0.x) * (v2.y - v0.y);
+    if (cross > 0)
+        lr_direction = 1;
+    else
+        lr_direction = 0;
+
+    int scan_01 = y_bot - y_mid;
+    int scan_12 = y_mid - y_top;
+
+    /*
+     * Texture coordinate gradients.
+     *
+     * The ViRGE interpolates U, V, W linearly across the triangle
+     * (in screen space) when perspective correction is enabled.
+     * We compute dU/dX, dU/dY, dV/dX, dV/dY, dW/dX, dW/dY using
+     * the same plane-equation approach as color gradients.
+     *
+     * The caller provides W = 1/Z_eye (perspective) or W = 1.0 (disable).
+     * U and V are in texel units.
+     */
+    float dx10 = v1.x - v0.x;
+    float dy10 = v1.y - v0.y;
+    float dx20 = v2.x - v0.x;
+    float dy20 = v2.y - v0.y;
+    float det = dx10 * dy20 - dx20 * dy10;
+
+    if (det == 0.0f)
+        return;
+
+    float inv_det = 1.0f / det;
+
+    /* Plane equation gradient helper */
+    #define DFDX(f) (((v1.f - v0.f) * dy20 - (v2.f - v0.f) * dy10) * inv_det)
+    #define DFDY(f) (((v2.f - v0.f) * dx10 - (v1.f - v0.f) * dx20) * inv_det)
+
+    float dudx = DFDX(u), dudy = DFDY(u);
+    float dvdx = DFDX(v), dvdy = DFDY(v);
+    float dwdx = DFDX(w), dwdy = DFDY(w);
+
+    /* Color gradients (for modulation) */
+    float drdx = DFDX(r), drdy = DFDY(r);
+    float dgdx = DFDX(g), dgdy = DFDY(g);
+    float dbdx = DFDX(b), dbdy = DFDY(b);
+    float dadx = DFDX(a), dady = DFDY(a);
+
+    /* Z gradients */
+    float dzdx = DFDX(z), dzdy = DFDY(z);
+
+    #undef DFDX
+    #undef DFDY
+
+    /* Determine the mipmap level size parameter.
+     * The texture's power-of-2 dimension determines s where 2^s = tex_size.
+     * We use the cached s value from tex_cmd_bits (set during bind_texture).
+     * For now, extract s from the cached CMD_SET bits 11-8.
+     * Default to s=6 (64×64) if no texture is properly configured. */
+    int s_val = (ctx->tex_cmd_bits >> 8) & 0xF;
+    if (s_val == 0) s_val = 6;  /* safe default */
+
+    virge_wait_engine(ctx);
+
+    /* --- Color starts + deltas (S8.7, modulation) --- */
+    virge_write32(ctx, VIRGE_3D_TGS_BS,
+                  ((uint16_t)VIRGE_COLOR_FIXED(v0.g) << 16) |
+                  (uint16_t)VIRGE_COLOR_FIXED(v0.b));
+    virge_write32(ctx, VIRGE_3D_TAS_RS,
+                  ((uint16_t)VIRGE_COLOR_FIXED(v0.a) << 16) |
+                  (uint16_t)VIRGE_COLOR_FIXED(v0.r));
+    virge_write32(ctx, VIRGE_3D_TdGdX_dBdX,
+                  ((uint16_t)VIRGE_COLOR_FIXED(dgdx) << 16) |
+                  (uint16_t)VIRGE_COLOR_FIXED(dbdx));
+    virge_write32(ctx, VIRGE_3D_TdAdX_dRdX,
+                  ((uint16_t)VIRGE_COLOR_FIXED(dadx) << 16) |
+                  (uint16_t)VIRGE_COLOR_FIXED(drdx));
+    virge_write32(ctx, VIRGE_3D_TdGdY_dBdY,
+                  ((uint16_t)VIRGE_COLOR_FIXED(dgdy) << 16) |
+                  (uint16_t)VIRGE_COLOR_FIXED(dbdy));
+    virge_write32(ctx, VIRGE_3D_TdAdY_dRdY,
+                  ((uint16_t)VIRGE_COLOR_FIXED(dady) << 16) |
+                  (uint16_t)VIRGE_COLOR_FIXED(drdy));
+
+    /* --- Z starts + deltas (S16.15) --- */
+    virge_write32(ctx, VIRGE_3D_TZS, (uint32_t)VIRGE_Z_FIXED(v0.z));
+    virge_write32(ctx, VIRGE_3D_TdZdX, (uint32_t)VIRGE_Z_FIXED(dzdx));
+    virge_write32(ctx, VIRGE_3D_TdZdY, (uint32_t)VIRGE_Z_FIXED(dzdy));
+
+    /* --- Texture coordinates (U, V, W with perspective) --- */
+    /* Convert to hardware fixed-point */
+    int32_t u_start = tex_coord_fixed(v0.u, s_val);
+    int32_t v_start = tex_coord_fixed(v0.v, s_val);
+    int32_t w_start = (int32_t)(v0.w * (float)(1 << 19));  /* S12.19 */
+
+    /* dU/dX in the same format */
+    int32_t du_dx = tex_coord_fixed(dudx, s_val);
+    int32_t du_dy = tex_coord_fixed(dudy, s_val);
+    int32_t dv_dx = tex_coord_fixed(dvdx, s_val);
+    int32_t dv_dy = tex_coord_fixed(dvdy, s_val);
+    int32_t dw_dx = (int32_t)(dwdx * (float)(1 << 19));
+    int32_t dw_dy = (int32_t)(dwdy * (float)(1 << 19));
+
+    /* Base U/V are common offsets added to all U/V values (usually 0) */
+    virge_write32(ctx, VIRGE_3D_TBU, 0);
+    virge_write32(ctx, VIRGE_3D_TBV, 0);
+
+    /* W start + deltas (S12.19) */
+    virge_write32(ctx, VIRGE_3D_TWS, (uint32_t)w_start);
+    virge_write32(ctx, VIRGE_3D_TdWdX, (uint32_t)dw_dx);
+    virge_write32(ctx, VIRGE_3D_TdWdY, (uint32_t)dw_dy);
+
+    /* D (mipmap level) — set to 0, no mipmap interpolation for now */
+    virge_write32(ctx, VIRGE_3D_TDS, 0);
+    virge_write32(ctx, VIRGE_3D_TdDdX, 0);
+    virge_write32(ctx, VIRGE_3D_TdDdY, 0);
+
+    /* V start + deltas */
+    virge_write32(ctx, VIRGE_3D_TVS, (uint32_t)v_start);
+    virge_write32(ctx, VIRGE_3D_TdVdX, (uint32_t)dv_dx);
+    virge_write32(ctx, VIRGE_3D_TdVdY, (uint32_t)dv_dy);
+
+    /* U start + deltas */
+    virge_write32(ctx, VIRGE_3D_TUS, (uint32_t)u_start);
+    virge_write32(ctx, VIRGE_3D_TdUdX, (uint32_t)du_dx);
+    virge_write32(ctx, VIRGE_3D_TdUdY, (uint32_t)du_dy);
+
+    /* --- Edge geometry (same as Gouraud) --- */
+    virge_write32(ctx, VIRGE_3D_TdXdY02, (uint32_t)dXdY02);
+    virge_write32(ctx, VIRGE_3D_TdXdY01, (uint32_t)dXdY01);
+    virge_write32(ctx, VIRGE_3D_TdXdY12, (uint32_t)dXdY12);
+    virge_write32(ctx, VIRGE_3D_TXEND01, (uint32_t)VIRGE_X_FIXED(v1.x));
+    virge_write32(ctx, VIRGE_3D_TXEND12, (uint32_t)VIRGE_X_FIXED(v2.x));
+    virge_write32(ctx, VIRGE_3D_TXS, (uint32_t)VIRGE_X_FIXED(v0.x));
+    virge_write32(ctx, VIRGE_3D_TYS, (uint32_t)y_bot);
+
+    virge_write32(ctx, VIRGE_3D_TY01_Y12,
+                  ((uint32_t)lr_direction << 31) |
+                  ((scan_01 & 0x7FF) << 16) |
+                  (scan_12 & 0x7FF));
+
+    /* --- Command Set: lit texture triangle with perspective --- */
+    uint32_t cmd = VIRGE_CMD_3D
+                 | VIRGE_3D_LIT_TEX_PERSP   /* 0101: lit texture + perspective */
+                 | ctx->dest_format
+                 | ctx->tex_cmd_bits         /* texture format, filter, blend, wrap */
+                 | VIRGE_ZB_NORMAL
+                 | VIRGE_ZBC_LEQUAL
+                 | VIRGE_ZUP_ENABLE
+                 | VIRGE_CMD_CLIP_ENABLE;
+
+    virge_write32(ctx, VIRGE_3D_CMD_SET, cmd);
+}
+
+/* ========================================================================
  * Initialization
  * ======================================================================== */
 
@@ -687,6 +932,13 @@ int virge_init(struct virge_ctx *ctx, int width, int height, int bpp)
     ctx->fb_base = 0;
     ctx->z_base = width * height * bpp;  /* Z buffer after framebuffer */
     ctx->vram_size = ctx->fb_size;
+
+    /* Texture heap starts after framebuffer + Z buffer, quadword aligned */
+    uint32_t z_size = width * height * 2;  /* Z is always 16-bit */
+    ctx->tex_heap_next = ctx->z_base + z_size;
+    ctx->tex_heap_next = (ctx->tex_heap_next + 7) & ~7;  /* QW align */
+    ctx->tex_cmd_bits = 0;
+    ctx->tex_bound = 0;
 
     /* Set destination format field based on bpp */
     if (bpp == 2)

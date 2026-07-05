@@ -35,6 +35,9 @@ int l10gl_create(struct l10gl_ctx *ctx,
     ctx->depth_test_enabled = 1;
     ctx->depth_writes_enabled = 1;
     ctx->blend_enabled = 0;
+    ctx->blend_sfactor = L10GL_SRC_ALPHA;
+    ctx->blend_dfactor = L10GL_ONE_MINUS_SRC_ALPHA;
+    ctx->current_texture = NULL;
 
     if (backend->init) {
         int ret = backend->init(ctx, width, height, bpp);
@@ -44,13 +47,16 @@ int l10gl_create(struct l10gl_ctx *ctx,
 
     printf("L10GL: Backend '%s' initialized (%dx%d @ %dbpp)\n",
            backend->name, width, height, bpp * 8);
-    printf("  Caps: %s%s%s%s%s%s\n",
-           ctx->backend->caps & L10GL_CAP_GOURAUD  ? "Gouraud " : "",
-           ctx->backend->caps & L10GL_CAP_ZBUFFER  ? "Z-buffer " : "",
-           ctx->backend->caps & L10GL_CAP_LINES    ? "Lines " : "",
-           ctx->backend->caps & L10GL_CAP_TEXTURE  ? "Texture " : "",
-           ctx->backend->caps & L10GL_CAP_BLEND    ? "Blend " : "",
-           ctx->backend->caps & L10GL_CAP_DITHER   ? "Dither " : "");
+    printf("  Caps: %s%s%s%s%s%s%s%s%s\n",
+           ctx->backend->caps & L10GL_CAP_GOURAUD     ? "Gouraud " : "",
+           ctx->backend->caps & L10GL_CAP_ZBUFFER     ? "Z-buffer " : "",
+           ctx->backend->caps & L10GL_CAP_LINES       ? "Lines " : "",
+           ctx->backend->caps & L10GL_CAP_TEXTURE     ? "Texture " : "",
+           ctx->backend->caps & L10GL_CAP_BLEND       ? "Blend " : "",
+           ctx->backend->caps & L10GL_CAP_DITHER      ? "Dither " : "",
+           ctx->backend->caps & L10GL_CAP_BILINEAR    ? "Bilinear " : "",
+           ctx->backend->caps & L10GL_CAP_TRILINEAR   ? "Trilinear " : "",
+           ctx->backend->caps & L10GL_CAP_PERSPECTIVE ? "Perspective " : "");
 
     return 0;
 }
@@ -124,12 +130,18 @@ void l10gl_blend_func(struct l10gl_ctx *ctx,
                       enum l10gl_blend_func sfactor,
                       enum l10gl_blend_func dfactor)
 {
+    ctx->blend_sfactor = sfactor;
+    ctx->blend_dfactor = dfactor;
     if (ctx->backend->blend_func)
         ctx->backend->blend_func(ctx, sfactor, dfactor);
 }
 
 /* ========================================================================
  * Drawing
+ *
+ * If a textured triangle is requested and the backend has a texture bound,
+ * dispatch through draw_textured_triangle. If the backend doesn't support
+ * textures, fall back to draw_triangle (texture is silently ignored).
  * ======================================================================== */
 
 void l10gl_draw_triangle(struct l10gl_ctx *ctx,
@@ -141,11 +153,56 @@ void l10gl_draw_triangle(struct l10gl_ctx *ctx,
         ctx->backend->draw_triangle(ctx, v0, v1, v2);
 }
 
+void l10gl_draw_textured_triangle(struct l10gl_ctx *ctx,
+                                   struct l10gl_vertex v0,
+                                   struct l10gl_vertex v1,
+                                   struct l10gl_vertex v2)
+{
+    /* If backend can't do textured triangles, fall back to plain */
+    if (!ctx->backend->draw_textured_triangle) {
+        if (ctx->backend->draw_triangle)
+            ctx->backend->draw_triangle(ctx, v0, v1, v2);
+        return;
+    }
+
+    ctx->backend->draw_textured_triangle(ctx, v0, v1, v2);
+}
+
 void l10gl_draw_rect(struct l10gl_ctx *ctx,
                      int x, int y, int w, int h, uint32_t color)
 {
     if (ctx->backend->fill_rect)
         ctx->backend->fill_rect(ctx, x, y, w, h, color);
+}
+
+/* ========================================================================
+ * Texture management
+ * ======================================================================== */
+
+int l10gl_tex_image_2d(struct l10gl_ctx *ctx, struct l10gl_texture *tex,
+                        int width, int height,
+                        enum l10gl_tex_format format,
+                        const void *data)
+{
+    if (!ctx->backend->tex_image_2d)
+        return -1;  /* backend doesn't support textures */
+
+    return ctx->backend->tex_image_2d(ctx, tex, width, height, format, data);
+}
+
+void l10gl_bind_texture(struct l10gl_ctx *ctx, struct l10gl_texture *tex)
+{
+    ctx->current_texture = tex;
+    if (ctx->backend->bind_texture)
+        ctx->backend->bind_texture(ctx, tex);
+}
+
+void l10gl_tex_parameter(struct l10gl_ctx *ctx,
+                         enum l10gl_tex_filter filter,
+                         enum l10gl_tex_wrap wrap)
+{
+    if (ctx->backend->tex_parameter)
+        ctx->backend->tex_parameter(ctx, filter, wrap);
 }
 
 /* ========================================================================

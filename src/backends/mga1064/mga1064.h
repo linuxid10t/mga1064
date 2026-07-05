@@ -436,7 +436,9 @@ void mga1064_fill_rect(struct mga1064_ctx *ctx, int x, int y, int w, int h,
 struct mga_vertex {
     float x, y;       /* Screen coordinates (pixels) */
     float z;          /* Depth value (0.0 = near, 1.0 = far) */
+    float w;          /* 1/Z_eye (unused on 1064, kept for API compatibility) */
     float r, g, b;    /* Color (0.0 to 1.0) */
+    float u, v;       /* Texture coords (unused on 1064, kept for compat) */
 };
 
 void mga1064_draw_triangle_gouraud(struct mga1064_ctx *ctx,
