@@ -1,0 +1,7 @@
+*.o
+cube
+*.a
+*.so
+*.elf
+*.bin
+mga1064_datasheet.txt
