@@ -308,6 +308,19 @@ static void virge_dump_crtc_truth(struct virge_ctx *ctx)
                "from what is scanned out\n");
 }
 
+/* Registers saved before a scanout takeover and restored at cleanup.
+ * Order is the ctx->saved_scanout[] layout. CR11 is included because
+ * its bit 7 write-protects CR00-CR07 and must be juggled around the
+ * horizontal-timing writes. */
+static const uint8_t virge_scanout_regs[] = {
+    0x00, 0x01, 0x02, 0x03, 0x04, 0x05,   /* horizontal timing set */
+    0x11,                                 /* vert retrace end + CR0-7 lock */
+    0x13, 0x3B, 0x43, 0x50, 0x51, 0x5D, 0x67,
+};
+#define VIRGE_SCANOUT_REG_COUNT \
+    ((int)(sizeof(virge_scanout_regs) / sizeof(virge_scanout_regs[0])))
+#define VIRGE_SCANOUT_CR11_IDX 6          /* index of 0x11 in the list */
+
 /*
  * Native scanout takeover, for machines with no fbdev driver bound to
  * the card. Observed on the primary test machine: /dev/fb0 absent, the
@@ -316,42 +329,87 @@ static void virge_dump_crtc_truth(struct virge_ctx *ctx)
  * With no kernel driver there is nothing to ioctl, so the V8 fbdev
  * depth switch can never run; the driver owns the scanout itself.
  *
- * Strategy (proven end-to-end by scantest phase 2, 2026-07-06): keep
- * the BIOS raster timings — they are valid and locked to the monitor,
- * so no PLL/timing programming — adopt their geometry, and reprogram
- * only:
- *   - CR67 bits 7-4 = Mode 9, 15-bit 555 (DB019-B PDF p.216), matching
- *     the 3D engine's ZRGB1555-only 16bpp output (V8) and the glue's
- *     555 packing. Modes 9/10/13 are all 1 pixel/VCLK, which is why the
- *     color-mode switch does not disturb the raster.
- *   - Pitch = width*2 bytes via CR13 + CR51 bits 5-4, LSW = pitch/4
- *     under the doubleword rule (CR31 bit 3 is set by our init).
- *     LSW=400 at 800 wide rendered clean in scantest phase 2.
- * Writes happen during vertical retrace; originals are saved in ctx and
- * restored by virge_cleanup.
+ * The recipe follows the kernel s3fb driver (s3fb_set_par, the
+ * plain-ViRGE/DX branch), consulted as reference documentation because
+ * DB019-B does not describe the per-depth timing scaling (and does not
+ * document CR50 at all). For 15/16bpp on this chip family:
  *
- * Geometry is adopted from the CRTC itself: active lines from
- * CR12/CR07/CR5E, active width from CR01/CR5D in character clocks
- * (x8 pixels at 1 pixel/VCLK).
+ *   - CR67 bits 7-4 = Mode 9 (15-bit 555, DB019-B PDF p.216), matching
+ *     the 3D engine's ZRGB1555-only 16bpp output (V8).
+ *   - hmul = 2: EVERY horizontal CRTC timing value is programmed at
+ *     TWICE its pixel-based value — in 15/16bpp modes the CRTC counts
+ *     at two character clocks per 8 pixels (byte-based fetch). The
+ *     first takeover attempt changed CR67 alone, which halved the real
+ *     line period and doubled hsync: monitor "input signal out of
+ *     range" on hardware (2026-07-06). The DCLK itself is untouched.
+ *   - CR50 bits 5-4 = 01b (pixel length 16bpp; per s3fb — not in
+ *     DB019-B).
+ *   - Pitch in QUADWORDS: LSW = pitch/8 via CR13 + CR51 bits 5-4, with
+ *     CR43 bit 2 cleared (s3fb s3_offset_regs; confirmed by the BIOS
+ *     mode itself: LSW=400 with a measured 3200-byte pitch). The first
+ *     attempt used /4 — its "pitch 1600" was really 3200, which is why
+ *     scantest phase 2's pattern was silently squashed 2:1.
+ *
+ * Horizontal doubling decodes the live registers (field semantics per
+ * DB019-B §16 PDF pp.148-153: HT = chars-5, HDE = chars-1, SHB/SHS =
+ * raw char counts, EHB/EHS = modulo end counters 7/6 bits wide;
+ * extension bits in CR5D §18 PDF p.214) back to character counts,
+ * doubles them, and re-encodes, preserving skew bits. Blank/sync
+ * WIDTHS are doubled, so the sync pulse the monitor sees is unchanged
+ * in real time. CR3B (Start Display FIFO, "typically 5 less than
+ * CR00", §18 PDF p.203) is recomputed against the new horizontal
+ * total. Vertical timing counts lines and needs no scaling.
+ *
+ * Idempotency: if CR67 already reads Mode 9/10 (a previous takeover
+ * that died without restore), the timings are already doubled — the
+ * geometry is derived at hmul=2 and the doubling step is skipped.
  *
  * Requires vga_ensure_new_mmio() (port access + unlocks) and the S3d
  * enable sequence (virge_wait_vsync reads SUBSYS_STATUS over MMIO).
  */
 static void virge_scanout_takeover(struct virge_ctx *ctx)
 {
-    uint8_t cr01 = vga_crtc_read(0x01);
+    uint8_t r[VIRGE_SCANOUT_REG_COUNT];
+    for (int i = 0; i < VIRGE_SCANOUT_REG_COUNT; i++) {
+        r[i] = vga_crtc_read(virge_scanout_regs[i]);
+        ctx->saved_scanout[i] = r[i];
+    }
+    uint8_t cr03 = r[3], cr05 = r[5], cr5d = r[12];
     uint8_t cr07 = vga_crtc_read(0x07);
     uint8_t cr12 = vga_crtc_read(0x12);
-    uint8_t cr5d = vga_crtc_read(0x5D);
     uint8_t cr5e = vga_crtc_read(0x5E);
+
+    /* Decode the live horizontal set to character counts (see the
+     * comment above for field semantics). */
+    uint32_t ht    = ((uint32_t)r[0] | (uint32_t)((cr5d >> 0) & 1) << 8) + 5;
+    uint32_t hde   = ((uint32_t)r[1] | (uint32_t)((cr5d >> 1) & 1) << 8) + 1;
+    uint32_t shb   =  (uint32_t)r[2] | (uint32_t)((cr5d >> 2) & 1) << 8;
+    uint32_t ehb   =  (uint32_t)(cr03 & 0x1F) |
+                      (uint32_t)((cr05 >> 7) & 1) << 5 |
+                      (uint32_t)((cr5d >> 3) & 1) << 6;
+    uint32_t blkw  = (ehb - (shb & 0x7F)) & 0x7F;   /* blank width, chars */
+    uint32_t shs   =  (uint32_t)r[4] | (uint32_t)((cr5d >> 4) & 1) << 8;
+    uint32_t ehs   =  (uint32_t)(cr05 & 0x1F) |
+                      (uint32_t)((cr5d >> 5) & 1) << 5;
+    uint32_t syncw = (ehs - (shs & 0x3F)) & 0x3F;   /* sync width, chars */
 
     uint32_t lines = (cr12 | (uint32_t)((cr07 >> 1) & 1) << 8
                            | (uint32_t)((cr07 >> 6) & 1) << 9
                            | (uint32_t)((cr5e >> 1) & 1) << 10) + 1;
-    uint32_t width = ((cr01 | (uint32_t)((cr5d >> 1) & 1) << 8) + 1) * 8;
+
+    /* Character clocks per 8 pixels in the CURRENT mode: 2 for the
+     * 15/16bpp modes (9/10), 1 for 8bpp Mode 0 and 24-bit Mode 13. */
+    uint8_t cur_mode = r[13] >> 4;
+    int cur_hmul = (cur_mode == 0x3 || cur_mode == 0x5) ? 2 : 1;
+    if (cur_mode != 0x0 && cur_mode != 0xD && cur_hmul == 1)
+        printf("S3 ViRGE: WARNING: current CR67 mode %x is not a known "
+               "linear graphics mode; takeover geometry may be wrong\n",
+               cur_mode);
+
+    uint32_t width = hde * 8 / cur_hmul;
 
     printf("S3 ViRGE: native scanout takeover: adopting the live %ux%u "
-           "raster (caller requested %dx%d), 555 @ pitch %u\n",
+           "raster (caller requested %dx%d), Mode 9/555 @ pitch %u\n",
            width, lines, ctx->width, ctx->height, width * 2);
 
     ctx->width = (int)width;
@@ -359,21 +417,53 @@ static void virge_scanout_takeover(struct virge_ctx *ctx)
     ctx->stride = width * 2;
     ctx->fb_size = ctx->stride * lines;
 
-    ctx->saved_cr67 = vga_crtc_read(0x67);
-    ctx->saved_cr13 = vga_crtc_read(0x13);
-    ctx->saved_cr51 = vga_crtc_read(0x51);
-
-    uint32_t lsw = ctx->stride / 4;   /* doubleword rule: pitch = LSW*4 */
     virge_wait_vsync(ctx);
-    vga_crtc_write(0x67, (uint8_t)((ctx->saved_cr67 & 0x0F) | (0x3 << 4)));
+
+    if (cur_hmul == 1) {
+        /* Double every horizontal count; widths double too, so the
+         * real-time sync/blank the monitor sees is unchanged. */
+        ht *= 2;  hde *= 2;  shb *= 2;  blkw *= 2;  shs *= 2;  syncw *= 2;
+
+        uint32_t cr00n = ht - 5;
+        uint32_t cr01n = hde - 1;
+        uint32_t ehbn  = (shb + blkw) & 0x7F;
+        uint32_t ehsn  = (shs + syncw) & 0x3F;
+        uint32_t sffn  = cr00n - 5;   /* CR3B rule: 5 less than CR00 */
+
+        vga_crtc_write(0x11, r[VIRGE_SCANOUT_CR11_IDX] & 0x7F); /* unlock CR0-7 */
+        vga_crtc_write(0x00, (uint8_t)cr00n);
+        vga_crtc_write(0x01, (uint8_t)cr01n);
+        vga_crtc_write(0x02, (uint8_t)shb);
+        vga_crtc_write(0x03, (uint8_t)((cr03 & 0x60) | (ehbn & 0x1F)));
+        vga_crtc_write(0x04, (uint8_t)shs);
+        vga_crtc_write(0x05, (uint8_t)((((ehbn >> 5) & 1) << 7) |
+                                       (cr05 & 0x60) | (ehsn & 0x1F)));
+        vga_crtc_write(0x3B, (uint8_t)sffn);
+        vga_crtc_write(0x5D, (uint8_t)((cr5d & 0x80)
+                            | (((cr00n >> 8) & 1) << 0)
+                            | (((cr01n >> 8) & 1) << 1)
+                            | (((shb   >> 8) & 1) << 2)
+                            | (((ehbn  >> 6) & 1) << 3)
+                            | (((shs   >> 8) & 1) << 4)
+                            | (((ehsn  >> 5) & 1) << 5)
+                            | (((sffn  >> 8) & 1) << 6)));
+        vga_crtc_write(0x11, r[VIRGE_SCANOUT_CR11_IDX]);        /* re-lock */
+    }
+
+    /* Pixel format, engine pixel length, pitch. */
+    vga_crtc_write(0x67, (uint8_t)((r[13] & 0x0F) | (0x3 << 4)));
+    vga_crtc_write(0x50, (uint8_t)((r[10] & ~0x30) | 0x10));
+    uint32_t lsw = ctx->stride / 8;   /* pitch in quadwords */
     vga_crtc_write(0x13, (uint8_t)(lsw & 0xFF));
-    vga_crtc_write(0x51, (uint8_t)((ctx->saved_cr51 & ~0x30) |
-                                   (((lsw >> 8) & 3) << 4)));
+    vga_crtc_write(0x51, (uint8_t)((r[11] & ~0x30) | (((lsw >> 8) & 3) << 4)));
+    vga_crtc_write(0x43, (uint8_t)(r[9] & ~0x04));
     ctx->scanout_owned = 1;
 
-    printf("S3 ViRGE: scanout now CR67=%02x (Mode 9/555) CR13=%02x "
-           "CR51=%02x; originals restored at cleanup\n",
-           vga_crtc_read(0x67), vga_crtc_read(0x13), vga_crtc_read(0x51));
+    printf("S3 ViRGE: scanout now CR67=%02x CR50=%02x CR00=%02x CR01=%02x "
+           "CR13=%02x CR51=%02x CR5D=%02x; originals restored at cleanup\n",
+           vga_crtc_read(0x67), vga_crtc_read(0x50), vga_crtc_read(0x00),
+           vga_crtc_read(0x01), vga_crtc_read(0x13), vga_crtc_read(0x51),
+           vga_crtc_read(0x5D));
 }
 
 /* ========================================================================
@@ -1606,14 +1696,20 @@ void virge_cleanup(struct virge_ctx *ctx)
 
     /* Give back a scanout we took over (native no-fbdev path) so the
      * console returns to its previous state. Before the unmap below:
-     * the vsync wait reads SUBSYS_STATUS over MMIO. */
+     * the vsync wait reads SUBSYS_STATUS over MMIO. CR11 bit 7 write-
+     * protects CR00-CR07, so unlock first and restore CR11 (with its
+     * original lock bit) last. */
     if (ctx->scanout_owned && ctx->mmio) {
-        printf("S3 ViRGE: restoring scanout CR67=%02x CR13=%02x CR51=%02x\n",
-               ctx->saved_cr67, ctx->saved_cr13, ctx->saved_cr51);
+        printf("S3 ViRGE: restoring pre-takeover scanout registers\n");
         virge_wait_vsync(ctx);
-        vga_crtc_write(0x67, ctx->saved_cr67);
-        vga_crtc_write(0x13, ctx->saved_cr13);
-        vga_crtc_write(0x51, ctx->saved_cr51);
+        vga_crtc_write(0x11,
+                       ctx->saved_scanout[VIRGE_SCANOUT_CR11_IDX] & 0x7F);
+        for (int i = 0; i < VIRGE_SCANOUT_REG_COUNT; i++) {
+            if (i == VIRGE_SCANOUT_CR11_IDX)
+                continue;
+            vga_crtc_write(virge_scanout_regs[i], ctx->saved_scanout[i]);
+        }
+        vga_crtc_write(0x11, ctx->saved_scanout[VIRGE_SCANOUT_CR11_IDX]);
         ctx->scanout_owned = 0;
     }
 

@@ -523,11 +523,10 @@ struct virge_ctx {
                              * the caller's request. */
 
     /* Native scanout takeover (no-fbdev machines): original CRTC
-     * values, restored by virge_cleanup. */
+     * values (parallel to virge_scanout_regs[] in virge.c), restored
+     * by virge_cleanup. */
     int      scanout_owned;
-    uint8_t  saved_cr67;
-    uint8_t  saved_cr13;
-    uint8_t  saved_cr51;
+    uint8_t  saved_scanout[16];
 
     /* Memory layout (byte offsets in VRAM) */
     uint32_t fb_base;       /* Framebuffer base address (normally 0) */

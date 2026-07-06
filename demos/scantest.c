@@ -1,17 +1,15 @@
 /*
- * scantest.c - Scanout diagnosis + takeover experiment for the S3 ViRGE.
+ * scantest.c - Scanout diagnosis tool for the S3 ViRGE.
  *
- * Built for the machine where /dev/fb0 does not exist: no kernel fb
- * driver is bound to the card, so the chip scans out whatever mode the
- * bootloader's VBE call left behind. virge_init's CRTC truth dump read
- * 800x600 active, CR67 Mode 13 (24-bit), LSW=400 — but the CR13 byte
- * multiplier (x2/x4/x8) and the real pixel packing (packed 24 vs 32-bit
- * dwords) can't be settled from registers alone. This tool settles both
- * visually, then — on explicit keypress — takes over the scanout format
- * so the rest of the driver finally has a display it can be correct on.
+ * Built for machines where /dev/fb0 does not exist: no kernel fb driver
+ * is bound to the card, so the chip scans out whatever the bootloader's
+ * VBE call left behind, and virge_init takes over the scanout natively
+ * (Mode 9/555). This tool shows visually whether the takeover produced
+ * the layout the driver thinks it did.
  *
- * PHASE 1 (no register writes): CPU-draws three test strips into VRAM
- * over BAR0, each betting on a different scanout layout:
+ * PHASE 1 (no register writes of its own; virge_init has already run
+ * its takeover): CPU-draws three test strips into VRAM over BAR0, each
+ * betting on a different scanout layout:
  *
  *      strip A at VRAM 0      : 32-bit pixels, pitch 3200
  *      strip B at VRAM 320000 : packed 24-bit, pitch 2400
@@ -19,30 +17,29 @@
  *
  *   Exactly ONE strip will show clean solid RED/GREEN/BLUE/WHITE bands
  *   inside a crisp white outline — that one names the actual layout.
- *   The other two appear as striped noise. (All three offsets land
- *   on-screen under any of the candidate pitches.)
+ *   With the takeover working, strip C must be the clean one. (All
+ *   three offsets land on-screen under any of the candidate pitches.)
  *
- * PHASE 2 (press Enter; writes CR67/CR13/CR51 with save+restore):
- *   During vertical retrace, switch CR67 bits 7-4 to Mode 9 (15-bit
- *   555, DB019-B PDF p.216) and program the pitch for 1600 bytes
- *   (LSW=400 under the doubleword x4 rule — CR31 bit 3 is set), then
- *   draw a full-screen 800x600 555 pattern at pitch 1600. If the
- *   pattern shows clean (border hugging all edges, solid bands), the
- *   takeover recipe is proven and virge_init can adopt it. If it is
- *   sheared exactly 2:1, the multiplier is quadword (x8): press Enter
- *   again to toggle LSW between 400 and 200 and note which is clean.
- *   Ctrl-C restores the original CR67/CR13/CR51 and exits.
+ * PHASE 2 (press Enter): draws a full-screen RGB555 pattern using the
+ *   geometry virge_init adopted (ctx width/height/stride). Correct
+ *   output: white border hugging all 4 edges, corner markers 1/2/3/4,
+ *   solid red/green/blue/white bands, then two discriminator bands of
+ *   which the FIRST (raw 0x03E0) is pure green. Ctrl-C exits;
+ *   virge_cleanup restores the pre-takeover scanout registers.
  *
  * Build: make scantest       (always builds against the virge backend)
  * Run:   sudo ./scantest
  *
- * HISTORICAL NOTE (2026-07-06): this tool did its job -- phase 1 named
- * strip A (32-bit/3200) as the leftover VBE layout and phase 2 proved
- * the Mode 9 takeover. virge_init now performs that takeover itself on
- * no-fbdev machines, so when run today, virge_init has ALREADY switched
- * scanout to 555/pitch-1600 before phase 1 draws: strip C is the one
- * that renders clean, and phase 2 is a no-op re-program. Kept as a
- * scanout-layout probe for future machines/cards.
+ * HISTORY (2026-07-06): phase 1 of the original version named strip A
+ * (32-bit/3200) as the leftover VBE layout. The original phase 2 wrote
+ * CR67/CR13/CR51 itself, with two bugs the hardware exposed: it did
+ * not double the horizontal timings as 15/16bpp modes require, so
+ * hsync doubled and the monitor dropped sync ("input signal out of
+ * range" — it briefly showed the pattern before giving up, which read
+ * as "displays, then screen non-responsive"); and it used a x4 pitch
+ * rule where the chip uses quadwords (x8), so its pattern was silently
+ * squashed 2:1 while it showed. The corrected takeover lives in
+ * virge_scanout_takeover() in virge.c; this tool only verifies it.
  */
 
 #include <stdio.h>
@@ -170,26 +167,14 @@ static void draw_555_screen(uint8_t *vram, int w, int h, uint32_t pitch)
     }
 }
 
-/* Program scanout: CR67 Mode 9 (15-bit 555) + logical screen width.
- * All writes during vertical retrace. lsw is the CR13/CR51 value
- * (pitch = lsw * 4 under the doubleword rule, DB019-B CR13/CR51). */
-static void scanout_program(struct virge_ctx *ctx, uint8_t cr67_low,
-                            uint8_t cr51_keep, uint32_t lsw)
-{
-    virge_wait_vsync(ctx);
-    virge_crtc_poke(0x67, (uint8_t)((0x3 << 4) | cr67_low));
-    virge_crtc_poke(0x13, (uint8_t)(lsw & 0xFF));
-    virge_crtc_poke(0x51, (uint8_t)(cr51_keep | (((lsw >> 8) & 3) << 4)));
-}
-
 int main(void)
 {
     struct virge_ctx vctx;
     memset(&vctx, 0, sizeof(vctx));
 
-    /* 800x600 @16bpp: what the CRTC truth dump says the raster is.
-     * virge_init programs engine registers only — nothing here touches
-     * scanout until phase 2. */
+    /* On a no-fbdev machine virge_init performs the native scanout
+     * takeover (Mode 9/555, doubled horizontals, quadword pitch) and
+     * adopts the real raster into vctx.width/height/stride. */
     if (virge_init(&vctx, 800, 600, 2) < 0) {
         fprintf(stderr, "virge_init failed\n");
         return 1;
@@ -213,58 +198,36 @@ int main(void)
     draw_strip(vram, 320000, 2400, 3, 800, 96);  /* B: 24bpp  */
     draw_strip(vram, 640000, 1600, 2, 800, 96);  /* C: 555    */
 
-    printf("\nPHASE 1 — no registers written. Three strips are in VRAM:\n"
+    printf("\nPHASE 1 — three hypothesis strips are in VRAM (scanout was\n"
+           "already taken over by virge_init, so C must be the clean one):\n"
            "  A (top   ): 32-bit pixels, pitch 3200\n"
            "  B (middle): packed 24-bit, pitch 2400\n"
            "  C (lower ): 16-bit RGB555, pitch 1600\n"
            "Exactly ONE should show clean RED/GREEN/BLUE/WHITE bands in a\n"
            "crisp white outline — that is the real scanout layout.\n"
            "Photograph, note the winner (A/B/C), then press Enter for\n"
-           "phase 2 (scanout takeover), or Ctrl-C to exit without any\n"
-           "register writes.\n\n");
+           "phase 2 (full-screen pattern), or Ctrl-C to exit.\n\n");
 
-    /* Ctrl-C or closed stdin: exit with no registers ever written. */
     if (getchar() == EOF)
-        goto out_no_restore;
+        goto out;
 
-    /* ---- Phase 2: take over scanout, with save/restore ---- */
+    /* ---- Phase 2: full-screen pattern at the adopted geometry ---- */
 
-    uint8_t old67 = virge_crtc_peek(0x67);
-    uint8_t old13 = virge_crtc_peek(0x13);
-    uint8_t old51 = virge_crtc_peek(0x51);
-    uint8_t cr67_low = old67 & 0x0F;
-    uint8_t cr51_keep = old51 & ~0x30;
-    printf("saved: CR67=%02x CR13=%02x CR51=%02x\n", old67, old13, old51);
+    draw_555_screen(vram, vctx.width, vctx.height, vctx.stride);
 
-    uint32_t lsw = 400;  /* pitch 1600 under the doubleword x4 rule */
-    draw_555_screen(vram, 800, 600, 1600);
-    scanout_program(&vctx, cr67_low, cr51_keep, lsw);
-
-    printf("PHASE 2 — scanout is now CR67 Mode 9 (555), LSW=%u.\n"
+    printf("PHASE 2 — full-screen 555 pattern at %dx%d, pitch %u.\n"
            "  CORRECT: white border hugging all 4 edges, corner markers\n"
            "  1/2/3/4, solid red/green/blue/white bands, then TWO more\n"
            "  bands of which the FIRST (0x03E0) is pure green.\n"
-           "  If the image is sheared exactly 2:1 instead, the multiplier\n"
-           "  is quadword — press Enter to toggle LSW 400 <-> 200 and\n"
-           "  note which value is clean.\n"
-           "  Ctrl-C restores the original scanout registers and exits.\n\n",
-           lsw);
+           "  Ctrl-C exits and restores the pre-takeover scanout.\n\n",
+           vctx.width, vctx.height, vctx.stride);
 
     while (running) {
         if (getchar() == EOF)
-            break;          /* Ctrl-C or closed stdin: restore and exit */
-        lsw = (lsw == 400) ? 200 : 400;
-        scanout_program(&vctx, cr67_low, cr51_keep, lsw);
-        printf("LSW=%u (pitch %u if x4, %u if x8)\n", lsw, lsw * 4, lsw * 8);
+            break;          /* Ctrl-C or closed stdin: exit */
     }
 
-    printf("restoring CR67=%02x CR13=%02x CR51=%02x\n", old67, old13, old51);
-    virge_wait_vsync(&vctx);
-    virge_crtc_poke(0x67, old67);
-    virge_crtc_poke(0x13, old13);
-    virge_crtc_poke(0x51, old51);
-
-out_no_restore:
+out:
     virge_cleanup(&vctx);
     return 0;
 }
