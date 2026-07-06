@@ -4,7 +4,8 @@ Audience: an implementing agent picking up this project cold. Read
 `PLAN.md` (roadmap + current-state snapshot) and
 `docs/datasheets/README.md` (datasheet page index + verified register
 facts) before changing code. This file records the live debugging
-state, the two open symptoms, and the exact next steps.
+state: symptom 1 (diagnosed -- monitor scaling moire, parked) and
+symptom 2 (engine writes not landing -- open, in progress).
 
 ## Test setup (fixed, do not re-derive)
 
@@ -39,32 +40,40 @@ state, the two open symptoms, and the exact next steps.
 - State in each commit message exactly what the human should observe
   on hardware.
 
-## Open symptom 1: dark vertical band at ~1/3 of screen width
+## Symptom 1: DIAGNOSED — monitor scaling moiré (not a driver bug; parked)
 
-In the otherwise-correct `scantest` pattern there is a small dark
-vertical band roughly one third across the screen. It appears in
-**CPU-drawn** content, so it is scanout-side (display fetch), not
-engine-side. Hypotheses, in order:
+The dark vertical band ~1/3 across in CPU-drawn `scantest` content is
+**monitor-side analog scaling moiré**, confirmed 2026-07-06, not a
+register defect:
 
-1. **Monitor auto-adjust.** An analog VGA LCD that just saw the
-   timing change may simply need auto-adjustment. Ask David to press
-   the monitor's auto-adjust button first. Zero-cost.
-2. **CR3B (Start Display FIFO Fetch)** — the takeover recomputes it as
-   `new_CR00_value - 5` per the "typically 5 less than the value
-   programmed in CR0" rule (DB019-B §18, PDF p.203, register CR3B;
-   bit 8 in CR5D bit 6; only active if CR34 bit 4 = 1). If the rule or
-   the doubling interacts badly, the display FIFO refetch happens at a
-   fixed horizontal position → a vertical artifact band. Try: dump
-   CR34/CR3B in the boot log; test with CR34 bit 4 cleared (disables
-   CR3B) or with the BIOS's *relation* preserved (old_SFF relative to
-   old_CR00, doubled) instead of the -5 rule.
-3. **EHB/EHS re-encode** — blank/sync end are modulo fields
-   re-encoded by the takeover (virge.c, `virge_scanout_takeover`). A
-   wrong bit would typically black a column range. Verify decode →
-   double → re-encode against DB019-B §16 PDF pp.148-153 (CR00 =
-   chars-5, CR01 = chars-1, CR02/CR04 raw, CR03/CR05/CR5D field
-   layout) with the actual register values from the boot log's
-   "CRTC raw" lines.
+- It is a **dimming** — the correct content shown darker as thin
+  horizontal slivers inside a ~30px-wide vertical stripe, full height.
+  A brightness modulation, not corrupted/missing data, so the
+  framebuffer writes are correct and the artifact is purely in display.
+- "Vertical band of horizontal slivers" is the signature of analog-VGA
+  sampling interference.
+- The test monitor is a **1440x900 LCD**; the driver outputs 800x600,
+  so the monitor scales 800->1440 horizontally (1.8x, non-integer).
+  Non-integer scaling beats the source pixel rate against the panel's
+  sample rate, worst at one X -> the band. A CRT would not show it.
+
+Driver causes exonerated on hardware: monitor auto-adjust (no change);
+CR3B/SFF at two values -- `new_CR00-5` = 254 and `2x BIOS SFF` = 234
+(no change, commit `048bc06`); EHB/EHS re-encode verified bit-exact
+against DB019-B sec.16 PDF pp.148-153. The takeover's pixel-level
+timing is identical to Mode 13 (HT/HDE/sync pixel-preserved under the
+char-clock doubling: 132 chars x 8 px = 264 chars x 4 px = 1056 px),
+so the monitor sees the same 800x600@60 signal it always did -- the
+band was simply hidden in Mode 13's garble. The earlier CR3B read-only
+diagnostic is commit `2937667`. The CR3B change to `2x BIOS SFF` is
+KEPT: it restores the BIOS-intended 120-px FIFO refill window, which is
+more correct than `CR00-5` even though neither affects this band.
+
+**Not driver-fixable** without driving the panel's native 1440x900 -- a
+non-standard 16:10 mode needing P6 native modesetting and a PLL the
+ViRGE may not cleanly hit. **Parked.** Free mitigation: the monitor's
+manual coarse/fine clock & phase controls can reduce it. The scanout
+itself is correct; this is cosmetic and does not block engine work.
 
 ## Open symptom 2: engine writes don't land (the next big one)
 
