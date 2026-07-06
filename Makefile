@@ -66,5 +66,10 @@ scantest: demos/scantest.c src/backends/virge/virge.c src/backends/virge/virge.h
 filltest: demos/filltest.c src/backends/virge/virge.c src/backends/virge/virge.h
 	$(CC) $(CFLAGS) -o $@ demos/filltest.c src/backends/virge/virge.c $(LDFLAGS)
 
+# Diagnostic: 3D triangle readback test (symptom 2, 3D cutoff). Virge-specific,
+# links only the chip driver (no frontend); CPU-reads VRAM after a 3D draw.
+tritest: demos/tritest.c src/backends/virge/virge.c src/backends/virge/virge.h
+	$(CC) $(CFLAGS) -o $@ demos/tritest.c src/backends/virge/virge.c $(LDFLAGS)
+
 clean:
 	rm -f $(DEMOS) *.o src/*.o src/backends/*/*.o
