@@ -1000,6 +1000,13 @@ int virge_init(struct virge_ctx *ctx, int width, int height, int bpp)
      * Without this, the 2D/3D command bank silently ignores all writes
      * — only the linear framebuffer aperture is live. */
     virge_write32(ctx, VIRGE_ADV_FUNC_CTRL, VIRGE_AFC_ENABLE);
+    {
+        uint32_t afc_check = virge_read32(ctx, VIRGE_ADV_FUNC_CTRL);
+        printf("S3 ViRGE: AFC readback: 0x%08x (bit0 %s)\n", afc_check,
+               (afc_check & VIRGE_AFC_ENABLE) ? "set" : "NOT SET");
+        uint32_t status_check = virge_read32(ctx, VIRGE_SUBSYS_STATUS);
+        printf("S3 ViRGE: SUBSYS_STATUS readback: 0x%08x\n", status_check);
+    }
 
     /* Try to get framebuffer size from /dev/fb0 if available */
     ctx->fb_fd = open("/dev/fb0", O_RDWR);
