@@ -68,6 +68,38 @@ Key facts verified against this document (2026-07):
   pp. 270-271. For derivation, consult the XFree86 `s3virge` driver
   sources and validate on hardware.
 
+## DB025-A_ViRGE_VX_Integrated_3D_Accelerator_Jun1996.pdf
+
+S3 ViRGE/VX databook, DB025-A, June 1996. Clean text layer
+(`pdftotext -layout`). The VX is a VRAM-based sibling of the base
+ViRGE, and — importantly — its CR36 "Configuration 1" register lays the
+memory-size field out *differently* from the base 86C325 (DB019-B).
+
+Key facts verified against this document (2026-07), by section label
+(the datasheet's own labels, not PDF page numbers):
+
+- **CR36 MEM SIZE is bits 6-5 on the VX — NOT bits 7-5 as on the base
+  86C325.** From §18 "Extended CRTC Register Descriptions" (CR36
+  "Configuration 1", p.18-7) and Table 5-1 (PD[28:0] strap definitions):
+  00 = 2MB, 01 = 4MB, 10 = 6MB, 11 = 8MB. Bit 7 is a *separate* strap
+  — "8-C — 8-Column Block Write Support" (0/1) — not part of MEM SIZE,
+  which is why the field is 2 bits wide vs. the base chip's 3-bit field.
+  A naive bits-7-5 read mis-decodes the VX: 86Box programs VX CR36 =
+  0x00/0x20/0x60 for 2/4/8MB, which decode correctly as 00/01/11 in
+  bits 6-5 but as 000/001/011 in bits 7-5 (the wrong field).
+- **VRAM/DRAM split (§7, Table 7-1).** The VX frame buffer may be
+  VRAM-only or mixed VRAM+DRAM; the *total* is CR36 bits 6-5, and the
+  DRAM off-screen portion (used for 3D Z-buffering) is CR37 bits 6-5.
+  L10GL's `virge_detect_vram` reports the CR36 total only.
+- **CR36 is writable only after CR39 = 0xA5** (same unlock convention as
+  the base chip); the power-on strap is readable without it.
+
+No DX/GX datasheet is on hand (DB019-B is base-only, DB025-A is
+VX-only), so the DX/GX MEM SIZE field — assumed bits 7-5 from 86Box,
+matching the base table — must be confirmed by reading CR36 on real
+DX/GX hardware. GX2/MX/MX+ layouts are undocumented here and in 86Box,
+so those device ids fall back to the conservative 2MB assumption.
+
 ## Behavioral reference: 86Box ViRGE emulation
 
 The 86Box emulator (https://github.com/86Box/86Box, file
