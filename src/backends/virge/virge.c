@@ -636,9 +636,20 @@ void virge_draw_triangle_gouraud(struct virge_ctx *ctx,
     int scan_01 = y_bot - y_mid;  /* bottom half (side 01) */
     int scan_12 = y_mid - y_top;  /* top half (side 12) */
 
-    /* Edge X end values (S11.20) */
-    int32_t x_end01 = VIRGE_X_FIXED(v1.x);  /* X at middle vertex */
-    int32_t x_end12 = VIRGE_X_FIXED(v2.x);  /* X at top vertex */
+    /* Slope of the long edge 02 in X, per scanline up (S11.20 -> float).
+     * The engine walks each attribute base up one scanline AND along
+     * edge 02, so the Y deltas we program are edge-walk deltas
+     * TdAdY = -dA/dy + slope02*dA/dx (86Box; docs/datasheets/README.md),
+     * not the raw plane dA/dy. */
+    float slope02 = (float)dXdY02 / (float)(1 << VIRGE_X_FRAC_BITS);
+
+    /* Span-end X per the engine's edge-walk semantics: TXEND01 is edge
+     * 01's X at the FIRST (bottom) scanline = the bottom vertex X (edges
+     * 01 and 02 both start at v0), NOT the middle vertex; TXEND12 is
+     * edge 12's X at the MIDDLE scanline. Programming middle/top vertex
+     * X here makes the bottom span jump straight to the middle-vertex X. */
+    int32_t x_end01 = VIRGE_X_FIXED(v0.x);  /* edge 01 at bottom scanline */
+    int32_t x_end12 = VIRGE_X_FIXED(v1.x);  /* edge 12 at middle scanline */
 
     /* Evaluate color and Z at the bottom vertex (the start point) */
     float z_s = v0.z;
@@ -664,17 +675,20 @@ void virge_draw_triangle_gouraud(struct virge_ctx *ctx,
     virge_write32(ctx, VIRGE_3D_TdAdX_dRdX,
                   ((uint16_t)VIRGE_COLOR_FIXED(dadx) << 16) |
                   (uint16_t)VIRGE_COLOR_FIXED(drdx));
+    /* Y deltas are edge-walk along side 02: -dA/dy + slope02*dA/dx
+     * (86Box; docs/datasheets/README.md). X deltas above stay raw. */
     virge_write32(ctx, VIRGE_3D_TdGdY_dBdY,
-                  ((uint16_t)VIRGE_COLOR_FIXED(dgdy) << 16) |
-                  (uint16_t)VIRGE_COLOR_FIXED(dbdy));
+                  ((uint16_t)VIRGE_COLOR_FIXED(-dgdy + slope02 * dgdx) << 16) |
+                  (uint16_t)VIRGE_COLOR_FIXED(-dbdy + slope02 * dbdx));
     virge_write32(ctx, VIRGE_3D_TdAdY_dRdY,
-                  ((uint16_t)VIRGE_COLOR_FIXED(dady) << 16) |
-                  (uint16_t)VIRGE_COLOR_FIXED(drdy));
+                  ((uint16_t)VIRGE_COLOR_FIXED(-dady + slope02 * dadx) << 16) |
+                  (uint16_t)VIRGE_COLOR_FIXED(-drdy + slope02 * drdx));
 
     /* --- Program Z start and deltas (S16.15) --- */
     virge_write32(ctx, VIRGE_3D_TZS, (uint32_t)VIRGE_Z_FIXED(z_s));
     virge_write32(ctx, VIRGE_3D_TdZdX, (uint32_t)VIRGE_Z_FIXED(dzdx));
-    virge_write32(ctx, VIRGE_3D_TdZdY, (uint32_t)VIRGE_Z_FIXED(dzdy));
+    virge_write32(ctx, VIRGE_3D_TdZdY,
+                  (uint32_t)VIRGE_Z_FIXED(-dzdy + slope02 * dzdx));
 
     /* --- Program edge geometry --- */
     virge_write32(ctx, VIRGE_3D_TdXdY02, (uint32_t)dXdY02);
@@ -944,6 +958,10 @@ void virge_draw_textured_triangle(struct virge_ctx *ctx,
     int scan_01 = y_bot - y_mid;
     int scan_12 = y_mid - y_top;
 
+    /* Slope of edge 02 in X per scanline up; Y deltas are edge-walk
+     * deltas TdAdY = -dA/dy + slope02*dA/dx (86Box; README.md). */
+    float slope02 = (float)dXdY02 / (float)(1 << VIRGE_X_FRAC_BITS);
+
     /*
      * Texture coordinate gradients.
      *
@@ -1009,17 +1027,20 @@ void virge_draw_textured_triangle(struct virge_ctx *ctx,
     virge_write32(ctx, VIRGE_3D_TdAdX_dRdX,
                   ((uint16_t)VIRGE_COLOR_FIXED(dadx) << 16) |
                   (uint16_t)VIRGE_COLOR_FIXED(drdx));
+    /* Y deltas are edge-walk along side 02: -dA/dy + slope02*dA/dx
+     * (86Box; docs/datasheets/README.md). X deltas above stay raw. */
     virge_write32(ctx, VIRGE_3D_TdGdY_dBdY,
-                  ((uint16_t)VIRGE_COLOR_FIXED(dgdy) << 16) |
-                  (uint16_t)VIRGE_COLOR_FIXED(dbdy));
+                  ((uint16_t)VIRGE_COLOR_FIXED(-dgdy + slope02 * dgdx) << 16) |
+                  (uint16_t)VIRGE_COLOR_FIXED(-dbdy + slope02 * dbdx));
     virge_write32(ctx, VIRGE_3D_TdAdY_dRdY,
-                  ((uint16_t)VIRGE_COLOR_FIXED(dady) << 16) |
-                  (uint16_t)VIRGE_COLOR_FIXED(drdy));
+                  ((uint16_t)VIRGE_COLOR_FIXED(-dady + slope02 * dadx) << 16) |
+                  (uint16_t)VIRGE_COLOR_FIXED(-drdy + slope02 * drdx));
 
     /* --- Z starts + deltas (S16.15) --- */
     virge_write32(ctx, VIRGE_3D_TZS, (uint32_t)VIRGE_Z_FIXED(v0.z));
     virge_write32(ctx, VIRGE_3D_TdZdX, (uint32_t)VIRGE_Z_FIXED(dzdx));
-    virge_write32(ctx, VIRGE_3D_TdZdY, (uint32_t)VIRGE_Z_FIXED(dzdy));
+    virge_write32(ctx, VIRGE_3D_TdZdY,
+                  (uint32_t)VIRGE_Z_FIXED(-dzdy + slope02 * dzdx));
 
     /* --- Texture coordinates (U, V, W with perspective) --- */
     /* Convert to hardware fixed-point */
@@ -1027,13 +1048,14 @@ void virge_draw_textured_triangle(struct virge_ctx *ctx,
     int32_t v_start = tex_coord_fixed(v0.v, s_val);
     int32_t w_start = (int32_t)(v0.w * (float)(1 << 19));  /* S12.19 */
 
-    /* dU/dX in the same format */
+    /* dU/dX in the same format. X deltas are raw plane gradients; Y deltas
+     * are edge-walk along side 02, -dA/dy + slope02*dA/dx (86Box; README). */
     int32_t du_dx = tex_coord_fixed(dudx, s_val);
-    int32_t du_dy = tex_coord_fixed(dudy, s_val);
+    int32_t du_dy = tex_coord_fixed(-dudy + slope02 * dudx, s_val);
     int32_t dv_dx = tex_coord_fixed(dvdx, s_val);
-    int32_t dv_dy = tex_coord_fixed(dvdy, s_val);
+    int32_t dv_dy = tex_coord_fixed(-dvdy + slope02 * dvdx, s_val);
     int32_t dw_dx = (int32_t)(dwdx * (float)(1 << 19));
-    int32_t dw_dy = (int32_t)(dwdy * (float)(1 << 19));
+    int32_t dw_dy = (int32_t)((-dwdy + slope02 * dwdx) * (float)(1 << 19));
 
     /* Base U/V are common offsets added to all U/V values (usually 0) */
     virge_write32(ctx, VIRGE_3D_TBU, 0);
@@ -1063,8 +1085,10 @@ void virge_draw_textured_triangle(struct virge_ctx *ctx,
     virge_write32(ctx, VIRGE_3D_TdXdY02, (uint32_t)dXdY02);
     virge_write32(ctx, VIRGE_3D_TdXdY01, (uint32_t)dXdY01);
     virge_write32(ctx, VIRGE_3D_TdXdY12, (uint32_t)dXdY12);
-    virge_write32(ctx, VIRGE_3D_TXEND01, (uint32_t)VIRGE_X_FIXED(v1.x));
-    virge_write32(ctx, VIRGE_3D_TXEND12, (uint32_t)VIRGE_X_FIXED(v2.x));
+    /* TXEND01 = edge 01 X at the bottom scanline (v0.x); TXEND12 = edge
+     * 12 X at the middle scanline (v1.x). See gouraud path for derivation. */
+    virge_write32(ctx, VIRGE_3D_TXEND01, (uint32_t)VIRGE_X_FIXED(v0.x));
+    virge_write32(ctx, VIRGE_3D_TXEND12, (uint32_t)VIRGE_X_FIXED(v1.x));
     virge_write32(ctx, VIRGE_3D_TXS, (uint32_t)VIRGE_X_FIXED(v0.x));
     virge_write32(ctx, VIRGE_3D_TYS, (uint32_t)y_bot);
 
