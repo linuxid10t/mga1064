@@ -101,8 +101,43 @@
  * inherited unchanged from the whole S3 8514/A-compatible lineage
  * (86C8xx through ViRGE). Until it's set, the 2D/3D command register
  * bank does not respond to writes at all; only the linear framebuffer
- * aperture is live. */
+ * aperture is live. Bit 0 here is OR'd with CR66 bit 0 (either enables
+ * it), per datasheet §15.1. */
 #define VIRGE_AFC_ENABLE        (1 << 0)
+
+/* ========================================================================
+ * Legacy VGA CRTC Registers (accessed via I/O ports 0x3D4/0x3D5)
+ *
+ * CR53's MMIO_SELECT field is the master gate for the entire MMIO
+ * aperture at BAR0 + VIRGE_MMIO_OFFSET: until it selects "new MMIO",
+ * that whole region is dead silicon and every register write there
+ * (including VIRGE_ADV_FUNC_CTRL) is silently dropped. PCI ViRGE cards
+ * are supposed to power up with this already selected, but firmware,
+ * a prior driver, or a warm reset can leave it disabled — datasheet
+ * §15.1.2.
+ *
+ * Extended CRTC registers (CR30+, which includes CR53/CR66) are locked
+ * against writes by default on this chip family and must be unlocked
+ * via CR38/CR39 first.
+ * ======================================================================== */
+
+#define VIRGE_VGA_CRTC_INDEX    0x3D4
+#define VIRGE_VGA_CRTC_DATA     0x3D5
+
+#define VIRGE_CR38_UNLOCK_REG   0x38   /* Unlocks CR30-CR3F */
+#define VIRGE_CR38_UNLOCK_KEY   0x48
+#define VIRGE_CR39_UNLOCK_REG   0x39   /* Unlocks CR40-CRFF */
+#define VIRGE_CR39_UNLOCK_KEY   0xA5
+
+#define VIRGE_CR53              0x53   /* Extended Memory Control 1 */
+#define VIRGE_CR53_MMIO_MASK    (0x3 << 3)
+#define VIRGE_CR53_MMIO_NONE    (0x0 << 3)  /* Disabled (VL-Bus power-on default) */
+#define VIRGE_CR53_MMIO_NEW     (0x1 << 3)  /* New MMIO — PCI power-on default */
+#define VIRGE_CR53_MMIO_OLD     (0x2 << 3)  /* Old/Trio64-style legacy window */
+#define VIRGE_CR53_MMIO_BOTH    (0x3 << 3)
+
+#define VIRGE_CR66               0x66   /* Mirrors AFC bit 0 (ENB EHFC) */
+#define VIRGE_CR66_ENB_EHFC      (1 << 0)
 
 /* ========================================================================
  * 2D Register Bank — BitBLT / Rectangle Fill

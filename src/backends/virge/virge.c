@@ -21,10 +21,57 @@
 #include <errno.h>
 #include <sys/mman.h>
 #include <sys/ioctl.h>
+#include <sys/io.h>
 #include <stdint.h>
 #include <linux/fb.h>
 
 #include "virge.h"
+
+/* ========================================================================
+ * Legacy VGA CRTC Register Access
+ * ======================================================================== */
+
+static uint8_t vga_crtc_read(uint8_t index)
+{
+    outb(index, VIRGE_VGA_CRTC_INDEX);
+    return inb(VIRGE_VGA_CRTC_DATA);
+}
+
+static void vga_crtc_write(uint8_t index, uint8_t value)
+{
+    outb(index, VIRGE_VGA_CRTC_INDEX);
+    outb(value, VIRGE_VGA_CRTC_DATA);
+}
+
+/*
+ * Make sure the MMIO aperture at BAR0 + VIRGE_MMIO_OFFSET is actually
+ * routed to silicon before anything tries to use it. See the CR53
+ * comment in virge.h for why this is necessary.
+ */
+static int vga_ensure_new_mmio(void)
+{
+    if (ioperm(0x3C0, 0x20, 1) != 0)
+        return -errno;
+
+    /* Extended CRTC registers are locked by default; unlock them. */
+    vga_crtc_write(VIRGE_CR38_UNLOCK_REG, VIRGE_CR38_UNLOCK_KEY);
+    vga_crtc_write(VIRGE_CR39_UNLOCK_REG, VIRGE_CR39_UNLOCK_KEY);
+
+    uint8_t cr53 = vga_crtc_read(VIRGE_CR53);
+    uint8_t cr53_new = (cr53 & ~VIRGE_CR53_MMIO_MASK) | VIRGE_CR53_MMIO_NEW;
+    if (cr53_new != cr53) {
+        printf("S3 ViRGE: CR53 MMIO_SELECT was 0x%x, forcing to 'new MMIO'\n",
+               (cr53 & VIRGE_CR53_MMIO_MASK) >> 3);
+        vga_crtc_write(VIRGE_CR53, cr53_new);
+    }
+
+    /* Belt-and-suspenders: CR66 bit 0 is OR'd with AFC bit 0 (either one
+     * enables enhanced functions), so set it too. */
+    uint8_t cr66 = vga_crtc_read(VIRGE_CR66);
+    vga_crtc_write(VIRGE_CR66, cr66 | VIRGE_CR66_ENB_EHFC);
+
+    return 0;
+}
 
 /* ========================================================================
  * PCI Discovery — find the S3 ViRGE via /sys/bus/pci/devices
@@ -934,6 +981,16 @@ int virge_init(struct virge_ctx *ctx, int width, int height, int bpp)
      */
     ctx->fb = ctx->mmio;                              /* framebuffer at offset 0 */
     ctx->mmio = (void *)((char *)ctx->mmio + VIRGE_MMIO_OFFSET);  /* regs at 0x1000000 */
+
+    /* Force CR53 to select "new MMIO" — until this is set, the entire
+     * aperture at BAR0 + VIRGE_MMIO_OFFSET is unrouted and every write
+     * below (including the AFC enable) is silently dropped. */
+    ret = vga_ensure_new_mmio();
+    if (ret < 0) {
+        fprintf(stderr, "S3 ViRGE: couldn't get VGA I/O port access "
+                        "(need root): %s\n", strerror(-ret));
+        return ret;
+    }
 
     /* Enable the 8514/A-compatible accelerated register interface.
      * Without this, the 2D/3D command bank silently ignores all writes
