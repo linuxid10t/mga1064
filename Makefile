@@ -34,7 +34,7 @@ BACKEND_DEFINE = -DBACKEND_MGA1064
 endif
 
 # Demos
-DEMOS = cube textured_cube
+DEMOS = cube textured_cube triangle
 
 .PHONY: all clean
 
@@ -46,6 +46,9 @@ cube: demos/cube.c $(CORE_SRCS) src/l10gl.h src/backends/$(BACKEND)/$(BACKEND).h
 
 textured_cube: demos/textured_cube.c $(CORE_SRCS) src/l10gl.h src/backends/$(BACKEND)/$(BACKEND).h
 	$(CC) $(CFLAGS) $(BACKEND_DEFINE) -o $@ demos/textured_cube.c $(CORE_SRCS) $(LDFLAGS)
+
+triangle: demos/triangle.c $(CORE_SRCS) src/l10gl.h src/backends/$(BACKEND)/$(BACKEND).h
+	$(CC) $(CFLAGS) $(BACKEND_DEFINE) -o $@ demos/triangle.c $(CORE_SRCS) $(LDFLAGS)
 
 clean:
 	rm -f $(DEMOS) *.o src/*.o src/backends/*/*.o
