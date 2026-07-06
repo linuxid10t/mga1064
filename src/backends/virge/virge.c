@@ -661,15 +661,24 @@ void virge_draw_line(struct virge_ctx *ctx,
         return;
 
     /*
-     * X DELTA = -(ΔX << 20) / ΔY (integer divide)
-     * For horizontal lines (ΔY = 0), X DELTA = 0 and the engine uses
-     * the endpoint registers.
+     * X DELTA = -(ΔX << 20) / ΔY, integer divide (DB019-B §15.4.4.3,
+     * PDF p.122). ΔX and ΔY must share one sign convention; we use
+     * dX = x1-x0 and dY = y1-y0 (both measured top-minus-bottom after
+     * the Y sort above, so dY ≤ 0). For horizontal lines (dY = 0) X
+     * DELTA is 0 and the engine draws from END0/END1 instead.
+     *
+     * The divisor MUST be the signed dY, not abs_dY: after the sort dY
+     * is negative, so the leading '-' and the negative divisor together
+     * yield the correct sign (positive for a line that climbs to the
+     * right). Dividing by abs_dY — as this code did before — flips the
+     * sign and mirrors the line. The formula has always read '/ΔY';
+     * the old implementation contradicted its own comment.
      */
     int32_t x_delta;
-    if (abs_dY == 0) {
-        x_delta = 0;  /* horizontal line special case */
+    if (dY == 0) {
+        x_delta = 0;  /* horizontal line: engine uses END0/END1 */
     } else {
-        x_delta = -(int32_t)(((int64_t)dX << 20) / abs_dY);
+        x_delta = -(int32_t)(((int64_t)dX << 20) / dY);
     }
 
     /*
@@ -709,11 +718,12 @@ void virge_draw_line(struct virge_ctx *ctx,
     /* Foreground color */
     virge_write32(ctx, VIRGE_2D_PAT_FG_CLR, color);
 
-    /* Line endpoints: END0 [31:16], END1 [15:0] */
-    /* END0 = first pixel drawn for bottommost scanline
-     * END1 = last pixel drawn for topmost scanline
-     * For a simple line, both are the endpoints' X coordinates. */
-    uint32_t endpoints = ((x0 & 0xFFFF) << 16) | (x1 & 0xFFFF);
+    /* Line endpoints (DB019-B §15.4.4.3, PDF p.123): END0 [31:16] is the
+     * first pixel drawn (bottom scanline = x0 after the Y sort), END1
+     * [15:0] is the last pixel drawn (top scanline = x1). We draw every
+     * pixel, so no ±1 "last pixel off" adjustment. Each 16-bit field's
+     * top 5 bits are sign bits that must be 0 → mask to 11 bits (0..2047). */
+    uint32_t endpoints = ((x0 & 0x7FF) << 16) | (x1 & 0x7FF);
     virge_write32(ctx, 0xA96C, endpoints);  /* L_XEND0_END1 */
 
     /* X DELTA and X START */
@@ -721,23 +731,36 @@ void virge_draw_line(struct virge_ctx *ctx,
     virge_write32(ctx, 0xA974, (uint32_t)x_start);  /* L_XSTART */
     virge_write32(ctx, 0xA978, (uint32_t)y0);       /* L_YSTART */
 
-    /* Command Set for 2D line:
-     *   bits [31:27] = 00110 (2D line)
-     *   bit 8: mono pattern
-     *   bits 7-5: dest format
-     *   bits 24-17: ROP = PATCOPY (0xF0)
-     *   bit 1: clip enable -- NOT set, see VIRGE_CMD_CLIP_ENABLE comment
-     *          in virge.h
-     */
-    uint32_t cmd = ((0x06 << 27) & 0x1F)  /* 2D line = bits [30:27] = 0110 */
+    /* Program Y count + direction BEFORE the command kick. With
+     * autoexecute off (bit 0 of CMD_SET clear), writing CMD_SET (A900)
+     * is what launches the 2D command — the same kick convention
+     * rectangle fill uses (it programs RWIDTH_HEIGHT, then CMD_SET last
+     * to fire). Programming Y count first guarantees the engine sees the
+     * correct extent when CMD_SET fires. The worked example at PDF p.124
+     * writes A97C last only because it runs with autoexecute ON, where
+     * A97C itself is the per-segment kick. */
+    uint32_t ycnt_dir = (dir << 31) | (y_count & 0x7FF);
+    virge_write32(ctx, 0xA97C, ycnt_dir);  /* L_YCNT_DIR */
+
+    /* Command Set for 2D line (DB019-B §15.4.4.3, PDF p.124):
+     *   bits [30:27] = 0011 — 2D line command. The old code computed
+     *                  this as ((0x06 << 27) & 0x1F), which is 0 — i.e.
+     *                  a BitBLT, not a line. (86Box independently
+     *                  decodes 2D line = 3.)
+     *   bit 5  (DE) = 1  — Draw Enable: actually write pixels (same trap
+     *                  as rect fill, commit 98a6169).
+     *   bit 8  (MP) = 0  — mono pattern not set; for lines the hardware
+     *                  forces pattern=1 selecting PAT_FG_CLR regardless.
+     *   bits [24:17]  = ROP PATCOPY (0xF0); a pattern-only ROP, legal for
+     *                  lines since they forbid source-containing ROPs.
+     *   bit 1  (HC) = 0  — clipping disabled; see VIRGE_CMD_CLIP_ENABLE.
+     *   bit 0  (AE) = 0  — single line, no autoexecute. */
+    uint32_t cmd = VIRGE_2D_CMD_LINE
+                 | VIRGE_2D_CMD_DRAW_ENABLE
                  | ctx->dest_format
                  | (VIRGE_ROP_PATCOPY << 17);
 
-    /* Y count + direction — this is the kick register for 2D lines */
-    virge_write32(ctx, 0xA900, cmd);  /* L_CMD_SET */
-
-    uint32_t ycnt_dir = (dir << 31) | (y_count & 0x7FF);
-    virge_write32(ctx, 0xA97C, ycnt_dir);  /* L_YCNT_DIR — kicks engine */
+    virge_write32(ctx, 0xA900, cmd);  /* L_CMD_SET — kicks the line */
 }
 
 /* ========================================================================

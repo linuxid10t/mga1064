@@ -419,6 +419,9 @@
  * ======================================================================== */
 
 #define VIRGE_2D_CMD_RECT_FILL  (2 << 27)
+/* 2D line command: bits [30:27] = 0011 (DB019-B §15.4.4.3, PDF p.124,
+ * which writes 0001 100... to MMA900; 86Box decodes line = 3). */
+#define VIRGE_2D_CMD_LINE       (3 << 27)
 #define VIRGE_2D_CMD_DRAW_ENABLE (1 << 5)
 #define VIRGE_2D_MONO_PATTERN   (1 << 8)
 
