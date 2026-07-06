@@ -397,6 +397,25 @@ static void virge_scanout_takeover(struct virge_ctx *ctx)
                            | (uint32_t)((cr07 >> 6) & 1) << 9
                            | (uint32_t)((cr5e >> 1) & 1) << 10) + 1;
 
+    /* Diagnostic for the "dark vertical band" symptom. CR3B (Start
+     * Display FIFO Fetch) is a 9-bit value — low 8 bits in CR3B, bit 8
+     * in CR5D bit 6 (DB019-B §18 "Extended Horizontal Overflow" CR5D,
+     * PDF p.203: "Bit 6 SFF 8 - Start FIFO Fetch (CR3B) Bit 8"). Its
+     * description (CR3B, PDF p.203) requires it to "lie in the
+     * horizontal blanking period" and notes it is "typically 5 less
+     * than the value programmed in CR0" — typically, not always. It is
+     * only active when CR34 bit 4 (ENB SFF) is set (CR34 "Backward
+     * Compatibility 3", PDF p.203). The takeover rewrites CR3B as
+     * new_CR00-5 but never reads CR34, so dump the pre-takeover state
+     * to learn whether SFF is in effect and what the BIOS relation was. */
+    uint8_t  cr34    = vga_crtc_read(0x34);
+    uint32_t old_sff = (uint32_t)r[8] | (uint32_t)((r[12] >> 6) & 1) << 8;
+    printf("S3 ViRGE: pre-takeover SFF: CR34=%02x (ENB SFF bit4=%d); "
+           "CR3B=%02x CR5D=%02x -> 9-bit SFF=%u; HT=%u chars; "
+           "blank window=[%u,%u); typical SFF (HT-10)=%u\n",
+           cr34, (cr34 >> 4) & 1, r[8], r[12], old_sff, ht,
+           shb, shb + blkw, ht > 10 ? ht - 10 : 0);
+
     /* Character clocks per 8 pixels in the CURRENT mode: 2 for the
      * 15/16bpp modes (9/10), 1 for 8bpp Mode 0 and 24-bit Mode 13. */
     uint8_t cur_mode = r[13] >> 4;
@@ -460,10 +479,15 @@ static void virge_scanout_takeover(struct virge_ctx *ctx)
     ctx->scanout_owned = 1;
 
     printf("S3 ViRGE: scanout now CR67=%02x CR50=%02x CR00=%02x CR01=%02x "
-           "CR13=%02x CR51=%02x CR5D=%02x; originals restored at cleanup\n",
+           "CR13=%02x CR51=%02x CR5D=%02x CR3B=%02x CR34=%02x; "
+           "programmed SFF(9bit)=%u (= CR00 %02x - 5); "
+           "originals restored at cleanup\n",
            vga_crtc_read(0x67), vga_crtc_read(0x50), vga_crtc_read(0x00),
            vga_crtc_read(0x01), vga_crtc_read(0x13), vga_crtc_read(0x51),
-           vga_crtc_read(0x5D));
+           vga_crtc_read(0x5D), vga_crtc_read(0x3B), vga_crtc_read(0x34),
+           (uint32_t)vga_crtc_read(0x3B) |
+               (uint32_t)((vga_crtc_read(0x5D) >> 6) & 1) << 8,
+           vga_crtc_read(0x00));
 }
 
 /* ========================================================================
