@@ -33,8 +33,8 @@ else
 BACKEND_DEFINE = -DBACKEND_MGA1064
 endif
 
-# Demos
-DEMOS = cube textured_cube triangle
+# Demos (fbtest is backend-free: pure fbdev, links no L10GL code)
+DEMOS = cube textured_cube triangle fbtest
 
 .PHONY: all clean
 
@@ -49,6 +49,11 @@ textured_cube: demos/textured_cube.c $(CORE_SRCS) src/l10gl.h src/backends/$(BAC
 
 triangle: demos/triangle.c $(CORE_SRCS) src/l10gl.h src/backends/$(BACKEND)/$(BACKEND).h
 	$(CC) $(CFLAGS) $(BACKEND_DEFINE) -o $@ demos/triangle.c $(CORE_SRCS) $(LDFLAGS)
+
+# Diagnostic: CPU-drawn fbdev test pattern, no backend/engine involved.
+# If this displays garbled, the mode is wrong and no engine fix will help.
+fbtest: demos/fbtest.c
+	$(CC) $(CFLAGS) -o $@ demos/fbtest.c
 
 clean:
 	rm -f $(DEMOS) *.o src/*.o src/backends/*/*.o
