@@ -935,6 +935,11 @@ int virge_init(struct virge_ctx *ctx, int width, int height, int bpp)
     ctx->fb = ctx->mmio;                              /* framebuffer at offset 0 */
     ctx->mmio = (void *)((char *)ctx->mmio + VIRGE_MMIO_OFFSET);  /* regs at 0x1000000 */
 
+    /* Enable the 8514/A-compatible accelerated register interface.
+     * Without this, the 2D/3D command bank silently ignores all writes
+     * — only the linear framebuffer aperture is live. */
+    virge_write32(ctx, VIRGE_ADV_FUNC_CTRL, VIRGE_AFC_ENABLE);
+
     /* Try to get framebuffer size from /dev/fb0 if available */
     ctx->fb_fd = open("/dev/fb0", O_RDWR);
     if (ctx->fb_fd >= 0) {

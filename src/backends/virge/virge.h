@@ -96,6 +96,14 @@
 #define VIRGE_STATUS_3DBUSY     (1 << 13)  /* S3d Engine busy */
 #define VIRGE_STATUS_VSYNC      (1 << 0)   /* Vertical sync (in retrace) */
 
+/* Advanced Function Control bit definitions.
+ * Bit 0 enables the 8514/A-compatible accelerated register interface —
+ * inherited unchanged from the whole S3 8514/A-compatible lineage
+ * (86C8xx through ViRGE). Until it's set, the 2D/3D command register
+ * bank does not respond to writes at all; only the linear framebuffer
+ * aperture is live. */
+#define VIRGE_AFC_ENABLE        (1 << 0)
+
 /* ========================================================================
  * 2D Register Bank — BitBLT / Rectangle Fill
  * Base offset: 0xA400 (from MMIO region)
