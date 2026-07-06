@@ -60,9 +60,11 @@ static int vga_ensure_new_mmio(void)
     uint8_t cr53 = vga_crtc_read(VIRGE_CR53);
     uint8_t cr53_new = (cr53 & ~VIRGE_CR53_MMIO_MASK) | VIRGE_CR53_MMIO_NEW;
     if (cr53_new != cr53) {
-        printf("S3 ViRGE: CR53 MMIO_SELECT was 0x%x, forcing to 'new MMIO'\n",
-               (cr53 & VIRGE_CR53_MMIO_MASK) >> 3);
+        printf("S3 ViRGE: CR53 was 0x%02x, writing 0x%02x\n", cr53, cr53_new);
         vga_crtc_write(VIRGE_CR53, cr53_new);
+        uint8_t cr53_check = vga_crtc_read(VIRGE_CR53);
+        printf("S3 ViRGE: CR53 readback: 0x%02x (%s)\n", cr53_check,
+               cr53_check == cr53_new ? "write stuck" : "WRITE DID NOT STICK");
     }
 
     /* Belt-and-suspenders: CR66 bit 0 is OR'd with AFC bit 0 (either one
@@ -88,6 +90,7 @@ struct pci_bdf {
     uint32_t bar[6];
     uint32_t bar_size[6];
     int irq;
+    uint16_t device_id;
 };
 
 static int pci_read_hex(const char *path)
@@ -146,6 +149,7 @@ static int pci_find_device(struct pci_bdf *dev, uint16_t vendor,
         dev->bus = bus;
         dev->dev = devnum;
         dev->func = func;
+        dev->device_id = (uint16_t)dev_id;
 
         /* Read all BARs from the resource file */
         snprintf(path, sizeof(path),
@@ -953,8 +957,8 @@ int virge_init(struct virge_ctx *ctx, int width, int height, int bpp)
         return ret;
     }
 
-    printf("S3 ViRGE: Found at %04x:%02x:%02x.%x\n",
-           pci.domain, pci.bus, pci.dev, pci.func);
+    printf("S3 ViRGE: Found at %04x:%02x:%02x.%x (device id 0x%04x)\n",
+           pci.domain, pci.bus, pci.dev, pci.func, pci.device_id);
     printf("  BAR0: 0x%08x (%u MB aperture)\n", pci.bar[0],
            pci.bar_size[0] / (1024 * 1024));
 
