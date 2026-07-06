@@ -69,6 +69,55 @@ Structural gaps:
 
 ---
 
+## Target OpenGL feature profile per backend
+
+Derived from the datasheets in `docs/datasheets/` (ViRGE: DB019-B §15.4,
+§19; Mystique: MGA-1064SG spec §1.5, DWGCTL pp. 85-86). This is the
+contract for Phase 2 (what the pipeline must feed), Phase 4 (what the GL
+shim may promise), and Phase 5 (Mystique caps). Both cards are
+fixed-function GL 1.1-subset targets; neither has stencil, accumulation,
+multitexture, or general blend factors — those are permanently out of
+scope for hardware paths.
+
+**Hardware baseline (both cards, what the GL shim can always promise):**
+flat/smooth-shaded Z-buffered triangles and lines; 16-bit depth buffer
+with `glDepthFunc`/`glDepthMask`; color+depth clear; scissor
+(hardware clip rectangle); perspective-correct texturing with
+decal and modulate `glTexEnv` modes; texture repeat wrapping; hardware
+dithering; double-buffered page flip. All transform, lighting, and
+clipping is frontend software on every card.
+
+| GL 1.1 feature | ViRGE (86C325) | Mystique (MGA-1064SG) |
+|---|---|---|
+| Depth functions | all 8 | 7 — no `GL_NEVER` (emulate: skip draw) |
+| Texture filters | nearest, bilinear, all 4 mipmap modes incl. trilinear | **nearest only** |
+| Mipmapping | hardware (D interpolation) | none |
+| Blending | `SRC_ALPHA, ONE_MINUS_SRC_ALPHA` only (source or texture alpha) | **none** — texel color-key transparency only (≈ limited `GL_ALPHA_TEST`) |
+| Fog | hardware (alpha-driven; excludes source-alpha blending) | none |
+| Tex env modes | decal, modulate, add ("complex reflection") | decal, modulate (mono + true-color lighting) |
+| Texture formats | ARGB8888/4444/1555, PAL8, Blend4 (compressed), YUV | RGB565/555/332, CLUT4/CLUT8 (on-chip LUT→565) |
+| Wrap modes | repeat, border color (`TEX_BDR_CLR`) | repeat and clamp |
+| 3D render targets | 8bpp, 16bpp (ZRGB1555 only — see V8), 24bpp RGB888 | 16bpp only |
+
+Consequences:
+- `glEnable(GL_BLEND)` on the Mystique cannot be honored; the shim reports
+  caps honestly and draws opaque (GL apps of the era handled this — the
+  Mystique famously shipped without blending). Its color-key transparency
+  can back a limited `GL_ALPHA_TEST` for 1555-style textures (M2 decides).
+- `l10gl.h` needs a `L10GL_CAP_FOG` bit (fog is currently not exposed at
+  all) and the Phase 2 pipeline should compute per-vertex fog alpha for
+  backends that claim it.
+- After M1/M2, mga1064 caps become `GOURAUD|ZBUFFER|LINES|TEXTURE|
+  PERSPECTIVE|DITHER` — never `BLEND`, `BILINEAR`, `TRILINEAR`, or `FOG`.
+  The ViRGE claims all of those plus `FOG`.
+- Maximum texture sizes are not yet verified from either document —
+  confirm before hardcoding limits (`l10gl_virge.c:368` currently caps
+  s at 9 = 512×512 unverified).
+- swrast (F3) implements the union of both profiles and is the reference
+  for every feature here.
+
+---
+
 ## Phase 0 — ViRGE correctness fixes
 
 Small, independent bug fixes. Do these first; each is one commit. These are
