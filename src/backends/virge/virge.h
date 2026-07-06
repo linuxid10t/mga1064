@@ -52,15 +52,6 @@
  * ======================================================================== */
 
 /*
- * Installed VRAM. The driver has no runtime detection for this (that
- * would require reading the legacy VGA CR36 "Configuration Register 1"
- * over the CRTC index/data ports) — it assumes a fully populated board.
- * If your card has less than 4MB fitted, lower this or texture uploads
- * can be told there's room that isn't physically backed by VRAM.
- */
-#define S3_VIRGE_VRAM_SIZE  0x400000  /* 4MB */
-
-/*
  * BAR0: 64MB memory-mapped aperture.
  *   Bits 31-26 are relocatable (64MB granularity).
  *   Contains:
@@ -144,6 +135,17 @@
 #define VIRGE_CR38_UNLOCK_KEY   0x48
 #define VIRGE_CR39_UNLOCK_REG   0x39   /* Unlocks CR40-CRFF */
 #define VIRGE_CR39_UNLOCK_KEY   0xA5
+
+/* CR36 "Configuration Register 1" — samples reset/strap state from the
+ * PD bus. Bits 7-5 (MEM SIZE) report fitted VRAM (DB019-B PDF p.197,
+ * base 86C325): 000 = 4MB, 100 = 2MB, all other values reserved.
+ * Readable without unlock; writable only after the CR39 key above. The
+ * VX/DX/GX variants use a different MEM SIZE table not documented in
+ * DB019-B, so decode only for the base device id and fall back
+ * conservatively otherwise (see virge_detect_vram in virge.c). */
+#define VIRGE_CR36              0x36
+#define VIRGE_CR36_MEM_SIZE_SHIFT 5
+#define VIRGE_CR36_MEM_SIZE_MASK  (0x7 << 5)
 
 #define VIRGE_CR53              0x53   /* Extended Memory Control 1 */
 #define VIRGE_CR53_MMIO_MASK    (0x3 << 3)

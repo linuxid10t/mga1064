@@ -107,6 +107,41 @@ static int vga_ensure_new_mmio(void)
     return 0;
 }
 
+/*
+ * Detect installed VRAM from the CR36 MEM SIZE straps (bits 7-5).
+ * DB019-B PDF p.197 documents the base 86C325 decode (000 = 4MB,
+ * 100 = 2MB, all other values reserved). The straps are power-on and
+ * readable without unlock (CR39 unlock in vga_ensure_new_mmio covers
+ * writes anyway). The VX/DX/GX variants use a different MEM SIZE table
+ * not documented in DB019-B, so for any non-base device id we fall back
+ * to 2MB (the smallest shipped config) rather than risk a mis-decode.
+ * Must be called after vga_ensure_new_mmio() has set up I/O port access.
+ */
+static uint32_t virge_detect_vram(uint16_t device_id)
+{
+    uint8_t cr36 = vga_crtc_read(VIRGE_CR36);
+    uint8_t mem_size = (cr36 & VIRGE_CR36_MEM_SIZE_MASK)
+                       >> VIRGE_CR36_MEM_SIZE_SHIFT;
+
+    if (device_id != S3_PCI_DEVICE_VIRGE) {
+        printf("S3 ViRGE: CR36=0x%02x (MEM SIZE=%u); device 0x%04x MEM SIZE "
+               "table not in DB019-B, assuming 2MB\n",
+               cr36, mem_size, device_id);
+        return 2u * 1024 * 1024;
+    }
+
+    uint32_t vram;
+    const char *label;
+    switch (mem_size) {
+    case 0x0: vram = 4u * 1024 * 1024; label = "4MB";              break;
+    case 0x4: vram = 2u * 1024 * 1024; label = "2MB";              break;
+    default:  vram = 2u * 1024 * 1024; label = "reserved -> 2MB";   break;
+    }
+    printf("S3 ViRGE: CR36=0x%02x (MEM SIZE=%u) -> detected %s VRAM\n",
+           cr36, mem_size, label);
+    return vram;
+}
+
 /* ========================================================================
  * PCI Discovery — find the S3 ViRGE via /sys/bus/pci/devices
  *
@@ -1141,10 +1176,13 @@ int virge_init(struct virge_ctx *ctx, int width, int height, int bpp)
         ctx->fb_size = width * height * bpp;
     }
 
-    /* Compute memory layout (byte offsets in VRAM) */
+    /* Compute memory layout (byte offsets in VRAM).
+     * VRAM size is detected from the CR36 straps (virge_detect_vram);
+     * texture allocation checks against this, so an under-detected size
+     * just refuses large textures rather than over-allocating. */
     ctx->fb_base = 0;
     ctx->z_base = width * height * bpp;  /* Z buffer after framebuffer */
-    ctx->vram_size = S3_VIRGE_VRAM_SIZE;
+    ctx->vram_size = virge_detect_vram(pci.device_id);
 
     /* Texture heap starts after framebuffer + Z buffer, quadword aligned */
     uint32_t z_size = width * height * 2;  /* Z is always 16-bit */
