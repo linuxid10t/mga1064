@@ -12,7 +12,9 @@ The end state is a **userspace OpenGL 1.1-subset driver** that talks directly
 to vintage fixed-function hardware over PCI MMIO — exactly the way the current
 demos work. Explicit non-goals: no DRM, no DRI, no Mesa integration, no kernel
 module, no X11/GLX. An application links against L10GL (optionally through a
-thin `gl.h`-compatible shim) and renders to the fbdev-established mode.
+thin `gl.h`-compatible shim) and renders full-screen on the console. The
+library is responsible for the video mode: first by adopting/requesting it
+through fbdev, ultimately by programming the CRTC directly (Phase 3).
 
 Priorities, in order:
 
@@ -47,6 +49,10 @@ Structural gaps:
 - Depth/blend state is cached in the glue layer but **never reaches the
   hardware**: every triangle hardcodes `VIRGE_ZBC_LEQUAL | VIRGE_ZUP_ENABLE`
   and no blend bits (`virge.c:622`, `virge.c:976`)
+- No mode setting: `virge_init` trusts the caller's width/height/bpp and
+  assumes the console is already in that mode; it never checks the actual
+  fbdev mode, assumes stride = `width * bpp` (fbdev pitch can differ), and
+  never saves/restores console state on exit
 - Single-buffered: draws land on the visible framebuffer (tearing)
 - The whole 3D transform pipeline (rotation, projection, lighting) lives in
   the demos (`demos/cube.c:32`), not in the library
@@ -166,6 +172,23 @@ proven-working path.
 *Acceptance:* the cube demo shows no pixel cracks along shared face edges;
 no regression in overall shape. This one requires human hardware validation
 before merging further work on top.
+
+### V8. Verify 16bpp destination format vs scanout format (555 vs 565)
+`virge.h:316` notes the S3d engine's 16bpp destination format is
+**ZRGB1555**, but the glue converts colors as RGB565 (`l10gl_virge.c:25`)
+and the fbdev console mode may scan out either 555 or 565 depending on how
+the fb driver set up the DAC/streams. If the engine interpolates/writes
+1555 while the display decodes 565 (or vice versa), colors are subtly wrong
+(green channel shifted, intensity off). Read the actual channel layout from
+`FBIOGET_VSCREENINFO` (`red/green/blue.offset/length`), make the glue's
+color packing match it, and confirm from DB019-B what the S3d 16bpp
+destination write format really is at our mode. This is investigation +
+small fix, not a feature; it also feeds directly into Phase 3's mode work,
+where we get to *choose* the scanout format instead of guessing it.
+
+*Acceptance:* a test pattern of pure red/green/blue/white fills and Gouraud
+ramps shows correct, unshifted colors on hardware; color packing in the
+glue is derived from (or validated against) the live mode, not hardcoded.
 
 ---
 
@@ -310,19 +333,62 @@ remains in the demo files beyond scene description.
 
 ---
 
-## Phase 3 — Presentation: double buffering and vsync flip
+## Phase 3 — Presentation: mode setting, double buffering, vsync flip
 
-Currently drawing goes straight to the scanout buffer. This phase adds the
-back buffer and flip, ViRGE-first.
+Currently the driver draws straight to the scanout buffer of whatever mode
+the console happens to be in, and trusts the caller that it *is* that mode.
+This phase makes the display pipe a first-class part of the driver: adopt
+or set the video mode, own the console politely, and add back-buffer
+flipping. Mode setting is staged — fbdev-mediated first (small, portable,
+works today), native CRTC programming last (the true "direct hardware"
+end state, but the riskiest register work in the whole plan).
 
-### P1. Frontend API
+### P1. Mode negotiation and fbdev mode setting (all backends)
+Change the init contract: `width/height/bpp` passed to `l10gl_create` are
+a *request*, and the backend reports what it actually got. Concretely:
+
+- Add `stride` (bytes per scanline) and a pixel-format descriptor (channel
+  offsets/lengths, from `fb_var_screeninfo`) to `struct l10gl_ctx`, filled
+  in by the backend at init.
+- In backend init: open `/dev/fb0`, `FBIOGET_VSCREENINFO`. If the current
+  mode already matches the request, adopt it. If not, attempt
+  `FBIOPUT_VSCREENINFO` with the requested mode (this works when a real
+  chip driver — `s3fb` for the ViRGE, `matroxfb` for the Mystique — is
+  loaded; `vesafb`/`simplefb` are fixed-mode and will refuse). Re-read and
+  use the **actual** resulting values everywhere; fail with a clear error
+  if the result is unusable rather than rendering into a mismatched mode.
+- Replace every `ctx->width * ctx->bpp` stride computation in both
+  hardware backends with the real `finfo.line_length` — the current
+  assumption breaks on any driver that pads the pitch.
+- Frontend: `l10gl_create` prints requested vs actual mode; demos read the
+  final geometry from the context instead of trusting their argv.
+
+*Acceptance:* on the test machine, `./cube 800 600 16` either switches the
+console to 800×600 (with `s3fb`) or fails with a message naming the actual
+mode and how to set it (with `vesafb`); rendering geometry/stride always
+comes from the live mode; no `width * bpp` stride math remains.
+
+### P2. Console ownership and clean restore
+Be a well-behaved fullscreen app. At init: save the current
+`fb_var_screeninfo`, put the owning VT into graphics mode
+(`KDSETMODE`/`KD_GRAPHICS`) so fbcon's cursor blink and kernel printk stop
+scribbling over our frames. At cleanup — including the SIGINT path the
+demos already catch — restore text mode and the saved fbdev mode. Do this
+in the frontend/a shared `src/console.c`, not per-backend; it is pure
+fbdev/VT ioctl work with no card-specific code.
+
+*Acceptance:* Ctrl-C from any demo returns to a working text console at
+the original mode, every time; no blinking cursor artifacts during
+rendering.
+
+### P3. Frontend swap-buffers API
 `l10gl_swap_buffers(ctx)` + vtable `swap_buffers`. Semantics: finish
 pending engine work, make the back buffer visible (at next vsync if
 supported), retarget rendering to the other buffer. Backends without flip
 support (NULL) make it a no-op after `wait_engine` — single-buffered but
 correct.
 
-### P2. ViRGE implementation
+### P4. ViRGE double buffering
 Allocate buffer 2 after the front buffer in the VRAM layout
 (`virge.c:1084`; new layout: front, back, Z, texture heap — recheck V6
 VRAM budget: 800×600×2×2 + Z 800×600×2 ≈ 2.8MB, so 4MB cards handle
@@ -333,14 +399,55 @@ Scanout retarget = program the display start address over the CRTC
 variants — gate on device ID, document register choice from DB019-B §18).
 Flip at vsync using the existing `virge_wait_vsync`.
 
-### P3. swrast + mga1064
+### P5. swrast + mga1064 double buffering
 swrast: trivial (two malloc'd buffers or fbdev pan via
 `FBIOPAN_DISPLAY`). mga1064: implement the same VRAM-layout + CRTC
 start-address pattern (CRTCEXT0 on MGA), untested-on-HW but structurally
 complete.
 
-*Phase acceptance:* cube demo on ViRGE shows no tearing and no visible
-mid-frame drawing; `rawtri.c` (single-buffer path) still works.
+### P6. Native ViRGE mode setting (no fb-driver dependency)
+The end-state for the primary card: set the mode by programming the chip
+directly, so L10GL runs even on a `vesafb`/fixed-mode console — the same
+"direct interaction with the hardware" philosophy as the rest of the
+driver. This is the largest single block of new register programming in
+the plan; keep it strictly isolated and behind an opt-in
+(`L10GL_MODESET=native`) until proven.
+
+Scope, per DB019-B:
+- A small **fixed mode table** (640×480, 800×600, 1024×768 at 60/75Hz,
+  16bpp) using canonical VESA timings — no general mode timing calculator.
+- Memory/dot clock PLL programming (SR12/SR13, plus the SR15 load
+  sequence).
+- Standard VGA CRTC timing registers plus the S3 extended overflow bits
+  (CR5D/CR5E), screen offset/stride (CR13 + CR51 extension), and the
+  enhanced-mode bits already partially handled in bring-up (CR31/CR3A/
+  CR58 linear-window size).
+- Scanout pixel format selection (this resolves V8 definitively: we choose
+  555 or 565 rather than inheriting it) — on DX/GX variants via the
+  streams processor, on the base 325 via CR67.
+- **Full save/restore**: snapshot every register the modeset touches at
+  init and restore on exit, so the console comes back even from a native
+  modeset. Build on P2's restore path.
+
+Reference implementations to consult (as documentation, not code to copy):
+the XFree86 `s3virge` driver and the kernel `s3fb` driver both encode the
+exact register sequences for these chips.
+
+Do **not** start P6 until P1/P2 are merged and V8 is resolved. mga1064
+native modesetting is deliberately out of scope here — it becomes an
+M-task once the ViRGE version has proven the structure (a
+`set_mode`/`restore_mode` pair on the vtable).
+
+*Acceptance:* on a console left in a non-matching `vesafb` mode, a demo
+with `L10GL_MODESET=native` sets 640×480@16bpp on the ViRGE, renders
+correctly, and restores the previous console state on exit. Requires human
+hardware sign-off at each sub-step (clock first — a wrong PLL can produce
+a black screen or an out-of-range monitor signal; program conservative
+60Hz timings only until verified).
+
+*Phase acceptance:* cube demo on ViRGE runs at the requested resolution
+with no tearing and no visible mid-frame drawing; Ctrl-C always returns a
+usable console; `rawtri.c` (single-buffer path) still works.
 
 ---
 
@@ -373,9 +480,10 @@ Keep the promise that the architecture is multi-card. All tasks here must
 not disturb ViRGE code.
 
 - **M1.** Bring mga1064 up to the current vtable: probe (F1), the V3/V4
-  state-plumbing pattern, swap_buffers (P3). Where the Mystique lacks a
-  feature (no bilinear filtering, no real alpha blending), return honest
-  caps bits — the frontend already treats caps as advisory.
+  state-plumbing pattern, mode negotiation via fbdev (P1, using
+  `matroxfb`), swap_buffers (P3/P5). Where the Mystique lacks a feature
+  (no bilinear filtering, no real alpha blending), return honest caps
+  bits — the frontend already treats caps as advisory.
 - **M2.** Mystique texture mapping: the MGA-1064SG has hardware texturing
   (TEXORG/TEXWIDTH/TEXHEIGHT/TEXCTL and TMR0-8 texture-mapping registers).
   Implement `tex_image_2d`/`bind_texture`/`draw_textured_triangle` per the
@@ -385,6 +493,10 @@ not disturb ViRGE code.
 - **M3.** A bring-up checklist doc for the Mystique modeled on the ViRGE
   war stories (which enable bits gate which register banks), so the
   eventual hardware session is efficient.
+- **M4.** Native Mystique mode setting, only after P6 has proven the
+  structure on the ViRGE: implement the same `set_mode`/`restore_mode`
+  vtable pair against the MGA-1064SG CRTC/PLL (CRTCEXT registers, system
+  PLL), same fixed mode table, same save/restore discipline.
 
 *Acceptance:* `make` builds everything; swrast-validated demos run
 unchanged when `L10GL_BACKEND=mga1064` is forced on a machine with the
@@ -439,14 +551,19 @@ Each item needs before/after frame-rate numbers from the cube demo
 ## Suggested execution order and dependencies
 
 ```
-Phase 0 (V1..V7)  — independent of each other; V7 needs HW sign-off
+Phase 0 (V1..V8)  — independent of each other; V7/V8 need HW sign-off
 Phase 1 (F1→F2, F3, F4) — F1 before F2; F3 independent; F4 last
 Phase 2 (X1→X2→X3→X4/X5→X6) — requires F3 for validation
-Phase 3 (P1→P2, P3) — requires F1/F2; independent of Phase 2
+Phase 3:
+  P1→P2 (fbdev modeset + console restore) — no dependencies; can start
+        immediately, and everything else benefits from landing it early
+  P3→P4, P5 (double buffering) — require F1/F2
+  P6 (native modeset) — last in phase; requires P1, P2, V8 resolved
 Phase 4            — requires Phase 2 + 3
-Phase 5 (M1→M2→M3) — requires F1/F2; independent of Phases 2-4
+Phase 5 (M1→M2→M3→M4) — M1 requires F1/F2 and P1; M4 requires P6
 Phase 6            — last
 ```
 
 Good first parallel assignment for three agents: (1) Phase 0 fixes,
-(2) F1+F2 backend registry/build, (3) F3 swrast.
+(2) F1+F2 backend registry/build, (3) P1+P2 fbdev mode negotiation and
+console restore (F3 swrast is the next pickup after any of these).
