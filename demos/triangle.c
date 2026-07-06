@@ -55,6 +55,16 @@ int main(void)
         return 1;
     }
 
+    /* The backend may adopt the real screen mode instead of the request
+     * (native scanout takeover on no-fbdev machines) -- place the
+     * triangle in what we actually got. */
+    if (ctx.width != width || ctx.height != height) {
+        printf("Adopted actual screen %dx%d (requested %dx%d)\n",
+               ctx.width, ctx.height, width, height);
+        width = ctx.width;
+        height = ctx.height;
+    }
+
     signal(SIGINT, sighandler);
     signal(SIGTERM, sighandler);
 
@@ -63,31 +73,35 @@ int main(void)
     l10gl_depth_func(&ctx, L10GL_LESS);
 
     /*
-     * One scalene triangle, one primary color per vertex:
-     *   red   at the bottom-center (320, 440),
-     *   green at the middle-right  (520, 240),
-     *   blue  at the top-left      (120,  60).
-     * The 200px horizontal offset between the bottom (x=320) and middle
-     * (x=520) vertices is what makes the old span-end bug visible: with
-     * TXEND01 misprogrammed to the middle-vertex X, the bottom span ran
-     * 320->520 at the very bottom scanline, fattening the lower-right
-     * corner. With V9 it tapers cleanly to the red vertex. Vertices may
-     * be passed in any order; the backend sorts by Y.
+     * One scalene triangle, one primary color per vertex, placed as
+     * fractions of the actual screen (at 640x480 these reproduce the
+     * original hardcoded vertices):
+     *   red   at the bottom-center (0.50w, 0.917h),
+     *   green at the middle-right  (0.81w, 0.500h),
+     *   blue  at the top-left      (0.19w, 0.125h).
+     * The horizontal offset between the bottom and middle vertices is
+     * what makes the old span-end bug visible: with TXEND01
+     * misprogrammed to the middle-vertex X, the bottom span ran all the
+     * way to the middle-vertex X on the very bottom scanline, fattening
+     * the lower-right corner. With V9 it tapers cleanly to the red
+     * vertex. Vertices may be passed in any order; the backend sorts
+     * by Y.
      */
     struct l10gl_vertex v_red = {
-        .x = 320.0f, .y = 440.0f, .z = 0.5f, .w = 1.0f,
+        .x = 0.50f * width, .y = 0.917f * height, .z = 0.5f, .w = 1.0f,
         .r = 1.0f, .g = 0.0f, .b = 0.0f, .a = 1.0f
     };
     struct l10gl_vertex v_green = {
-        .x = 520.0f, .y = 240.0f, .z = 0.5f, .w = 1.0f,
+        .x = 0.81f * width, .y = 0.500f * height, .z = 0.5f, .w = 1.0f,
         .r = 0.0f, .g = 1.0f, .b = 0.0f, .a = 1.0f
     };
     struct l10gl_vertex v_blue = {
-        .x = 120.0f, .y = 60.0f, .z = 0.5f, .w = 1.0f,
+        .x = 0.19f * width, .y = 0.125f * height, .z = 0.5f, .w = 1.0f,
         .r = 0.0f, .g = 0.0f, .b = 1.0f, .a = 1.0f
     };
 
-    printf("Vertices: red(320,440) green(520,240) blue(120,60)\n");
+    printf("Vertices: red(%.0f,%.0f) green(%.0f,%.0f) blue(%.0f,%.0f)\n",
+           v_red.x, v_red.y, v_green.x, v_green.y, v_blue.x, v_blue.y);
 
     /* The framebuffer is single-buffered, so one draw persists on screen;
      * draw once and idle so the image is rock-solid for photographing. */

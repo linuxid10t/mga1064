@@ -218,6 +218,16 @@ int main(int argc, char **argv)
         return 1;
     }
 
+    /* The backend may adopt the real screen mode instead of the request
+     * (native scanout takeover on no-fbdev machines) -- render to what
+     * we actually got or the projection/stride math is wrong. */
+    if (ctx.width != width || ctx.height != height) {
+        printf("Adopted actual screen %dx%d (requested %dx%d)\n",
+               ctx.width, ctx.height, width, height);
+        width = ctx.width;
+        height = ctx.height;
+    }
+
     signal(SIGINT, sighandler);
     signal(SIGTERM, sighandler);
 
