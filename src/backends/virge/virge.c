@@ -88,6 +88,22 @@ static int vga_ensure_new_mmio(void)
     vga_crtc_write(VIRGE_CR66, cr66 | VIRGE_CR66_ENB_EHFC);
     printf("S3 ViRGE: CR66 = 0x%02x after write\n", vga_crtc_read(VIRGE_CR66));
 
+    /* The datasheet requires CR31 bit 3 alongside CR66 bit 0 for
+     * enhanced mode to actually use linear memory mapping. Without it,
+     * the S3d engine's Memory Port Controller applies legacy VGA
+     * planar/chain-4 address decode to engine writes even though the
+     * CPU's linear framebuffer aperture reads out fine -- fills can
+     * "succeed" while landing in a completely different physical
+     * layout than what's visible through the linear aperture. */
+    uint8_t cr31 = vga_crtc_read(VIRGE_CR31);
+    printf("S3 ViRGE: CR31 = 0x%02x (ENH_MAP = %u)\n",
+           cr31, (cr31 & VIRGE_CR31_ENH_MAP) ? 1 : 0);
+    if (!(cr31 & VIRGE_CR31_ENH_MAP)) {
+        printf("S3 ViRGE: CR31 bit 3 was CLEAR -- setting it\n");
+        vga_crtc_write(VIRGE_CR31, cr31 | VIRGE_CR31_ENH_MAP);
+    }
+    printf("S3 ViRGE: CR31 after write = 0x%02x\n", vga_crtc_read(VIRGE_CR31));
+
     return 0;
 }
 

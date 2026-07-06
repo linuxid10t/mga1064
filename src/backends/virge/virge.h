@@ -142,6 +142,19 @@
 #define VIRGE_CR66               0x66   /* Mirrors AFC bit 0 (ENB EHFC) */
 #define VIRGE_CR66_ENB_EHFC      (1 << 0)
 
+/* CR31 "Memory Configuration Register" bit 3: ENH MAP (Use Enhanced
+ * Mode Memory Mapping). 0 = IBM VGA planar/chain-4 memory mapping;
+ * 1 = linear doubleword addressing. The datasheet is explicit that
+ * enhanced mode operation requires BOTH CR66 bit 0 = 1 AND this bit
+ * set. If clear, the S3d engine's Memory Port Controller applies
+ * legacy VGA planar address decode to engine writes, while the CPU's
+ * linear framebuffer aperture (BAR0+0) may still read out fine via a
+ * separate linear addressing path -- meaning engine fills can
+ * "succeed" while landing in a completely different physical layout
+ * than what's visible through the linear aperture. */
+#define VIRGE_CR31               0x31
+#define VIRGE_CR31_ENH_MAP       (1 << 3)
+
 /* CR40 "System Configuration Register" bit 0: Enable Enhanced Register
  * Access. This is upstream of CR53/CR66 -- if clear, the entire S3d
  * register bank (0xA400-0xB5FF, and likely 0x8500) doesn't exist as
