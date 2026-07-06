@@ -447,7 +447,22 @@ static void virge_scanout_takeover(struct virge_ctx *ctx)
         uint32_t cr01n = hde - 1;
         uint32_t ehbn  = (shb + blkw) & 0x7F;
         uint32_t ehsn  = (shs + syncw) & 0x3F;
-        uint32_t sffn  = cr00n - 5;   /* CR3B rule: 5 less than CR00 */
+        /* CR3B (Start Display FIFO Fetch) must keep the BIOS's FIFO-refill
+         * window intact in REAL time, not follow the "typically 5 less
+         * than CR0" rule (DB019-B sec.18, CR3B "Start Display FIFO
+         * Register", PDF p.203) literally. That rule counts char clocks,
+         * and CR3B "must lie in the horizontal blanking period". The
+         * refill window is (HT - SFF) char clocks; in the doubled 15/16bpp
+         * mode a char clock covers 4 pixels, not 8, so computing SFF as
+         * new_CR00-5 (259-5 = 254) leaves only (264-254) = 10 char clocks
+         * = 40 pixel clocks to refill -- a third of the BIOS's
+         * (132-117) = 15 char clocks = 120 pixel clocks. The starved
+         * FIFO underflows partway across the line, seen as the dark
+         * vertical band. Doubling the BIOS's SFF value instead yields
+         * (264-234) = 30 char clocks = 120 pixel clocks, preserving the
+         * refill duration. (234 is still inside [200,260), so it is a
+         * valid in-blanking value.) */
+        uint32_t sffn  = old_sff * 2;
 
         vga_crtc_write(0x11, r[VIRGE_SCANOUT_CR11_IDX] & 0x7F); /* unlock CR0-7 */
         vga_crtc_write(0x00, (uint8_t)cr00n);
@@ -480,14 +495,14 @@ static void virge_scanout_takeover(struct virge_ctx *ctx)
 
     printf("S3 ViRGE: scanout now CR67=%02x CR50=%02x CR00=%02x CR01=%02x "
            "CR13=%02x CR51=%02x CR5D=%02x CR3B=%02x CR34=%02x; "
-           "programmed SFF(9bit)=%u (= CR00 %02x - 5); "
+           "programmed SFF(9bit)=%u (2x BIOS SFF %u); "
            "originals restored at cleanup\n",
            vga_crtc_read(0x67), vga_crtc_read(0x50), vga_crtc_read(0x00),
            vga_crtc_read(0x01), vga_crtc_read(0x13), vga_crtc_read(0x51),
            vga_crtc_read(0x5D), vga_crtc_read(0x3B), vga_crtc_read(0x34),
            (uint32_t)vga_crtc_read(0x3B) |
                (uint32_t)((vga_crtc_read(0x5D) >> 6) & 1) << 8,
-           vga_crtc_read(0x00));
+           old_sff);
 }
 
 /* ========================================================================
