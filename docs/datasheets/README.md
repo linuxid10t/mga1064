@@ -68,6 +68,64 @@ Key facts verified against this document (2026-07):
   pp. 270-271. For derivation, consult the XFree86 `s3virge` driver
   sources and validate on hardware.
 
+## Behavioral reference: 86Box ViRGE emulation
+
+The 86Box emulator (https://github.com/86Box/86Box, file
+`src/video/vid_s3_virge.c`) implements the S3d engine accurately enough
+to run period S3 drivers and games, which makes it executable
+documentation for the semantics DB019-B withholds ("code will be
+provided by S3 to customers"). **License caution: 86Box is GPL-2.0 and
+L10GL is MIT — consult it for register semantics, never copy code.**
+
+Triangle rasterization semantics derived from its `s3_virge_triangle()`
+/ `tri()` (paraphrased, verified 2026-07 against master):
+
+- The engine walks scanlines **upward** from TYS, decrementing Y. It
+  draws SCAN_LINE_COUNT_01 lines using TdXdY01 for the span-end edge,
+  then **reloads the span-end accumulator with TXEND12** and draws
+  SCAN_LINE_COUNT_12 more lines using TdXdY12. The span-start
+  accumulator starts at TXS, steps by TdXdY02 every line, and is never
+  reloaded.
+- Therefore the registers mean: TXS = X of edge 02 **at the first
+  (bottom) scanline**; TXEND01 = X of edge 01 **at that same first
+  scanline** (≈ bottom-vertex X, *not* the middle vertex); TXEND12 = X
+  of edge 12 **at the middle vertex's scanline** (*not* the top vertex).
+  Read the datasheet's "X of the last pixel drawn for the side" as "the
+  per-scanline span-end X, whose accumulator this side owns".
+- Span extent per scanline: first pixel = ceil(x_start) (computed as
+  `(x + 0xFFFFF) >> 20`), end-exclusive at ceil(x_end). For
+  right-to-left rendering (L/R = 0) both bounds shift by −1 and
+  iteration runs downward.
+- Attribute base values (TZS, TRS/TGS/TBS/TAS, TUS/TVS/TWS/TDS) are
+  sampled at the (TXS, TYS) position. Each scanline the engine adds the
+  programmed Y deltas to these bases; within a span it additionally
+  adjusts the base by the sub-pixel distance from the edge-02
+  accumulator to the first pixel, using the top 5 fractional bits of
+  the S11.20 X (delta × frac/32). **X-direction sub-pixel correction is
+  done by the hardware** — the driver must not pre-add it.
+- Consequently the programmed **Y deltas are edge-walk deltas along
+  side 02, not plane ∂/∂y**: with y-down screen coordinates and plane
+  gradients (dA/dx, dA/dy), program
+  `TdAdY = −dA/dy + slope02 · dA/dx`, where slope02 = TdXdY02 / 2^20 —
+  the base moves one scanline up *and* along edge 02 each step.
+- Driver-side sub-pixel prestep (the part the hardware does NOT do):
+  TYS is an integer scanline; TXS and TXEND01 must be pre-stepped from
+  their vertex X by their edge slopes times the fractional Y distance
+  from the bottom vertex to that scanline, and the attribute bases
+  likewise along edge 02.
+- Z start (TZS) is treated as S16.15 clamped non-negative; the compare
+  uses the integer part (high 16 bits after a 1-bit left shift).
+- Command dispatch confirms the datasheet: 3D Gouraud = 0, lit texture
+  = 1/5, unlit = 2/6 (perspective variants select perspective-correct
+  sampling); texture blend field = {reflection, modulate, decal}. 2D:
+  BitBLT = 0, RectFill = 2, **Line = 3**, Polygon = 5, NOP = 15 —
+  independently confirming the line-command finding above.
+
+Fidelity caveats: it is an emulator — bilinear filtering is an optional
+emulator feature there, and DX/GX-specific texture-format differences
+are modeled per chip. Treat it as strong evidence to be confirmed by
+one hardware test, not as ground truth equal to silicon.
+
 ## MGA-1064sg_199702.pdf
 
 Matrox MGA-1064SG (Mystique) specification, February 1997. 332 pages,

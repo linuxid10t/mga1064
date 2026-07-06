@@ -146,6 +146,7 @@ X START adjustment against the worked example.
 
 *Acceptance:* `virge_draw_line` programs command type 0011b with DE set;
 compiles cleanly; human verifies a line-drawing test on hardware.
+(Independently confirmed: 86Box's command decode uses line = `3 << 27`.)
 
 ### V2. Fix Z-clear width/format mismatch
 `src/backends/virge/virge.c:386` (`virge_clear_z`): the comment says "use
@@ -235,20 +236,19 @@ reality; texture OOM check uses the detected value.
 ### V7. Sub-pixel correctness pass on triangle edge setup (verify-on-HW task)
 `virge_draw_triangle_gouraud` truncates vertex coordinates to int for edge
 setup and computes slopes from truncated endpoints. This produces cracks
-and shimmer between adjacent triangles. Important sourcing caveat,
-verified against the databook: **DB019-B does not contain the triangle
-setup formulas** — §15.4.5.2 (PDF p. 127) states 3D setup code "will be
-provided by S3 to customers", and the register descriptions only define
-semantics: rendering runs bottom-to-top starting "at the first scan line
-at or above the starting vertex", TXEND01/12 hold the X of the *last
-pixel drawn* on the side (S11.20, sign must be 0; PDF pp. 270-271), and
-Figure 15-6 (PDF p. 128) shows vertices off pixel centers. The correct
-derivation therefore comes from adjusting starts to the first sample
-point (`x_start += dXdY * frac(y_bot)`, attribute starts evaluated there
-too — analogous to the documented 2D-line X-major half-pixel rule,
-§15.4.4.3) and cross-checking against the XFree86 `s3virge` driver, which
-encodes S3's reference setup. Keep it behind small, separately committed
-steps because this touches the proven-working path.
+and shimmer between adjacent triangles. **DB019-B does not contain the
+setup formulas** (§15.4.5.2, PDF p. 127, defers to S3-provided driver
+code) — but the 86Box emulator's rasterizer does, and its derived
+semantics are documented in `docs/datasheets/README.md` ("Behavioral
+reference: 86Box"). The division of labor is now known: the hardware
+performs sub-pixel attribute correction in X (5 fractional bits) and
+uses a ceil()-based span rule; the **driver** must do the Y prestep —
+TYS is the integer scanline of the bottom vertex, and TXS/TXEND01 plus
+all attribute bases must be pre-stepped from the vertex by the
+fractional Y distance along their respective edges. Implement exactly
+that; do V9 first (it redefines what TXEND01/12 and the Y deltas mean).
+Keep it behind small, separately committed steps because this touches
+the proven-working path.
 
 *Acceptance:* the cube demo shows no pixel cracks along shared face edges;
 no regression in overall shape. This one requires human hardware validation
@@ -277,6 +277,37 @@ belongs to P6, which this task feeds.
 to Gouraud ramps of the same colors shows identical, unshifted color on
 hardware; color packing in the glue is derived from the live mode's
 channel layout, not hardcoded.
+
+### V9. Fix triangle edge/attribute register semantics (found via 86Box)
+The 86Box ViRGE emulation — which runs period S3 drivers correctly, so
+its interpretation reflects what real drivers program — contradicts the
+current setup in three ways (full derivation in
+`docs/datasheets/README.md`, "Behavioral reference: 86Box"):
+
+1. **TXEND01 is the span-end X at the *first (bottom)* scanline**, i.e.
+   ≈ the bottom vertex X pre-stepped along edge 01 — not the middle
+   vertex X that `virge.c:564` programs today.
+2. **TXEND12 is the span-end X at the *middle* vertex's scanline** —
+   not the top vertex X (`virge.c:565`).
+3. **The Y deltas are edge-walk deltas along side 02, not plane ∂/∂y**:
+   the engine walks upward and moves along edge 02 each scanline, so
+   program `TdAdY = −dA/dy + slope02·dA/dx` for every attribute (color,
+   Z, and in the textured path U/V/W/D). `virge.c:591-601` currently
+   writes the raw y-down plane gradient — wrong sign and missing the
+   edge term.
+
+The cube demo can't see these bugs: its faces are flat-colored (all
+color deltas zero) and its depth arrangement is forgiving. They will
+surface the moment Phase 2 produces smooth shading or real texturing.
+Because 86Box is an emulator, confirm with a minimal hardware test
+first: one static triangle with known vertices and per-vertex colors,
+photographed before/after — if the current code really renders it
+misshapen (bottom span jumping straight to the middle vertex X), the
+fix direction is proven. Fix both the Gouraud and textured paths.
+
+*Acceptance:* a static test triangle renders with correct shape and a
+smooth color ramp on hardware; the spinning cube with per-vertex (not
+per-face) colors shows no shearing or color banding.
 
 ---
 
@@ -345,7 +376,26 @@ attribute interpolation (mirroring `virge.c:496` so results are comparable),
 frames; a dumped frame visually matches the expected cube; textured_cube
 works too.
 
-### F4. Update README + add `docs/BACKEND.md`
+### F4. 86Box-based ViRGE test rig (high value, optional)
+86Box emulates the ViRGE family (`src/video/vid_s3_virge.c`) faithfully
+enough to run period S3 drivers. A scripted rig — 86Box headless with a
+ViRGE/DX adapter, booting a minimal 32-bit Linux disk image with an
+fbdev console, the L10GL demos on the image, screenshots captured per
+run — would give implementing agents a **register-level feedback loop
+for ViRGE code without vintage hardware**, closing the biggest testing
+gap in this plan. Steps: build 86Box in CI, prepare a reusable disk
+image (build demos statically on the host, inject into the image),
+drive the emulator with a fixed boot script, diff screenshots against
+swrast renders of the same scene. Caveats: emulator fidelity is strong
+evidence but not silicon (bilinear is an emulator option there); keep
+final sign-off on real hardware. License note: 86Box is GPL-2.0 —
+run it as a tool, never copy its code into this MIT project.
+
+*Acceptance:* a single `make emu-test` (or script) boots the emulated
+ViRGE machine, runs the cube demo, and produces a screenshot; a wrong
+register write (e.g. reverting V1) visibly breaks the screenshot.
+
+### F5. Update README + add `docs/BACKEND.md`
 README still describes ViRGE as a "future backend" and documents the old
 `BACKEND=` build. Rewrite for the post-F1/F2 world. Add `docs/BACKEND.md`:
 the new-backend porting guide (vtable contract, probe/init lifecycle, who
@@ -646,8 +696,10 @@ Each item needs before/after frame-rate numbers from the cube demo
 ## Suggested execution order and dependencies
 
 ```
-Phase 0 (V1..V8)  — independent of each other; V7/V8 need HW sign-off
-Phase 1 (F1→F2, F3, F4) — F1 before F2; F3 independent; F4 last
+Phase 0 (V1..V9)  — independent of each other; V7/V8/V9 need HW
+                    sign-off; V9 before V7 (V9 redefines the registers
+                    V7 presteps)
+Phase 1 (F1→F2, F3, F4, F5) — F1 before F2; F3/F4 independent; F5 last
 Phase 2 (X1→X2→X3→X4/X5→X6) — requires F3 for validation
 Phase 3:
   P1→P2 (fbdev modeset + console restore) — no dependencies; can start
