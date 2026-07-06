@@ -140,12 +140,14 @@ int main(void)
      * R2: full-width bar starting at y=300 -- above the suspected absolute
      *     row ceiling of ~299, so it tests whether the ceiling is real on
      *     the fixed scanout.
-     * R3: full-height narrow strip at the right edge -- probes the
-     *     "row ceiling ~299" (does it reach the bottom?) and narrow width. */
+     * R3: tall narrow strip at the bottom-right -- probes narrow width and
+     *     low rows. Placed at y=340+ so it does NOT overlap R2 (an earlier
+     *     full-height R3 overwrote R2's right edge and read back as a
+     *     spurious FAIL; the engine was correct, the test overlapped). */
     struct rect rects[] = {
         {  50,  50, 100, 100, PX_RED,   "R1 red square"   },
         {   0, 300, 800,  40, PX_GREEN, "R2 green bar"    },
-        { 736,   0,  64, 600, PX_BLUE,  "R3 blue strip"   },
+        { 736, 340,  64, 260, PX_BLUE,  "R3 blue strip"   },
     };
     int nrects = (int)(sizeof(rects) / sizeof(rects[0]));
 
@@ -174,8 +176,8 @@ int main(void)
 
     /* Leave the rects on screen for a photo, then Ctrl-C restores scanout. */
     printf("\nRects are on screen (black bg): red 100x100 @ (50,50),\n"
-           "green full-width bar @ y=300..339, blue 64-wide strip @ x=736\n"
-           "(full height). Photograph, then Ctrl-C to exit (restores scanout).\n");
+           "green full-width bar @ y=300..339, blue 64-wide strip @\n"
+           "x=736, y=340..599. Photograph, then Ctrl-C to exit.\n");
     while (running) {
         if (getchar() == EOF)
             break;          /* Ctrl-C or closed stdin */
