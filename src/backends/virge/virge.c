@@ -363,14 +363,14 @@ void virge_fill_rect(struct virge_ctx *ctx, int x, int y, int w, int h,
      *          never writes a single pixel)
      *   bits 4-2: destination format
      *   bits 24-17: ROP = PATCOPY (0xF0)
-     *   bit 1: clipping enabled
+     *   bit 1: clipping enabled -- NOT set, see VIRGE_CMD_CLIP_ENABLE
+     *          comment in virge.h
      */
     uint32_t cmd = VIRGE_2D_CMD_RECT_FILL
                  | VIRGE_2D_MONO_PATTERN
                  | VIRGE_2D_CMD_DRAW_ENABLE
                  | ctx->dest_format
-                 | (VIRGE_ROP_PATCOPY << 17)
-                 | VIRGE_CMD_CLIP_ENABLE;
+                 | (VIRGE_ROP_PATCOPY << 17);
     /* bit 31 = 0 for 2D */
 
     virge_write32(ctx, VIRGE_2D_CMD_SET, cmd);
@@ -420,13 +420,13 @@ void virge_clear_z(struct virge_ctx *ctx, float z)
 
     virge_write32(ctx, VIRGE_2D_RDEST_XY, 0);
 
-    /* Use 8bpp dest format for the fill since we're writing raw bytes */
+    /* Use 8bpp dest format for the fill since we're writing raw bytes.
+     * No VIRGE_CMD_CLIP_ENABLE -- see the comment in virge.h. */
     uint32_t cmd = VIRGE_2D_CMD_RECT_FILL
                  | VIRGE_2D_MONO_PATTERN
                  | VIRGE_2D_CMD_DRAW_ENABLE
                  | ctx->dest_format
-                 | (VIRGE_ROP_PATCOPY << 17)
-                 | VIRGE_CMD_CLIP_ENABLE;
+                 | (VIRGE_ROP_PATCOPY << 17);
 
     virge_write32(ctx, VIRGE_2D_CMD_SET, cmd);
 
@@ -618,14 +618,14 @@ void virge_draw_triangle_gouraud(struct virge_ctx *ctx,
                   ((scan_01 & 0x7FF) << 16) |
                   (scan_12 & 0x7FF));
 
-    /* --- Program Command Set and execute --- */
+    /* --- Program Command Set and execute ---
+     * No VIRGE_CMD_CLIP_ENABLE -- see the comment in virge.h. */
     uint32_t cmd = VIRGE_CMD_3D
                  | VIRGE_3D_GOURAUD
                  | ctx->dest_format
                  | VIRGE_ZB_NORMAL
                  | VIRGE_ZBC_LEQUAL     /* default: pass if Zs <= Zzb */
-                 | VIRGE_ZUP_ENABLE     /* update Z on pass */
-                 | VIRGE_CMD_CLIP_ENABLE;
+                 | VIRGE_ZUP_ENABLE;    /* update Z on pass */
 
     virge_write32(ctx, VIRGE_3D_CMD_SET, cmd);
 }
@@ -726,12 +726,12 @@ void virge_draw_line(struct virge_ctx *ctx,
      *   bit 8: mono pattern
      *   bits 7-5: dest format
      *   bits 24-17: ROP = PATCOPY (0xF0)
-     *   bit 1: clip enable
+     *   bit 1: clip enable -- NOT set, see VIRGE_CMD_CLIP_ENABLE comment
+     *          in virge.h
      */
     uint32_t cmd = ((0x06 << 27) & 0x1F)  /* 2D line = bits [30:27] = 0110 */
                  | ctx->dest_format
-                 | (VIRGE_ROP_PATCOPY << 17)
-                 | VIRGE_CMD_CLIP_ENABLE;
+                 | (VIRGE_ROP_PATCOPY << 17);
 
     /* Y count + direction — this is the kick register for 2D lines */
     virge_write32(ctx, 0xA900, cmd);  /* L_CMD_SET */
@@ -972,15 +972,15 @@ void virge_draw_textured_triangle(struct virge_ctx *ctx,
                   ((scan_01 & 0x7FF) << 16) |
                   (scan_12 & 0x7FF));
 
-    /* --- Command Set: lit texture triangle with perspective --- */
+    /* --- Command Set: lit texture triangle with perspective ---
+     * No VIRGE_CMD_CLIP_ENABLE -- see the comment in virge.h. */
     uint32_t cmd = VIRGE_CMD_3D
                  | VIRGE_3D_LIT_TEX_PERSP   /* 0101: lit texture + perspective */
                  | ctx->dest_format
                  | ctx->tex_cmd_bits         /* texture format, filter, blend, wrap */
                  | VIRGE_ZB_NORMAL
                  | VIRGE_ZBC_LEQUAL
-                 | VIRGE_ZUP_ENABLE
-                 | VIRGE_CMD_CLIP_ENABLE;
+                 | VIRGE_ZUP_ENABLE;
 
     virge_write32(ctx, VIRGE_3D_CMD_SET, cmd);
 }

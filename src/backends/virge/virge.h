@@ -324,6 +324,18 @@
 /* Bit 1: HC - Hardware Clipping Enable */
 #define VIRGE_CMD_CLIP_ENABLE   (1 << 1)
 
+/* NOT currently OR'd into any CMD_SET write in virge.c. Confirmed on
+ * real hardware (2026-07): CLIP_L_R/CLIP_T_B (MMxxDC/MMxxE0) exhibit
+ * the same "doesn't reliably hold a freshly written value" behavior
+ * independently proven for DEST_BASE -- with HC enabled, every fill
+ * degenerated to painting exactly pixel (0,0) regardless of the
+ * requested rectangle, matching a stale/degenerate clip window rather
+ * than the full-screen one every call site programs. Disabling HC
+ * (leaving this bit clear) makes fills cover the full requested
+ * rectangle. Root cause of why CLIP_L_R/CLIP_T_B don't stick is still
+ * open -- until it's found, do not set this bit; the frontend/demos
+ * are relied upon to only submit on-screen coordinates. */
+
 /* Bits 4-2: DEST FORMAT - Destination Color Format */
 #define VIRGE_DEST_8BPP         (0 << 2)   /* 8 bits/pixel palettized */
 #define VIRGE_DEST_16BPP        (1 << 2)   /* 16 bits/pixel (ZRGB1555) */
