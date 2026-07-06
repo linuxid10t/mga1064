@@ -445,8 +445,13 @@
  *
  * The ViRGE uses fixed-point for interpolation values:
  *   Color (RGBA):  S8.7  — 1 sign + 8 integer + 7 fraction = 16 bits.
- *                  Normalized 0.0–1.0 maps to 0–128. The hardware
- *                  scales to the destination channel width internally.
+ *                  The 8-bit integer part IS the 0–255 channel value:
+ *                  the engine computes channel = value >> 7 and clamps to
+ *                  0–255 (86Box dest_pixel_gouraud_shaded_triangle). So a
+ *                  normalized 0.0–1.0 channel maps to 0–(255<<7) = 0–32640,
+ *                  NOT 0–128 — there is no internal scaling. Full intensity
+ *                  is 32640, which is why the old ×128 scale rendered the
+ *                  cube at ~0.4% brightness (the all-black-cube bug).
  *   Z values:      S16.15 — 1 sign + 16 integer + 15 fraction = 32 bits.
  *                  Same convention as the MGA-1064.
  *   X coordinates: S11.20 — 1 sign + 11 integer + 20 fraction = 32 bits.
@@ -455,7 +460,21 @@
  * ======================================================================== */
 
 #define VIRGE_COLOR_FRAC_BITS   7
-#define VIRGE_COLOR_FIXED(x)    ((int16_t)((x) * (float)(1 << VIRGE_COLOR_FRAC_BITS)))
+/* S8.7 color: scale by 255·2^7 = 32640 (the integer part is the 8-bit
+ * channel value). Clamp to int16: at this scale a color delta of
+ * |dColor/dpixel| >= ~1.0 — steep or near-degenerate triangles where the
+ * plane-equation gradient blows up via a small determinant — would
+ * overflow/wrap int16, so saturate instead. Color starts in [0,1] map to
+ * [0,32640] and never clamp. Used for both starts and deltas in the
+ * Gouraud and textured triangle paths. */
+static inline int16_t virge_color_fixed(float x)
+{
+    float v = x * (float)(255 * (1 << VIRGE_COLOR_FRAC_BITS));  /* ×32640 */
+    if (v >  32767.0f) v =  32767.0f;
+    if (v < -32768.0f) v = -32768.0f;
+    return (int16_t)v;
+}
+#define VIRGE_COLOR_FIXED(x)    virge_color_fixed((float)(x))
 
 #define VIRGE_Z_FRAC_BITS       15
 #define VIRGE_Z_FIXED(x)        ((int32_t)((x) * (float)(1 << VIRGE_Z_FRAC_BITS)))
