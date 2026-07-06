@@ -39,6 +39,7 @@ struct pci_bdf {
     int dev;
     int func;
     uint32_t bar[6];
+    uint32_t bar_size[6];
     int irq;
 };
 
@@ -56,7 +57,8 @@ static int pci_read_hex(const char *path)
     return (int)val;
 }
 
-static int pci_find_device(struct pci_bdf *dev, uint16_t vendor, uint16_t device)
+static int pci_find_device(struct pci_bdf *dev, uint16_t vendor,
+                            const uint16_t *devices, int num_devices)
 {
     FILE *f = popen("ls /sys/bus/pci/devices/", "r");
     if (!f)
@@ -77,7 +79,15 @@ static int pci_find_device(struct pci_bdf *dev, uint16_t vendor, uint16_t device
 
         snprintf(path, sizeof(path),
                  "/sys/bus/pci/devices/%s/device", line);
-        if (pci_read_hex(path) != device)
+        int dev_id = pci_read_hex(path);
+        int matched = 0;
+        for (int k = 0; k < num_devices; k++) {
+            if (dev_id == devices[k]) {
+                matched = 1;
+                break;
+            }
+        }
+        if (!matched)
             continue;
 
         /* Found it — parse BDF */
@@ -97,8 +107,11 @@ static int pci_find_device(struct pci_bdf *dev, uint16_t vendor, uint16_t device
         if (rf) {
             for (int j = 0; j < 6; j++) {
                 unsigned long start, end, flags;
-                if (fscanf(rf, "%lx %lx %lx", &start, &end, &flags) == 3)
+                if (fscanf(rf, "%lx %lx %lx", &start, &end, &flags) == 3 &&
+                    end > start) {
                     dev->bar[j] = (uint32_t)start;
+                    dev->bar_size[j] = (uint32_t)(end - start + 1);
+                }
             }
             fclose(rf);
         }
@@ -133,8 +146,13 @@ static void *map_bar0(struct pci_bdf *dev, size_t *size_out)
              "/sys/bus/pci/devices/%04x:%02x:%02x.%x/resource0",
              dev->domain, dev->bus, dev->dev, dev->func);
 
-    /* ViRGE BAR0 is 64MB (0x4000000) */
-    size_t size = 0x4000000;
+    /* The BAR0 aperture size varies by ViRGE variant and VRAM fitted
+     * (originals are commonly 64MB, but DX/GX/MX parts are often
+     * smaller). The kernel's resourceN mmap rejects lengths longer
+     * than the BAR's actual size, so use what sysfs reported. */
+    size_t size = dev->bar_size[0];
+    if (size == 0)
+        size = 0x4000000;
 
     int fd = open(path, O_RDWR | O_SYNC);
     if (fd < 0) {
@@ -880,8 +898,9 @@ int virge_init(struct virge_ctx *ctx, int width, int height, int bpp)
 
     /* Find the S3 ViRGE on the PCI bus */
     struct pci_bdf pci = {0};
-    int ret = pci_find_device(&pci, S3_PCI_VENDOR_ID,
-                              S3_PCI_DEVICE_VIRGE);
+    static const uint16_t virge_devices[] = S3_PCI_DEVICE_VIRGE_ALL;
+    int ret = pci_find_device(&pci, S3_PCI_VENDOR_ID, virge_devices,
+                              sizeof(virge_devices) / sizeof(virge_devices[0]));
     if (ret < 0) {
         fprintf(stderr, "S3 ViRGE: PCI device not found\n");
         return ret;
@@ -889,7 +908,8 @@ int virge_init(struct virge_ctx *ctx, int width, int height, int bpp)
 
     printf("S3 ViRGE: Found at %04x:%02x:%02x.%x\n",
            pci.domain, pci.bus, pci.dev, pci.func);
-    printf("  BAR0: 0x%08x (64MB aperture)\n", pci.bar[0]);
+    printf("  BAR0: 0x%08x (%u MB aperture)\n", pci.bar[0],
+           pci.bar_size[0] / (1024 * 1024));
 
     ctx->bar0 = pci.bar[0];
 

@@ -32,13 +32,20 @@
 #define S3_PCI_VENDOR_ID   0x5333
 
 /*
- * ViRGE PCI device IDs:
- *   0x5631 - ViRGE (initial stepping)
- *
- * Later steppings and variants (ViRGE/DX, ViRGE/GX) may use different IDs.
- * The core S3d Engine register interface is compatible across variants.
+ * ViRGE PCI device IDs. The core S3d Engine register interface is
+ * compatible across all of these variants.
  */
-#define S3_PCI_DEVICE_VIRGE    0x5631
+#define S3_PCI_DEVICE_VIRGE        0x5631  /* ViRGE (initial stepping) */
+#define S3_PCI_DEVICE_VIRGE_VX     0x883d  /* ViRGE/VX */
+#define S3_PCI_DEVICE_VIRGE_DXGX   0x8a01  /* ViRGE/DX, ViRGE/GX */
+#define S3_PCI_DEVICE_VIRGE_GX2    0x8a10  /* ViRGE/GX2 */
+#define S3_PCI_DEVICE_VIRGE_MX     0x8c00  /* ViRGE/MX */
+#define S3_PCI_DEVICE_VIRGE_MXPLUS 0x8c01  /* ViRGE/MX+ */
+
+/* All known ViRGE device IDs, for probing. */
+#define S3_PCI_DEVICE_VIRGE_ALL { \
+    S3_PCI_DEVICE_VIRGE, S3_PCI_DEVICE_VIRGE_VX, S3_PCI_DEVICE_VIRGE_DXGX, \
+    S3_PCI_DEVICE_VIRGE_GX2, S3_PCI_DEVICE_VIRGE_MX, S3_PCI_DEVICE_VIRGE_MXPLUS }
 
 /* ========================================================================
  * PCI Configuration Space
