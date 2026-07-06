@@ -444,6 +444,22 @@
 #define VIRGE_2D_CMD_LINE       (3 << 27)
 #define VIRGE_2D_CMD_DRAW_ENABLE (1 << 5)
 #define VIRGE_2D_MONO_PATTERN   (1 << 8)
+/* 2D draw direction (DB019-B sec.19.3 "Command Set", PDF pp.232-235):
+ *   bit 25 XP - X Positive: 0 = right-to-left (X negative),
+ *                          1 = left-to-right (X positive)
+ *   bit 26 YP - Y Positive: 0 = bottom-to-top (Y negative),
+ *                          1 = top-to-bottom (Y positive)
+ * Both default to 0 (negative). With them unset a rectangle fill draws
+ * right-to-left/bottom-to-top: DEST_XY is treated as the BOTTOM-RIGHT
+ * corner, so the rect lands up-and-left of the intended position (X wraps
+ * in linear memory, Y<0 goes off-screen). Verified via filltest readback:
+ * a 100x100 rect at (50,50) landed at y=[0,50] with X wrapped full-width,
+ * and a 64x600 strip at (736,0) collapsed to a single row -- both exactly
+ * the negative-direction signature. The datasheet's own rect-fill example
+ * (sec.15.4.4.2, p.121) leaves these bits 0 and is misleading; set both
+ * for a normal top-left origin extending right and down. */
+#define VIRGE_2D_CMD_X_POSITIVE (1 << 25)
+#define VIRGE_2D_CMD_Y_POSITIVE (1 << 26)
 
 /* ROP codes (Microsoft ROP3 convention) */
 #define VIRGE_ROP_BLACKNESS     0x00    /* 0 (black) */

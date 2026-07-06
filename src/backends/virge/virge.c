@@ -780,6 +780,8 @@ void virge_fill_rect(struct virge_ctx *ctx, int x, int y, int w, int h,
     uint32_t cmd = VIRGE_2D_CMD_RECT_FILL
                  | VIRGE_2D_MONO_PATTERN
                  | VIRGE_2D_CMD_DRAW_ENABLE
+                 | VIRGE_2D_CMD_X_POSITIVE
+                 | VIRGE_2D_CMD_Y_POSITIVE
                  | ctx->dest_format
                  | (VIRGE_ROP_PATCOPY << 17);
     /* bit 31 = 0 for 2D */
@@ -849,6 +851,8 @@ void virge_clear_z(struct virge_ctx *ctx, float z)
     uint32_t cmd = VIRGE_2D_CMD_RECT_FILL
                  | VIRGE_2D_MONO_PATTERN
                  | VIRGE_2D_CMD_DRAW_ENABLE
+                 | VIRGE_2D_CMD_X_POSITIVE
+                 | VIRGE_2D_CMD_Y_POSITIVE
                  | ctx->dest_format
                  | (VIRGE_ROP_PATCOPY << 17);
 
