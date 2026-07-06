@@ -177,6 +177,12 @@ int main(int argc, char **argv)
 
     normalize(light_dir);
 
+    /* L10GL_STATIC=1: render a single frame and idle, so it can be
+     * photographed without tearing. Used to tell whether the animated
+     * cube's "blacked out below ~2/5" is a render limit or vsync-less
+     * single-buffer tearing (a static frame has no re-clear cycle). */
+    int static_mode = getenv("L10GL_STATIC") != NULL;
+
     /* Set clear values */
     l10gl_clear_color(&ctx, 0.0f, 0.0f, 0.0f);   /* black background */
     l10gl_clear_depth(&ctx, 1.0f);                /* far Z */
@@ -185,7 +191,8 @@ int main(int argc, char **argv)
     float angle = 0.0f;
     int frame = 0;
 
-    printf("Rendering... (Ctrl-C to exit)\n");
+    printf("Rendering... (Ctrl-C to exit)%s\n",
+           static_mode ? "  [L10GL_STATIC: one frame, then idle]" : "");
 
     while (running) {
         float rot[3][3];
@@ -249,6 +256,13 @@ int main(int argc, char **argv)
         }
 
         l10gl_wait_engine(&ctx);
+
+        if (static_mode) {
+            printf("Static frame %d rendered. Ctrl-C to exit.\n", frame);
+            while (running)
+                usleep(100000);
+            break;
+        }
 
         angle += 0.02f;
         if (angle > 2.0f * PI)
