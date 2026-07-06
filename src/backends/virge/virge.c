@@ -307,6 +307,13 @@ void virge_fill_rect(struct virge_ctx *ctx, int x, int y, int w, int h,
     /* Foreground color = fill color */
     virge_write32(ctx, VIRGE_2D_PAT_FG_CLR, color);
 
+    /* Mono pattern data: all 64 bits set selects the foreground color
+     * for every pixel in the pattern tile. Without this, the pattern
+     * bits are whatever was last left in these registers, and some
+     * pixels silently get PAT_BG_CLR (also uninitialized) instead. */
+    virge_write32(ctx, VIRGE_2D_MONO_PAT_0, 0xFFFFFFFF);
+    virge_write32(ctx, VIRGE_2D_MONO_PAT_1, 0xFFFFFFFF);
+
     /* Width and height: W-1 in [26:16], H in [10:0] */
     virge_write32(ctx, VIRGE_2D_RWIDTH_HEIGHT,
                   (((w - 1) & 0x7FF) << 16) | (h & 0x7FF));
@@ -364,6 +371,10 @@ void virge_clear_z(struct virge_ctx *ctx, float z)
 
     /* Fill color = the Z value repeated */
     virge_write32(ctx, VIRGE_2D_PAT_FG_CLR, z_color);
+
+    /* See virge_fill_rect() for why this is required. */
+    virge_write32(ctx, VIRGE_2D_MONO_PAT_0, 0xFFFFFFFF);
+    virge_write32(ctx, VIRGE_2D_MONO_PAT_1, 0xFFFFFFFF);
 
     /* Width = width * 2 bytes (since Z is 16-bit), height = screen height */
     int z_width_bytes = ctx->width * 2;
