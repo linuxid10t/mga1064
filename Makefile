@@ -55,5 +55,11 @@ triangle: demos/triangle.c $(CORE_SRCS) src/l10gl.h src/backends/$(BACKEND)/$(BA
 fbtest: demos/fbtest.c
 	$(CC) $(CFLAGS) -o $@ demos/fbtest.c
 
+# Diagnostic: ViRGE scanout layout probe + CR67/pitch takeover experiment.
+# Always builds against the virge backend (it is virge-specific), needs no
+# frontend — just the chip driver.
+scantest: demos/scantest.c src/backends/virge/virge.c src/backends/virge/virge.h
+	$(CC) $(CFLAGS) -o $@ demos/scantest.c src/backends/virge/virge.c $(LDFLAGS)
+
 clean:
 	rm -f $(DEMOS) *.o src/*.o src/backends/*/*.o

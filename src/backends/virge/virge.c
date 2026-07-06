@@ -43,6 +43,20 @@ static void vga_crtc_write(uint8_t index, uint8_t value)
     outb(value, VIRGE_VGA_CRTC_DATA);
 }
 
+/* Exported CRTC access for diagnostic tools (demos/scantest.c). Only
+ * valid after virge_init() has run in this process: ioperm() port
+ * grants are per-process and the CR40+ range needs the CR38/CR39
+ * unlock, both done in vga_ensure_new_mmio(). */
+uint8_t virge_crtc_peek(uint8_t index)
+{
+    return vga_crtc_read(index);
+}
+
+void virge_crtc_poke(uint8_t index, uint8_t value)
+{
+    vga_crtc_write(index, value);
+}
+
 /*
  * Make sure the MMIO aperture at BAR0 + VIRGE_MMIO_OFFSET is actually
  * routed to silicon before anything tries to use it. See the CR53

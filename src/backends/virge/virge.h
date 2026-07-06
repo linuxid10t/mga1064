@@ -599,6 +599,14 @@ void virge_wait_engine(struct virge_ctx *ctx);
 void virge_wait_vsync(struct virge_ctx *ctx);
 
 /*
+ * virge_crtc_peek/poke - Raw CRTC register access for diagnostic tools
+ * (demos/scantest.c). Only valid after virge_init() has run in this
+ * process (ioperm grants + CR38/CR39 unlock happen there).
+ */
+uint8_t virge_crtc_peek(uint8_t index);
+void virge_crtc_poke(uint8_t index, uint8_t value);
+
+/*
  * virge_clear_z - Clear the Z buffer to a given value.
  * @ctx:  Driver context.
  * @z:    Z value to fill (0.0 = near, 1.0 = far).
