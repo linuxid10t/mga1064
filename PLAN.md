@@ -31,6 +31,13 @@ Priorities, in order:
    keep changes small, and never bundle a behavioral change with a refactor —
    the human tests on real hardware and needs to bisect.
 
+**Primary sources are in the repo**: `docs/datasheets/` contains the full
+S3 ViRGE databook (DB019-B) and the Matrox MGA-1064SG specification, with
+a section→PDF-page index and a list of already-verified register facts in
+`docs/datasheets/README.md`. Read the relevant section before writing
+register code; cite it in comments. Task descriptions below cite PDF page
+numbers of DB019-B where a claim was verified.
+
 ## Current state snapshot (July 2026)
 
 Works (verified on a real ViRGE):
@@ -75,15 +82,21 @@ uint32_t cmd = ((0x06 << 27) & 0x1F)  /* 2D line = bits [30:27] = 0110 */
 ```
 
 `(0x06 << 27) & 0x1F` evaluates to **0** — the command-type field is erased
-and the register write at `0xA900` programs a BitBLT (command 0), not a line.
-The intended value is `(0x06 << 27)` with no mask (or `& (0x1F << 27)` if a
-mask is wanted at all). Also note the line path never sets
-`VIRGE_2D_CMD_DRAW_ENABLE` (bit 5) — the same "engine runs but writes no
-pixels" trap already fixed for rect fill in commit `98a6169`. Set it.
+and the register write at `0xA900` programs a BitBLT (command 0), not a
+line. Worse, the unmasked value was *also* wrong: per the datasheet's 2D
+line example (§15.4.4.3, DB019-B PDF p. 124, which writes
+`0001 100S ... 0010 00S1` to MMA900) the 2D line command code is
+**0011b (3)**, not 0110b — so the fix is `(0x03 << 27)`. The same example
+confirms DE (bit 5) must be set — the "engine runs but writes no pixels"
+trap already fixed for rect fill in commit `98a6169` — and that the mono
+pattern bit (8) is *not* set for lines. The comment in `virge.c` claiming
+"bits [28:27] = 11" in `virge.h`'s 2D command notes is the correct reading;
+the code just never implemented it. While here, verify END0/END1 sign rules
+(top 5 bits must be 0, §15.4.4.3 PDF p. 123) and the X-major half-pixel
+X START adjustment against the worked example.
 
-*Acceptance:* `virge_draw_line` programs command type 0110 with DE set;
-compiles under `make BACKEND=virge`; human verifies a line-drawing test on
-hardware.
+*Acceptance:* `virge_draw_line` programs command type 0011b with DE set;
+compiles cleanly; human verifies a line-drawing test on hardware.
 
 ### V2. Fix Z-clear width/format mismatch
 `src/backends/virge/virge.c:386` (`virge_clear_z`): the comment says "use
@@ -96,6 +109,8 @@ Either (a) use `VIRGE_DEST_8BPP` and keep byte-based width, or (b) keep
 16bpp and pass width in pixels (`ctx->width`) with clip right =
 `ctx->width - 1`. Option (b) is preferred: the fill color is already a
 16-bit Z value packed twice, and 16bpp fills are what's proven to work.
+(The 2D engine's 16bpp mode is format-agnostic — "RGB1555 or RGB565",
+DB019-B PDF p. 232 — so raw 16-bit Z words pass through unmodified.)
 
 *Acceptance:* Z-clear width, clip, stride, and dest format are dimensionally
 consistent (all-pixels or all-bytes). Human verifies depth testing still
@@ -109,11 +124,15 @@ draw paths hardcode `VIRGE_ZB_NORMAL | VIRGE_ZBC_LEQUAL | VIRGE_ZUP_ENABLE`.
 Add a helper in `l10gl_virge.c` (or pass a `z_cmd_bits` field through
 `struct virge_ctx` like `dest_format`) that computes:
 - depth test disabled → `VIRGE_ZB_NONE` (skip Z compare and Z fetch entirely)
-- enabled → `VIRGE_ZB_NORMAL` + map `enum l10gl_depth_func` to `VIRGE_ZBC_*`
-  (the enums at `virge.h:337` cover all 8 GL functions; note ViRGE compares
-  `Zs <op> Zzb`, same operand order as GL — verify LESS maps to
-  `VIRGE_ZBC_LESS`, no inversion)
-- `depth_writes_enabled` → `VIRGE_ZUP_ENABLE`/`VIRGE_ZUP_DISABLE`
+- enabled → `VIRGE_ZB_NORMAL` + map `enum l10gl_depth_func` to `VIRGE_ZBC_*`.
+  Verified: the compare codes at `virge.h:337` match §15.4.6 (DB019-B PDF
+  p. 129) exactly, and the operand order is `Zs <op> Zzb` — same as GL, no
+  inversion needed. Note the datasheet defines Z-buffering as active iff
+  ZB MODE (bits 25-24) = 00b *and* compare code ≠ 000b; it doesn't describe
+  ZB MODE = 11b, so verify `VIRGE_ZB_NONE` behaves as "no Z" on hardware
+  (fallback: ZB_NORMAL + ZBC_ALWAYS + ZUP per depth mask)
+- `depth_writes_enabled` → `VIRGE_ZUP_ENABLE`/`VIRGE_ZUP_DISABLE` (bit 23,
+  PDF p. 129)
 
 Apply in both `virge_draw_triangle_gouraud` and
 `virge_draw_textured_triangle` (change their signatures to accept the bits,
@@ -130,9 +149,14 @@ Same pattern as V3. The glue caches `blend_enabled` but never applies it.
 When blending is enabled, set CMD_SET bits 19-18: `VIRGE_BLEND_SRC_ALPHA`
 for Gouraud triangles, and for textured triangles choose
 `VIRGE_BLEND_SRC_ALPHA` vs `VIRGE_BLEND_TEX_ALPHA` based on whether the
-bound texture format has alpha. Document in `l10gl.h` that ViRGE blending
-is fixed-function `src*A + dst*(1-A)` and the `blend_func` factors are
-advisory (only `SRC_ALPHA, ONE_MINUS_SRC_ALPHA` is honored in hardware).
+bound texture format has alpha (semantics verified, §15.4.8.5, DB019-B PDF
+p. 134). Document in `l10gl.h` that ViRGE blending is fixed-function
+`src*A + dst*(1-A)` and the `blend_func` factors are advisory (only
+`SRC_ALPHA, ONE_MINUS_SRC_ALPHA` is honored in hardware). Two datasheet
+constraints to encode: fog (bit 17) and source-alpha blending are mutually
+exclusive (§15.4.8.4), and correct transparency with Z requires opaque
+geometry first, then transparent draws with Z-update disabled (§15.4.8.5)
+— document the latter as an application-side rule.
 
 *Acceptance:* a demo triangle with `a = 0.5` and blending enabled renders
 translucent on hardware; with blending disabled, opaque.
@@ -147,10 +171,12 @@ wrapper (same pattern as `l10gl_draw_triangle`).
 ### V6. Detect actual VRAM size (CR36) instead of assuming 4MB
 `virge.h:61` hardcodes 4MB with a comment explaining the risk. During
 `vga_ensure_new_mmio()` (I/O port access is already set up there), read
-CR36 "Configuration 1" bits 7-5 and map to fitted VRAM (per DB019-B:
-000=4MB, 100=2MB VX variants differ — gate the decode on the PCI device ID
+CR36 "Configuration 1" bits 7-5. Verified decode for the base 86C325
+(DB019-B PDF p. 197): 000 = 4MB, 100 = 2MB, all other values reserved;
+the bits are power-on straps and reads need no unlock. VX/DX/GX variants
+have different memory-size tables — gate the decode on the PCI device ID
 already stored in `pci.device_id` and fall back to 2MB, the smallest
-shipped config, when the decode is ambiguous). Store into
+shipped config, when the decode is ambiguous or reserved. Store into
 `ctx->vram_size`; texture allocation (`l10gl_virge.c:313`) already checks
 against it.
 
@@ -160,35 +186,48 @@ reality; texture OOM check uses the detected value.
 ### V7. Sub-pixel correctness pass on triangle edge setup (verify-on-HW task)
 `virge_draw_triangle_gouraud` truncates vertex coordinates to int for edge
 setup and computes slopes from truncated endpoints. This produces cracks
-and shimmer between adjacent triangles. Per the DB019-B triangle
-programming example: XSTART/XEND are S11.20 (already the case) but the Y
-walk starts at the integer scanline of the bottom vertex — the start X must
-be adjusted by the sub-pixel Y offset (`x_start += dXdY * frac(y_bot)`),
-and similarly attribute starts (Z/R/G/B/A) should be evaluated at the
-first sample point, not at the raw vertex. Implement the adjustment; keep
-it behind small, separately committed steps because this touches the
-proven-working path.
+and shimmer between adjacent triangles. Important sourcing caveat,
+verified against the databook: **DB019-B does not contain the triangle
+setup formulas** — §15.4.5.2 (PDF p. 127) states 3D setup code "will be
+provided by S3 to customers", and the register descriptions only define
+semantics: rendering runs bottom-to-top starting "at the first scan line
+at or above the starting vertex", TXEND01/12 hold the X of the *last
+pixel drawn* on the side (S11.20, sign must be 0; PDF pp. 270-271), and
+Figure 15-6 (PDF p. 128) shows vertices off pixel centers. The correct
+derivation therefore comes from adjusting starts to the first sample
+point (`x_start += dXdY * frac(y_bot)`, attribute starts evaluated there
+too — analogous to the documented 2D-line X-major half-pixel rule,
+§15.4.4.3) and cross-checking against the XFree86 `s3virge` driver, which
+encodes S3's reference setup. Keep it behind small, separately committed
+steps because this touches the proven-working path.
 
 *Acceptance:* the cube demo shows no pixel cracks along shared face edges;
 no regression in overall shape. This one requires human hardware validation
 before merging further work on top.
 
-### V8. Verify 16bpp destination format vs scanout format (555 vs 565)
-`virge.h:316` notes the S3d engine's 16bpp destination format is
-**ZRGB1555**, but the glue converts colors as RGB565 (`l10gl_virge.c:25`)
-and the fbdev console mode may scan out either 555 or 565 depending on how
-the fb driver set up the DAC/streams. If the engine interpolates/writes
-1555 while the display decodes 565 (or vice versa), colors are subtly wrong
-(green channel shifted, intensity off). Read the actual channel layout from
-`FBIOGET_VSCREENINFO` (`red/green/blue.offset/length`), make the glue's
-color packing match it, and confirm from DB019-B what the S3d 16bpp
-destination write format really is at our mode. This is investigation +
-small fix, not a feature; it also feeds directly into Phase 3's mode work,
-where we get to *choose* the scanout format instead of guessing it.
+### V8. Fix the 16bpp pixel-format split: 3D writes 1555, glue packs 565
+Settled against the databook — this is a real bug, not an investigation.
+The **3D engine's** 16bpp destination format is **ZRGB1555 only** (3D
+CMD_SET description, DB019-B PDF p. 250), while the **2D engine's** 16bpp
+mode is format-agnostic ("RGB1555 or RGB565", PDF p. 232) and the scanout
+format is independently chosen by CR67 bits 7-4 — Mode 9 = 15-bit,
+Mode 10 = 16-bit (PDF p. 216). The current glue packs all colors as
+RGB565 (`l10gl_virge.c:25`). Consequence on a 565 console (the common
+fbdev default): 2D fills scan out correctly but every Gouraud/textured
+triangle is written as 555 and decoded as 565 — green shifted, colors
+subtly wrong, and fills visibly disagree with triangles.
 
-*Acceptance:* a test pattern of pure red/green/blue/white fills and Gouraud
-ramps shows correct, unshifted colors on hardware; color packing in the
-glue is derived from (or validated against) the live mode, not hardcoded.
+Fix: the driver must run 16bpp with **15-bit (555) scanout end-to-end**.
+Read the live channel layout from `FBIOGET_VSCREENINFO`
+(`green.length`: 5 vs 6); if the mode is 565, request the 555 equivalent
+via fbdev (or, until Phase 3 P1 lands, fail loudly with an explanation);
+pack all colors as ARGB1555 to match. Native CR67 programming of Mode 9
+belongs to P6, which this task feeds.
+
+*Acceptance:* a test pattern of pure red/green/blue/white 2D fills next
+to Gouraud ramps of the same colors shows identical, unshifted color on
+hardware; color packing in the glue is derived from the live mode's
+channel layout, not hardcoded.
 
 ---
 
@@ -394,10 +433,13 @@ Allocate buffer 2 after the front buffer in the VRAM layout
 VRAM budget: 800×600×2×2 + Z 800×600×2 ≈ 2.8MB, so 4MB cards handle
 800×600 double buffered, 2MB cards are capped at 640×480). Rendering
 retarget = reprogram `VIRGE_3D_DEST_BASE`/`VIRGE_2D_DEST_BASE` per flip.
-Scanout retarget = program the display start address over the CRTC
-(CR31[5:4]/CRTC start-address low/high plus extended CR69 on later
-variants — gate on device ID, document register choice from DB019-B §18).
-Flip at vsync using the existing `virge_wait_vsync`.
+Scanout retarget = program the display start address over the CRTC.
+Verified mechanism (DB019-B PDF p. 193): start address = CRC/CRD
+(bits 15-0), extended by CR31 bits 5-4 (addr 17-16) + CR51 bits 1-0
+(addr 19-18); if CR69 bits 3-0 are non-zero they become the upper address
+bits and supersede the CR31/CR51 extensions entirely. Use the CR69 path —
+one register instead of two split fields. Flip at vsync using the
+existing `virge_wait_vsync`.
 
 ### P5. swrast + mga1064 double buffering
 swrast: trivial (two malloc'd buffers or fbdev pan via
@@ -413,7 +455,8 @@ driver. This is the largest single block of new register programming in
 the plan; keep it strictly isolated and behind an opt-in
 (`L10GL_MODESET=native`) until proven.
 
-Scope, per DB019-B:
+Scope, per DB019-B (§13.4 mode setup, PDF pp. 89-101; §9 clocks, PDF
+pp. 65-67; CR67, PDF p. 216):
 - A small **fixed mode table** (640×480, 800×600, 1024×768 at 60/75Hz,
   16bpp) using canonical VESA timings — no general mode timing calculator.
 - Memory/dot clock PLL programming (SR12/SR13, plus the SR15 load
@@ -422,9 +465,10 @@ Scope, per DB019-B:
   (CR5D/CR5E), screen offset/stride (CR13 + CR51 extension), and the
   enhanced-mode bits already partially handled in bring-up (CR31/CR3A/
   CR58 linear-window size).
-- Scanout pixel format selection (this resolves V8 definitively: we choose
-  555 or 565 rather than inheriting it) — on DX/GX variants via the
-  streams processor, on the base 325 via CR67.
+- Scanout pixel format via CR67 bits 7-4: program **Mode 9 (15-bit)** at
+  16bpp depth so scanout matches the 3D engine's ZRGB1555 output (see
+  V8); Mode 13 for 24bpp. Streams-processor scanout paths on later
+  variants are out of scope until the base path works.
 - **Full save/restore**: snapshot every register the modeset touches at
   init and restore on exit, so the console comes back even from a native
   modeset. Build on P2's restore path.
@@ -509,11 +553,11 @@ card (human validation, later).
 Ordered by expected win/effort on the ViRGE:
 
 1. **FIFO-aware submission.** Every draw currently spins for full engine
-   idle (`virge_wait_engine`) before touching registers. DB019-B §22
-   documents command-FIFO free-slot status in SUBSYS_STATUS; wait for
-   enough free slots instead of idle so triangle setup overlaps
-   rasterization. Keep full-idle waits before CPU framebuffer access and
-   buffer flips.
+   idle (`virge_wait_engine`) before touching registers. Verified
+   (DB019-B PDF p. 300): MM8504 read bits 12-8 report S3d FIFO slots
+   free, and the FIFO is 16 slots deep. Wait for enough free slots
+   instead of idle so triangle setup overlaps rasterization. Keep
+   full-idle waits before CPU framebuffer access and buffer flips.
 2. **Dirty-state tracking.** Skip re-writing CLIP/STRIDE/DEST_BASE per
    draw (`virge_fill_rect` reprograms them every call); cache last-written
    values in `virge_ctx`, invalidate on Z-clear's base swap.
@@ -541,9 +585,11 @@ Each item needs before/after frame-rate numbers from the cube demo
   programming cannot be verified by agents — state explicitly in the PR/
   commit what the human should observe on hardware, and keep such changes
   isolated so a failed hardware test bisects to one commit.
-- **Register facts need citations.** When adding register programming,
-  cite the datasheet section (ViRGE: DB019-B; Matrox: MGA-1064SG spec) in
-  the comment, as the existing headers do.
+- **Register facts need citations.** The full datasheets are in
+  `docs/datasheets/` with a section→PDF-page index in its README. When
+  adding register programming, read the section first and cite it
+  (ViRGE: DB019-B §/page; Matrox: MGA-1064SG spec) in the comment, as the
+  existing headers do. Never write register code from memory of the chip.
 - **Don't break the bring-up path.** `vga_ensure_new_mmio()` and the S3d
   enable sequence in `virge_init` encode hard-won hardware knowledge;
   changes there require explicit human sign-off.
