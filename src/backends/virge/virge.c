@@ -467,12 +467,25 @@ void virge_wait_engine(struct virge_ctx *ctx)
 
 void virge_wait_vsync(struct virge_ctx *ctx)
 {
-    /* Wait for vsync to end (not in retrace) */
-    while (virge_read32(ctx, VIRGE_SUBSYS_STATUS) & VIRGE_STATUS_VSYNC)
-        ;
-    /* Wait for vsync to start (entering retrace) */
-    while (!(virge_read32(ctx, VIRGE_SUBSYS_STATUS) & VIRGE_STATUS_VSYNC))
-        ;
+    /* SUBSYS_STATUS bit 0 (VSY INT) is a LATCHED interrupt status, not
+     * a live retrace level: it stays 1 until software writes VSY CLR to
+     * the write-only Subsystem Control register (DB019-B §22, PDF
+     * pp.299-301). The old code here waited for the bit to fall on its
+     * own — it never does, so every call after the first spun forever
+     * (hard-hung scantest phase 2 on real hardware). Correct sequence:
+     * clear the latch, then wait for the next vsync to set it again.
+     *
+     * The latch holds the event, so sleep-polling loses nothing; the
+     * poll is also bounded so a misconfigured scanout (no vsync being
+     * generated) degrades to a warning instead of an unkillable spin. */
+    virge_write32(ctx, VIRGE_SUBSYS_CONTROL, VIRGE_SSC_VSY_CLR);
+    for (int i = 0; i < 1250; i++) {   /* 1250 * 200us = 250ms bound */
+        if (virge_read32(ctx, VIRGE_SUBSYS_STATUS) & VIRGE_STATUS_VSYNC)
+            return;
+        usleep(200);
+    }
+    fprintf(stderr, "S3 ViRGE: wait_vsync timed out (no vsync in 250ms) "
+                    "-- proceeding without sync\n");
 }
 
 /* ========================================================================

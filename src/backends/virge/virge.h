@@ -88,7 +88,12 @@
  * Inverted from what the name might suggest -- do not read this as
  * "busy when set". */
 #define VIRGE_STATUS_3DIDLE     (1 << 13)
-#define VIRGE_STATUS_VSYNC      (1 << 0)   /* Vertical sync (in retrace) */
+/* Bit 0 is VSY INT — a LATCHED vertical-sync interrupt status, NOT a
+ * live "in retrace" level (DB019-B §22, PDF p.299). Once vsync occurs
+ * it reads 1 forever until software writes VSY CLR (Subsystem Control
+ * bit 0). Polling it for a 0->1 edge without clearing first spins
+ * forever — the scantest phase-2 hang on real hardware (2026-07-06). */
+#define VIRGE_STATUS_VSYNC      (1 << 0)
 
 /* Advanced Function Control bit definitions.
  * Bit 0 enables the 8514/A-compatible accelerated register interface —
@@ -195,6 +200,9 @@
 #define VIRGE_SUBSYS_CONTROL     0x8504
 #define VIRGE_SSC_S3D_RESET      (2 << 14)
 #define VIRGE_SSC_S3D_ENABLE     (1 << 14)
+/* Writing bits 15-14 = 00b means "no change" (DB019-B §22, PDF p.301),
+ * so interrupt-clear writes below don't disturb the engine enable. */
+#define VIRGE_SSC_VSY_CLR        (1 << 0)   /* clear latched VSY INT */
 
 /* ========================================================================
  * 2D Register Bank — BitBLT / Rectangle Fill
