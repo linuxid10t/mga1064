@@ -137,15 +137,21 @@
 #define VIRGE_CR39_UNLOCK_KEY   0xA5
 
 /* CR36 "Configuration Register 1" — samples reset/strap state from the
- * PD bus. Bits 7-5 (MEM SIZE) report fitted VRAM (DB019-B PDF p.197,
- * base 86C325): 000 = 4MB, 100 = 2MB, all other values reserved.
- * Readable without unlock; writable only after the CR39 key above. The
- * VX/DX/GX variants use a different MEM SIZE table not documented in
- * DB019-B, so decode only for the base device id and fall back
- * conservatively otherwise (see virge_detect_vram in virge.c). */
-#define VIRGE_CR36              0x36
-#define VIRGE_CR36_MEM_SIZE_SHIFT 5
-#define VIRGE_CR36_MEM_SIZE_MASK  (0x7 << 5)
+ * PD bus at reset. Readable without unlock; writable only after the
+ * CR39 key above.
+ *
+ * The MEM SIZE field is in a DIFFERENT bit position per chip family:
+ *   base 86C325, DX, GX: bits 7-5 (DB019-B PDF p.197) — 000 = 4MB,
+ *       100 = 2MB, all other values reserved.
+ *   ViRGE/VX (86C375): bits 6-5 (DB025-A §18) — 00 = 2MB, 01 = 4MB,
+ *       10 = 6MB, 11 = 8MB. Bit 7 on the VX is a separate strap
+ *       (8-column block-write support), so its field is 2 bits, not 3.
+ * virge_detect_vram dispatches on device id and reads the right field;
+ * GX2/MX/MX+ layouts are undocumented (no datasheet) and fall back. */
+#define VIRGE_CR36                  0x36
+#define VIRGE_CR36_MEM_SIZE_SHIFT   5            /* both fields start at bit 5 */
+#define VIRGE_CR36_MEM_SIZE_MASK    (0x7u << 5)  /* base/DX/GX: bits 7-5 */
+#define VIRGE_CR36_VX_MEM_SIZE_MASK (0x3u << 5)  /* VX: bits 6-5 (DB025-A) */
 
 #define VIRGE_CR53              0x53   /* Extended Memory Control 1 */
 #define VIRGE_CR53_MMIO_MASK    (0x3 << 3)

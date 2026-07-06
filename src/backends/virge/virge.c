@@ -108,38 +108,66 @@ static int vga_ensure_new_mmio(void)
 }
 
 /*
- * Detect installed VRAM from the CR36 MEM SIZE straps (bits 7-5).
- * DB019-B PDF p.197 documents the base 86C325 decode (000 = 4MB,
- * 100 = 2MB, all other values reserved). The straps are power-on and
- * readable without unlock (CR39 unlock in vga_ensure_new_mmio covers
- * writes anyway). The VX/DX/GX variants use a different MEM SIZE table
- * not documented in DB019-B, so for any non-base device id we fall back
- * to 2MB (the smallest shipped config) rather than risk a mis-decode.
- * Must be called after vga_ensure_new_mmio() has set up I/O port access.
+ * Detect installed VRAM from the CR36 MEM SIZE power-on straps. The MEM
+ * SIZE field is NOT in the same bit position across the family, so
+ * dispatch on PCI device id and read the field each chip documents:
+ *
+ *   base ViRGE (86C325, 0x5631) — bits 7-5 (DB019-B PDF p.197):
+ *       000 = 4MB, 100 = 2MB, others reserved.
+ *   ViRGE/DX + /GX (0x8a01) — bits 7-5: 86Box programs these exact
+ *       strap values for a 4MB (000) and 2MB (100) DX/GX
+ *       (vid_s3_virge.c s3_virge_init), matching the base table.
+ *       Needs HW confirmation: the VX sibling uses bits 6-5, so if a
+ *       4MB DX/GX does NOT read bits 7-5 = 000, switch DX/GX to 6-5.
+ *   ViRGE/VX (0x883d) — bits 6-5 (DB025-A §18, CR36 "Configuration 1"):
+ *       00 = 2MB, 01 = 4MB, 10 = 6MB, 11 = 8MB. Bit 7 on the VX is a
+ *       separate strap (8-column block-write support), NOT MEM SIZE —
+ *       hence the 2-bit field, unlike the base/DX/GX 3-bit field.
+ *
+ * ViRGE/GX2 (0x8a10), MX/MX+ (0x8c00/0x8c01): no datasheet documents
+ * their MEM SIZE layout (DB019-B is base-only, DB025-A is VX-only, and
+ * 86Box models GX2 only at its hardcoded 4MB point), so fall back to 2MB
+ * (smallest shipped config) rather than mis-decode.
+ *
+ * Straps are power-on and readable without unlock (CR39 unlock in
+ * vga_ensure_new_mmio covers writes anyway). Must be called after
+ * vga_ensure_new_mmio() has set up I/O port access.
  */
 static uint32_t virge_detect_vram(uint16_t device_id)
 {
     uint8_t cr36 = vga_crtc_read(VIRGE_CR36);
-    uint8_t mem_size = (cr36 & VIRGE_CR36_MEM_SIZE_MASK)
-                       >> VIRGE_CR36_MEM_SIZE_SHIFT;
 
-    if (device_id != S3_PCI_DEVICE_VIRGE) {
-        printf("S3 ViRGE: CR36=0x%02x (MEM SIZE=%u); device 0x%04x MEM SIZE "
-               "table not in DB019-B, assuming 2MB\n",
-               cr36, mem_size, device_id);
+    switch (device_id) {
+    case S3_PCI_DEVICE_VIRGE:        /* base 86C325: bits 7-5 (DB019-B) */
+    case S3_PCI_DEVICE_VIRGE_DXGX: { /* DX/GX: bits 7-5 (86Box) */
+        uint8_t ms = (cr36 & VIRGE_CR36_MEM_SIZE_MASK)
+                     >> VIRGE_CR36_MEM_SIZE_SHIFT;  /* bits 7-5 */
+        uint32_t vram;
+        const char *label;
+        switch (ms) {
+        case 0x0: vram = 4u * 1024 * 1024; label = "4MB";            break;
+        case 0x4: vram = 2u * 1024 * 1024; label = "2MB";            break;
+        default:  vram = 2u * 1024 * 1024; label = "reserved -> 2MB"; break;
+        }
+        printf("S3 ViRGE: CR36=0x%02x (bits 7-5=%u) -> detected %s VRAM\n",
+               cr36, ms, label);
+        return vram;
+    }
+    case S3_PCI_DEVICE_VIRGE_VX: {   /* VX: bits 6-5 (DB025-A §18) */
+        uint8_t ms = (cr36 & VIRGE_CR36_VX_MEM_SIZE_MASK)
+                     >> VIRGE_CR36_MEM_SIZE_SHIFT;  /* bits 6-5 */
+        static const uint32_t mb[4] = { 2, 4, 6, 8 };
+        uint32_t vram = mb[ms] * 1024u * 1024u;
+        printf("S3 ViRGE/VX: CR36=0x%02x (bits 6-5=%u) -> detected %uMB VRAM\n",
+               cr36, ms, mb[ms]);
+        return vram;
+    }
+    default: {
+        printf("S3 ViRGE: CR36=0x%02x; device 0x%04x MEM SIZE strap not "
+               "documented (no datasheet), assuming 2MB\n", cr36, device_id);
         return 2u * 1024 * 1024;
     }
-
-    uint32_t vram;
-    const char *label;
-    switch (mem_size) {
-    case 0x0: vram = 4u * 1024 * 1024; label = "4MB";              break;
-    case 0x4: vram = 2u * 1024 * 1024; label = "2MB";              break;
-    default:  vram = 2u * 1024 * 1024; label = "reserved -> 2MB";   break;
     }
-    printf("S3 ViRGE: CR36=0x%02x (MEM SIZE=%u) -> detected %s VRAM\n",
-           cr36, mem_size, label);
-    return vram;
 }
 
 /* ========================================================================
