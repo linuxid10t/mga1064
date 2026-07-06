@@ -52,6 +52,10 @@ struct virge_private {
 
     /* Cached blend state */
     int blend_enabled;
+
+    /* Whether the currently-bound texture has an alpha channel (drives
+     * the textured-path ABC choice: TEX_ALPHA vs SRC_ALPHA). */
+    int tex_has_alpha;
 };
 
 static inline struct virge_private *VIRGE_PRIV(struct l10gl_ctx *ctx)
@@ -102,6 +106,39 @@ static void virge_update_z_cmd_bits(struct virge_private *priv)
                                ? VIRGE_ZUP_ENABLE
                                : VIRGE_ZUP_DISABLE);
     }
+}
+
+/* Does an L10GL texture format carry an alpha channel? Drives the
+ * textured-path blend choice (DB019-B sec.15.4.8.5, PDF p.134): a texel
+ * alpha is available for ARGB8888/4444/1555, so use TEX_ALPHA (10b);
+ * RGB565 and PAL8 have no alpha, so fall back to the vertex/source alpha
+ * (SRC_ALPHA, 11b). */
+static int virge_tex_format_has_alpha(enum l10gl_tex_format fmt)
+{
+    return fmt == L10GL_TEX_FMT_ARGB8888 ||
+           fmt == L10GL_TEX_FMT_ARGB4444 ||
+           fmt == L10GL_TEX_FMT_ARGB1555;
+}
+
+/* Recompute the cached alpha-blending CMD_SET bits [19-18] (ABC) for both
+ * triangle paths. Gouraud always uses source (vertex) alpha when blending
+ * is on; the textured path prefers the texture's own alpha if the bound
+ * texture has one, else the source alpha. Blending off -> NONE on both.
+ * ViRGE blend is fixed src*A + dst*(1-A); the GL blend_func factors are
+ * advisory. NOTE: fog (CMD_SET bit 17) and source-alpha blending (11b)
+ * are mutually exclusive (§15.4.8.4) -- not encoded here because fog is
+ * not implemented yet; revisit when L10GL_CAP_FOG lands. */
+static void virge_update_blend_bits(struct virge_private *priv)
+{
+    if (!priv->blend_enabled) {
+        priv->hw.gouraud_blend_bits = VIRGE_BLEND_NONE;
+        priv->hw.textured_blend_bits = VIRGE_BLEND_NONE;
+        return;
+    }
+    priv->hw.gouraud_blend_bits = VIRGE_BLEND_SRC_ALPHA;
+    priv->hw.textured_blend_bits = priv->tex_has_alpha
+                                 ? VIRGE_BLEND_TEX_ALPHA
+                                 : VIRGE_BLEND_SRC_ALPHA;
 }
 
 /* ========================================================================
@@ -192,10 +229,13 @@ static int virge_be_init(struct l10gl_ctx *ctx, int w, int h, int bpp)
     priv->tex_filter = L10GL_FILTER_NEAREST;
     priv->tex_wrap = L10GL_WRAP_REPEAT;
     priv->blend_enabled = 0;
+    priv->tex_has_alpha = 0;
 
     /* Seed ctx->z_cmd_bits from the defaults above (GL default: LESS).
-     * Overrides the LEQUAL default virge_init set for direct callers. */
+     * Overrides the LEQUAL default virge_init set for direct callers.
+     * Blend defaults to off (NONE) on both triangle paths. */
     virge_update_z_cmd_bits(priv);
+    virge_update_blend_bits(priv);
 
     return 0;
 }
@@ -260,7 +300,9 @@ static void virge_be_depth_test(struct l10gl_ctx *ctx, int enable)
 
 static void virge_be_blend_enable(struct l10gl_ctx *ctx, int enable)
 {
-    VIRGE_PRIV(ctx)->blend_enabled = enable;
+    struct virge_private *priv = VIRGE_PRIV(ctx);
+    priv->blend_enabled = enable;
+    virge_update_blend_bits(priv);
 }
 
 static void virge_be_blend_func(struct l10gl_ctx *ctx,
@@ -395,6 +437,8 @@ static void virge_be_bind_texture(struct l10gl_ctx *ctx,
 
     if (!tex || !tex->backend_data) {
         hw->tex_bound = 0;
+        priv->tex_has_alpha = 0;
+        virge_update_blend_bits(priv);
         return;
     }
 
@@ -435,6 +479,11 @@ static void virge_be_bind_texture(struct l10gl_ctx *ctx,
     hw->tex_cmd_bits = fmt_bits | mipmap_bits | filter_bits
                        | blend_bits | wrap_bits;
     hw->tex_bound = 1;
+
+    /* The bound texture's alpha presence drives the textured-path blend
+     * choice (TEX_ALPHA vs SRC_ALPHA); recompute blend bits now. */
+    priv->tex_has_alpha = virge_tex_format_has_alpha(tex->format);
+    virge_update_blend_bits(priv);
 }
 
 static void virge_be_tex_parameter(struct l10gl_ctx *ctx,

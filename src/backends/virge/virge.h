@@ -492,6 +492,16 @@ struct virge_ctx {
      * (NORMAL | LEQUAL | ZUP) for direct callers that skip the glue. */
     uint32_t z_cmd_bits;
 
+    /* Cached CMD_SET alpha-blending bits [19-18] (ABC) for the triangle
+     * paths, built by the glue. gouraud_blend_bits applies to the Gouraud
+     * path (SRC_ALPHA or NONE); textured_blend_bits applies to the textured
+     * path and selects TEX_ALPHA vs SRC_ALPHA by whether the bound texture
+     * has an alpha channel (DB019-B sec.15.4.8.5, PDF p.134). ViRGE blend
+     * is fixed-function src*A + dst*(1-A); GL blend_func factors are
+     * advisory (only SRC_ALPHA/ONE_MINUS_SRC_ALPHA is honored). */
+    uint32_t gouraud_blend_bits;
+    uint32_t textured_blend_bits;
+
     /* VRAM bump allocator for textures (offscreen heap after Z buffer) */
     uint32_t tex_heap_next; /* Next free byte offset for texture allocation */
 

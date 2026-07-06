@@ -639,7 +639,8 @@ void virge_draw_triangle_gouraud(struct virge_ctx *ctx,
     uint32_t cmd = VIRGE_CMD_3D
                  | VIRGE_3D_GOURAUD
                  | ctx->dest_format
-                 | ctx->z_cmd_bits;
+                 | ctx->z_cmd_bits
+                 | ctx->gouraud_blend_bits;
 
     virge_write32(ctx, VIRGE_3D_CMD_SET, cmd);
 }
@@ -1017,7 +1018,8 @@ void virge_draw_textured_triangle(struct virge_ctx *ctx,
                  | VIRGE_3D_LIT_TEX_PERSP   /* 0101: lit texture + perspective */
                  | ctx->dest_format
                  | ctx->tex_cmd_bits         /* texture format, filter, blend, wrap */
-                 | ctx->z_cmd_bits;          /* ZB mode, compare code, Z update */
+                 | ctx->z_cmd_bits           /* ZB mode, compare code, Z update */
+                 | ctx->textured_blend_bits; /* ABC: tex alpha / src alpha / none */
 
     virge_write32(ctx, VIRGE_3D_CMD_SET, cmd);
 }
@@ -1164,6 +1166,11 @@ int virge_init(struct virge_ctx *ctx, int width, int height, int bpp)
      * glue) get sensible defaults; the glue overrides this with the GL
      * default (LESS) and the cached depth state at init. */
     ctx->z_cmd_bits = VIRGE_ZB_NORMAL | VIRGE_ZBC_LEQUAL | VIRGE_ZUP_ENABLE;
+
+    /* Alpha blending off by default (ABC = 00b). The glue recomputes
+     * both fields when blend state or the bound texture changes. */
+    ctx->gouraud_blend_bits = VIRGE_BLEND_NONE;
+    ctx->textured_blend_bits = VIRGE_BLEND_NONE;
 
     /* Initialize the 3D register bank */
     engine_init_3d(ctx);

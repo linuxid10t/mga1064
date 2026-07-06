@@ -50,6 +50,27 @@ enum l10gl_depth_func {
     L10GL_ALWAYS,
 };
 
+/* ========================================================================
+ * Blending
+ *
+ * Alpha blending on this class of fixed-function hardware is limited.
+ * On the primary backend (S3 ViRGE, DB019-B sec.15.4.8.5) the blend unit
+ * is fixed-function src*A + dst*(1-A): the blend factor is the source
+ * (vertex) alpha or the texture alpha, and nothing else. Therefore the
+ * sfactor/dfactor passed to l10gl_blend_func are advisory -- effectively
+ * only (SRC_ALPHA, ONE_MINUS_SRC_ALPHA) is implemented, and any other
+ * factor pair degrades to that. Backends advertise L10GL_CAP_BLEND only
+ * when at least this alpha blend is available in hardware.
+ *
+ * Application-side rule for correct transparency WITH depth buffering
+ * (DB019-B sec.15.4.8.5; the standard OpenGL rule): draw all opaque
+ * geometry first with depth writes enabled, then draw transparent
+ * geometry back-to-front with depth WRITES off (l10gl_depth_mask(ctx, 0))
+ * while leaving the depth TEST enabled. Transparent fragments then still
+ * fail the depth test against closer opaque geometry, but no transparent
+ * fragment writes Z, so transparent objects do not occlude one another.
+ * ======================================================================== */
+
 /* Blend factors (subset for now) */
 enum l10gl_blend_func {
     L10GL_ZERO,
