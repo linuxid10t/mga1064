@@ -108,6 +108,19 @@
  * it), per datasheet §15.1. */
 #define VIRGE_AFC_ENABLE        (1 << 0)
 
+/* Advanced Function Control bit 4: Enable Linear Addressing (DB019-B
+ * PDF p. 22-4 / Appendix B.8 register table). Separate from CR31's
+ * ENH_MAP: that bit governs how the S3d engine's Memory Port
+ * Controller addresses VRAM for engine writes, while this bit governs
+ * whether the CPU-side BAR0 aperture itself is a true linear window
+ * into VRAM or the legacy segmented/banked VGA view. Never previously
+ * set -- if clear, CPU reads/writes through ctx->fb could be hitting a
+ * banked window while the S3d engine's DEST_BASE writes land in real
+ * linear VRAM addresses the CPU view never sees, which would explain
+ * engine fills "completing" (per SUBSYS_STATUS) while never appearing
+ * in the linear-aperture readback used by every diagnostic so far. */
+#define VIRGE_AFC_LINEAR_ADDR   (1 << 4)
+
 /* ========================================================================
  * Legacy VGA CRTC Registers (accessed via I/O ports 0x3D4/0x3D5)
  *

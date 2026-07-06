@@ -1056,14 +1056,19 @@ int virge_init(struct virge_ctx *ctx, int width, int height, int bpp)
     virge_write32(ctx, VIRGE_SUBSYS_CONTROL, VIRGE_SSC_S3D_RESET);
     virge_write32(ctx, VIRGE_SUBSYS_CONTROL, VIRGE_SSC_S3D_ENABLE);
 
-    /* Enable the 8514/A-compatible accelerated register interface.
-     * Without this, the 2D/3D command bank silently ignores all writes
-     * — only the linear framebuffer aperture is live. */
-    virge_write32(ctx, VIRGE_ADV_FUNC_CTRL, VIRGE_AFC_ENABLE);
+    /* Enable the 8514/A-compatible accelerated register interface AND
+     * linear addressing (AFC bit 4). Without bit 0, the 2D/3D command
+     * bank silently ignores all writes. Without bit 4, the CPU-side
+     * BAR0 aperture may still be a banked/windowed view of VRAM even
+     * though the S3d engine itself writes through real linear
+     * addresses -- see the VIRGE_AFC_LINEAR_ADDR comment in virge.h. */
+    virge_write32(ctx, VIRGE_ADV_FUNC_CTRL,
+                  VIRGE_AFC_ENABLE | VIRGE_AFC_LINEAR_ADDR);
     {
         uint32_t afc_check = virge_read32(ctx, VIRGE_ADV_FUNC_CTRL);
-        printf("S3 ViRGE: AFC readback: 0x%08x (bit0 %s)\n", afc_check,
-               (afc_check & VIRGE_AFC_ENABLE) ? "set" : "NOT SET");
+        printf("S3 ViRGE: AFC readback: 0x%08x (bit0 %s, bit4/LA %s)\n", afc_check,
+               (afc_check & VIRGE_AFC_ENABLE) ? "set" : "NOT SET",
+               (afc_check & VIRGE_AFC_LINEAR_ADDR) ? "set" : "NOT SET");
         uint32_t status_check = virge_read32(ctx, VIRGE_SUBSYS_STATUS);
         printf("S3 ViRGE: SUBSYS_STATUS readback: 0x%08x\n", status_check);
     }
