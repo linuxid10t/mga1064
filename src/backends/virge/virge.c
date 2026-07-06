@@ -170,6 +170,130 @@ static uint32_t virge_detect_vram(uint16_t device_id)
     }
 }
 
+/*
+ * Dump what the CRTC is ACTUALLY scanning out, decoded from the chip's
+ * own registers, and compare it against what fbdev claimed earlier in
+ * init. Reads only — safe for the proven bring-up path.
+ *
+ * Motivation: fbdev reported a 640x480 console on the same day a direct
+ * CRTC probe read VDE=599 (600 active lines). Both cannot be true, and
+ * every engine test so far was interpreted THROUGH fbdev's geometry.
+ * This makes the chip's side of the story a permanent part of the boot
+ * log so the two can be reconciled in one run.
+ *
+ * Register decode, all verified against DB019-B (VGA CRTC §16, PDF
+ * pp. 148-153; extended CRTC §18):
+ *   - Active lines: CR12 + CR07 bit 1 (VDE:8) + CR07 bit 6 (VDE:9) +
+ *     CR5E bit 1 (VDE:10); value = lines - 1.
+ *   - Active width: CR01 + CR5D bit 1 (bit 8), in character clocks;
+ *     value = clocks - 1, one clock = 8 pixels (at 1 pixel/VCLK).
+ *   - Pitch: CR13 "logical screen width", extended by CR51 bits 5-4
+ *     (bits 9-8); if those are 00b, CR43 bit 2 is bit 8 instead. The
+ *     byte multiplier is x2 (word), x4 (doubleword) or x8 (quadword)
+ *     per CR14 bit 6 / CR17 bit 3 / CR31 bit 3 (bit 3 of CR31 forces
+ *     doubleword) — print all three candidates rather than over-trust
+ *     the mode-bit decode, and flag whichever matches fbdev.
+ *   - Display start: CRC<<8 | CRD, high bits from CR69 bits 3-0 when
+ *     non-zero (superseding CR31 bits 5-4 = addr 17-16 and CR51 bits
+ *     1-0 = addr 19-18, PDF p.193). The engine draws at fb_base = 0 and
+ *     assumes scanout starts there too — a non-zero start displaces
+ *     everything we draw.
+ *   - Scanout format: CR67 bits 7-4 (PDF p.216). Mode 9 = 15-bit 555,
+ *     Mode 10 = 16-bit 565 — ground truth on whether V8's fbdev depth
+ *     switch actually reached the RAMDAC.
+ *
+ * Call after vga_ensure_new_mmio() (I/O port access + CR39 unlock for
+ * the CR40+ range).
+ */
+static void virge_dump_crtc_truth(struct virge_ctx *ctx)
+{
+    uint8_t cr01 = vga_crtc_read(0x01);
+    uint8_t cr07 = vga_crtc_read(0x07);
+    uint8_t cr0c = vga_crtc_read(0x0C);
+    uint8_t cr0d = vga_crtc_read(0x0D);
+    uint8_t cr12 = vga_crtc_read(0x12);
+    uint8_t cr13 = vga_crtc_read(0x13);
+    uint8_t cr14 = vga_crtc_read(0x14);
+    uint8_t cr17 = vga_crtc_read(0x17);
+    uint8_t cr31 = vga_crtc_read(VIRGE_CR31);
+    uint8_t cr43 = vga_crtc_read(0x43);
+    uint8_t cr51 = vga_crtc_read(0x51);
+    uint8_t cr5d = vga_crtc_read(0x5D);
+    uint8_t cr5e = vga_crtc_read(0x5E);
+    uint8_t cr67 = vga_crtc_read(0x67);
+    uint8_t cr69 = vga_crtc_read(0x69);
+
+    printf("S3 ViRGE: CRTC raw: CR01=%02x CR07=%02x CR0C=%02x CR0D=%02x "
+           "CR12=%02x CR13=%02x CR14=%02x CR17=%02x\n",
+           cr01, cr07, cr0c, cr0d, cr12, cr13, cr14, cr17);
+    printf("                    CR31=%02x CR43=%02x CR51=%02x CR5D=%02x "
+           "CR5E=%02x CR67=%02x CR69=%02x\n",
+           cr31, cr43, cr51, cr5d, cr5e, cr67, cr69);
+
+    uint32_t vde = cr12 | (uint32_t)((cr07 >> 1) & 1) << 8
+                        | (uint32_t)((cr07 >> 6) & 1) << 9
+                        | (uint32_t)((cr5e >> 1) & 1) << 10;
+    uint32_t hde_clk = cr01 | (uint32_t)((cr5d >> 1) & 1) << 8;
+
+    uint32_t lsw = cr13;
+    if (cr51 & 0x30)
+        lsw |= (uint32_t)((cr51 >> 4) & 3) << 8;
+    else
+        lsw |= (uint32_t)((cr43 >> 2) & 1) << 8;
+
+    uint32_t start = (uint32_t)cr0c << 8 | cr0d;
+    if (cr69 & 0x0F)
+        start |= (uint32_t)(cr69 & 0x0F) << 16;
+    else
+        start |= (uint32_t)((cr31 >> 4) & 3) << 16
+               | (uint32_t)(cr51 & 3) << 18;
+
+    static const char *const color_modes[16] = {
+        [0x0] = "Mode 0: 8-bit",   [0x1] = "Mode 8: 8-bit 2px/clk",
+        [0x3] = "Mode 9: 15-bit (555)", [0x5] = "Mode 10: 16-bit (565)",
+        [0xD] = "Mode 13: 24-bit",
+    };
+    uint8_t cm = cr67 >> 4;
+    const char *fmt = color_modes[cm] ? color_modes[cm] : "RESERVED";
+
+    printf("S3 ViRGE: CRTC truth: %u active lines, %u char clocks "
+           "(x8 = %u px) wide,\n", vde + 1, hde_clk + 1, (hde_clk + 1) * 8);
+    printf("  pitch: LSW=%u -> x2=%u / x4=%u / x8=%u bytes "
+           "(mode bits: CR14.6=%u CR17.3=%u CR31.3=%u),\n",
+           lsw, lsw * 2, lsw * 4, lsw * 8,
+           (cr14 >> 6) & 1, (cr17 >> 3) & 1, (cr31 >> 3) & 1);
+    printf("  display start: raw 0x%05x (x4 if dword-addressed = byte "
+           "0x%x), scanout format: CR67[7:4]=%x -> %s\n",
+           start, start * 4, cm, fmt);
+
+    /* Reconcile against fbdev's claims, loudly. */
+    struct fb_var_screeninfo vinfo;
+    if (ctx->fb_fd >= 0 && ioctl(ctx->fb_fd, FBIOGET_VSCREENINFO, &vinfo) == 0) {
+        if (vinfo.yres != vde + 1)
+            printf("  *** CRTC/fbdev MISMATCH: CRTC scans %u lines but "
+                   "fbdev claims yres=%u — fbdev geometry is NOT scanout "
+                   "truth\n", vde + 1, vinfo.yres);
+        if (ctx->stride != lsw * 2 && ctx->stride != lsw * 4 &&
+            ctx->stride != lsw * 8)
+            printf("  *** CRTC/fbdev MISMATCH: no CRTC pitch candidate "
+                   "(%u/%u/%u) matches fbdev line_length=%u — engine "
+                   "strides based on line_length will shear\n",
+                   lsw * 2, lsw * 4, lsw * 8, ctx->stride);
+        if (vinfo.bits_per_pixel >= 15 && vinfo.bits_per_pixel <= 16) {
+            uint8_t want = (vinfo.green.length == 5) ? 0x3 : 0x5;
+            if (cm != want)
+                printf("  *** CRTC/fbdev MISMATCH: fbdev claims %s but "
+                       "CR67 scanout is %s — the V8 depth switch did NOT "
+                       "reach the RAMDAC\n",
+                       vinfo.green.length == 5 ? "RGB555" : "RGB565", fmt);
+        }
+    }
+    if (start != 0)
+        printf("  *** WARNING: display start address is non-zero but the "
+               "engine draws at VRAM offset 0 — drawn content is displaced "
+               "from what is scanned out\n");
+}
+
 /* ========================================================================
  * PCI Discovery — find the S3 ViRGE via /sys/bus/pci/devices
  *
@@ -1295,6 +1419,11 @@ int virge_init(struct virge_ctx *ctx, int width, int height, int bpp)
                         "(need root): %s\n", strerror(-ret));
         return ret;
     }
+
+    /* What is the CRTC actually scanning out? Read-only dump, decoded
+     * and reconciled against fbdev's claims from the top of init — see
+     * virge_dump_crtc_truth for the full rationale and register cites. */
+    virge_dump_crtc_truth(ctx);
 
     /* S3d Engine software reset/enable sequence. MM8504 is Subsystem
      * STATUS on read but a completely different write-only Subsystem
