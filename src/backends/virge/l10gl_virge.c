@@ -59,6 +59,51 @@ static inline struct virge_private *VIRGE_PRIV(struct l10gl_ctx *ctx)
     return (struct virge_private *)ctx->backend_data;
 }
 
+/* Map an L10GL depth function to the ViRGE ZBC compare-code bits
+ * (CMD_SET [22-20]). The hardware codes (virge.h) match DB019-B §15.4.6
+ * (PDF p.129) and the operand order is Zs <op> Zzb -- identical to GL,
+ * so the mapping is direct. The GL enum does NOT numerically match the
+ * HW codes (e.g. GL LESS=1 but HW LESS=4), hence the explicit switch. */
+static uint32_t virge_zbc_from_func(enum l10gl_depth_func func)
+{
+    switch (func) {
+    case L10GL_NEVER:    return VIRGE_ZBC_NEVER;
+    case L10GL_LESS:     return VIRGE_ZBC_LESS;
+    case L10GL_EQUAL:    return VIRGE_ZBC_EQUAL;
+    case L10GL_LEQUAL:   return VIRGE_ZBC_LEQUAL;
+    case L10GL_GREATER:  return VIRGE_ZBC_GREATER;
+    case L10GL_NOTEQUAL: return VIRGE_ZBC_NOTEQUAL;
+    case L10GL_GEQUAL:   return VIRGE_ZBC_GEQUAL;
+    case L10GL_ALWAYS:   return VIRGE_ZBC_ALWAYS;
+    default:             return VIRGE_ZBC_LESS;  /* GL default */
+    }
+}
+
+/* Recompute the cached Z-buffering CMD_SET bits from the depth state and
+ * store them in the hardware context, where the 3D triangle paths pick
+ * them up. Per DB019-B §15.4.6 (PDF p.129):
+ *   - depth test off -> ZB MODE = 11b (VIRGE_ZB_NONE): no Z compare and
+ *     no Z fetch. The datasheet doesn't document 11b in detail; if HW
+ *     testing shows it doesn't behave as "no Z", the fallback is
+ *     ZB_NORMAL | ZBC_ALWAYS (every fragment passes) with ZUP per the
+ *     depth mask.
+ *   - depth test on  -> ZB MODE = 00b (NORMAL) + compare code from the
+ *     depth func + ZUP if depth writes are on. Z-buffering is active iff
+ *     ZB MODE = 00b AND compare code != 000b (NEVER); the NEVER case
+ *     legitimately draws nothing, matching GL_NEVER. */
+static void virge_update_z_cmd_bits(struct virge_private *priv)
+{
+    if (!priv->depth_test_enabled) {
+        priv->hw.z_cmd_bits = VIRGE_ZB_NONE;
+    } else {
+        priv->hw.z_cmd_bits = VIRGE_ZB_NORMAL
+                            | virge_zbc_from_func(priv->depth_func_val)
+                            | (priv->depth_writes_enabled
+                               ? VIRGE_ZUP_ENABLE
+                               : VIRGE_ZUP_DISABLE);
+    }
+}
+
 /* ========================================================================
  * L10GL texture format → ViRGE CMD_SET texture format bits
  *
@@ -148,6 +193,10 @@ static int virge_be_init(struct l10gl_ctx *ctx, int w, int h, int bpp)
     priv->tex_wrap = L10GL_WRAP_REPEAT;
     priv->blend_enabled = 0;
 
+    /* Seed ctx->z_cmd_bits from the defaults above (GL default: LESS).
+     * Overrides the LEQUAL default virge_init set for direct callers. */
+    virge_update_z_cmd_bits(priv);
+
     return 0;
 }
 
@@ -190,17 +239,23 @@ static void virge_be_clear_depth(struct l10gl_ctx *ctx, float z)
 
 static void virge_be_depth_func(struct l10gl_ctx *ctx, enum l10gl_depth_func func)
 {
-    VIRGE_PRIV(ctx)->depth_func_val = func;
+    struct virge_private *priv = VIRGE_PRIV(ctx);
+    priv->depth_func_val = func;
+    virge_update_z_cmd_bits(priv);
 }
 
 static void virge_be_depth_mask(struct l10gl_ctx *ctx, int enable)
 {
-    VIRGE_PRIV(ctx)->depth_writes_enabled = enable;
+    struct virge_private *priv = VIRGE_PRIV(ctx);
+    priv->depth_writes_enabled = enable;
+    virge_update_z_cmd_bits(priv);
 }
 
 static void virge_be_depth_test(struct l10gl_ctx *ctx, int enable)
 {
-    VIRGE_PRIV(ctx)->depth_test_enabled = enable;
+    struct virge_private *priv = VIRGE_PRIV(ctx);
+    priv->depth_test_enabled = enable;
+    virge_update_z_cmd_bits(priv);
 }
 
 static void virge_be_blend_enable(struct l10gl_ctx *ctx, int enable)

@@ -632,13 +632,14 @@ void virge_draw_triangle_gouraud(struct virge_ctx *ctx,
                   (scan_12 & 0x7FF));
 
     /* --- Program Command Set and execute ---
+     * Z-buffering bits come from ctx->z_cmd_bits (built by the glue from
+     * the cached depth func/test/mask state); the GL default is LESS, not
+     * the LEQUAL hardcoded here before.
      * No VIRGE_CMD_CLIP_ENABLE -- see the comment in virge.h. */
     uint32_t cmd = VIRGE_CMD_3D
                  | VIRGE_3D_GOURAUD
                  | ctx->dest_format
-                 | VIRGE_ZB_NORMAL
-                 | VIRGE_ZBC_LEQUAL     /* default: pass if Zs <= Zzb */
-                 | VIRGE_ZUP_ENABLE;    /* update Z on pass */
+                 | ctx->z_cmd_bits;
 
     virge_write32(ctx, VIRGE_3D_CMD_SET, cmd);
 }
@@ -1009,14 +1010,14 @@ void virge_draw_textured_triangle(struct virge_ctx *ctx,
                   (scan_12 & 0x7FF));
 
     /* --- Command Set: lit texture triangle with perspective ---
+     * Z-buffering bits come from ctx->z_cmd_bits (cached depth state);
+     * texture format/filter/blend/wrap come from ctx->tex_cmd_bits.
      * No VIRGE_CMD_CLIP_ENABLE -- see the comment in virge.h. */
     uint32_t cmd = VIRGE_CMD_3D
                  | VIRGE_3D_LIT_TEX_PERSP   /* 0101: lit texture + perspective */
                  | ctx->dest_format
                  | ctx->tex_cmd_bits         /* texture format, filter, blend, wrap */
-                 | VIRGE_ZB_NORMAL
-                 | VIRGE_ZBC_LEQUAL
-                 | VIRGE_ZUP_ENABLE;
+                 | ctx->z_cmd_bits;          /* ZB mode, compare code, Z update */
 
     virge_write32(ctx, VIRGE_3D_CMD_SET, cmd);
 }
@@ -1157,6 +1158,12 @@ int virge_init(struct virge_ctx *ctx, int width, int height, int bpp)
         ctx->dest_format = VIRGE_DEST_24BPP;
     else
         ctx->dest_format = VIRGE_DEST_8BPP;
+
+    /* Default Z-buffering bits: NORMAL Z-buffering, LEQUAL compare, Z
+     * writes on. Direct callers of the 3D paths (skipping the L10GL
+     * glue) get sensible defaults; the glue overrides this with the GL
+     * default (LESS) and the cached depth state at init. */
+    ctx->z_cmd_bits = VIRGE_ZB_NORMAL | VIRGE_ZBC_LEQUAL | VIRGE_ZUP_ENABLE;
 
     /* Initialize the 3D register bank */
     engine_init_3d(ctx);

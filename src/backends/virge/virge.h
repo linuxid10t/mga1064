@@ -484,6 +484,14 @@ struct virge_ctx {
     /* Cached CMD_SET destination format field */
     uint32_t dest_format;   /* VIRGE_DEST_16BPP, etc. */
 
+    /* Cached CMD_SET Z-buffering bits for the 3D triangle paths:
+     * ZB mode [25-24], Z compare code [22-20], Z update [23]. Built by
+     * the glue (l10gl_virge.c) from the cached depth state (test on/off,
+     * depth func, depth mask) -- mirrors how dest_format/tex_cmd_bits are
+     * precomputed for the draw paths. virge_init seeds a sane default
+     * (NORMAL | LEQUAL | ZUP) for direct callers that skip the glue. */
+    uint32_t z_cmd_bits;
+
     /* VRAM bump allocator for textures (offscreen heap after Z buffer) */
     uint32_t tex_heap_next; /* Next free byte offset for texture allocation */
 
