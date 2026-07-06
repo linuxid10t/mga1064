@@ -48,16 +48,22 @@ pixels at pitch 3200 (proven visually by `demos/scantest.c` phase 1).
 Every engine draw at 640×480/16bpp/stride-1280 was therefore noise +
 repetition *by construction*, independent of engine correctness — and
 every prior hardware observation was made through that mismatched
-scanout. Fixes, all committed and hardware-proven via scantest phase 2:
+scanout. Fixes, all committed:
 
 1. **Native scanout takeover** (`virge_scanout_takeover`, `virge.c`):
    when `/dev/fb0` is absent at 16bpp, virge_init adopts the live CRTC
-   raster (lines from CR12/CR07/CR5E, width from CR01/CR5D ×8) and
-   reprograms only CR67 bits 7-4 → Mode 9 (15-bit 555, matching the 3D
-   engine's ZRGB1555-only output) and pitch via CR13/CR51 (LSW =
-   pitch/4, doubleword rule). BIOS raster timings are kept — no
-   PLL/timing programming. Originals saved and restored at cleanup.
-   This is the P6 slice pulled forward; full modesetting remains P6.
+   raster and owns the scanout: CR67 bits 7-4 → Mode 9 (15-bit 555,
+   matching the 3D engine's ZRGB1555-only output), **all horizontal
+   CRTC timings doubled** (15/16bpp modes count two character clocks
+   per 8 pixels on this family — switching CR67 alone doubles hsync
+   and the monitor drops sync, as a hardware round proved), CR50
+   bits 5-4 = 16bpp pixel length, pitch in **quadwords** (LSW =
+   pitch/8, CR43 bit 2 clear). Per-depth scaling and CR50 are not in
+   DB019-B — the kernel `s3fb` driver is the documented reference.
+   BIOS raster timings/PLL otherwise kept; originals saved (incl. the
+   CR11 CR0-7 write-protect) and restored at cleanup; idempotent if a
+   dead run left Mode 9 programmed. This is the P6 slice pulled
+   forward; full modesetting remains P6.
 2. **`virge_wait_vsync` was broken-by-design**: SUBSYS_STATUS bit 0
    (VSY INT) is a *latched* interrupt status (DB019-B §22, PDF
    pp.299-301), not a live retrace level — it must be cleared via
