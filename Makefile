@@ -98,5 +98,11 @@ fliptest: demos/fliptest.c src/backends/virge/virge.c src/backends/virge/virge.h
 dztest: demos/dztest.c src/backends/virge/virge.c src/backends/virge/virge.h
 	$(CC) $(CFLAGS) -o $@ demos/dztest.c src/backends/virge/virge.c $(LDFLAGS)
 
+# Diagnostic: measure the S3d triangle span-END fill rule (inclusive vs
+# exclusive, ceil vs floor, both L/R directions) -- settles whether shared
+# edges double-draw, the cause of the cube's bleedthrough band.
+seamtest: demos/seamtest.c src/backends/virge/virge.c src/backends/virge/virge.h
+	$(CC) $(CFLAGS) -o $@ demos/seamtest.c src/backends/virge/virge.c $(LDFLAGS)
+
 clean:
 	rm -f $(DEMOS) *.o src/*.o src/backends/*/*.o
