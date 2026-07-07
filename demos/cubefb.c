@@ -200,7 +200,7 @@ static void measure(struct virge_ctx *vctx, uint8_t *vram, int W, int H,
     }
 }
 
-static void print_rle(const uint8_t *vram, int W, int H, uint32_t stride, int y)
+static void print_rle(const uint8_t *vram, int W, uint32_t stride, int y)
 {
     const uint16_t *row0 = (const uint16_t *)(vram + (size_t)y * stride);
     printf("  middle row y=%d RLE: ", y);
@@ -290,7 +290,7 @@ int main(int argc, char **argv)
                (long)m.expected[m.excess_face], m.excess_by);
     printf("  faces[r g b y m c]=%ld %ld %ld %ld %ld %ld\n",
            m.face_ct[0], m.face_ct[1], m.face_ct[2], m.face_ct[3], m.face_ct[4], m.face_ct[5]);
-    print_rle(vram, W, H, stride, H / 2);
+    print_rle(vram, W, stride, H / 2);
 
     printf("\n");
     if (contaminated == 0)
