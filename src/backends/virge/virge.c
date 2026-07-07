@@ -693,8 +693,18 @@ void virge_wait_vsync(struct virge_ctx *ctx)
  * need to be reprogrammed for each triangle.
  * ======================================================================== */
 
-static void engine_init_3d(struct virge_ctx *ctx)
+static void program_3d_state(struct virge_ctx *ctx)
 {
+    /* Program the 3D engine's destination/Z/stride/clip state. MUST be
+     * re-called before every 3D primitive: on real DX silicon, executing 2D
+     * commands (clear_z, fill_rect) clobbers VIRGE_3D_Z_STRIDE back to its
+     * all-ones default 0xFF8. Set-once-at-init then leaves the Z fetch
+     * mis-strided (verified: writes land at stride 4088, not 1600; the
+     * triangle cuts off where the mis-strided fetch exits the cleared region).
+     * Z_BASE/DEST_BASE/DEST_SRC_STR/CLIP all stick on this silicon, but we
+     * re-arm them too -- idempotent, cheap, and covers TEX_BASE for the
+     * textured path. 86Box models these as separate 2D/3D files (set-once is
+     * fine there); real DX does not. */
     uint32_t dest_stride = ctx->stride;  /* real scanout pitch (P1) */
     uint32_t z_stride = ctx->width * 2;  /* Z is always 16-bit */
 
@@ -741,7 +751,7 @@ void virge_fill_rect(struct virge_ctx *ctx, int x, int y, int w, int h,
     virge_write32(ctx, VIRGE_2D_DEST_BASE, ctx->fb_base);
     virge_write32(ctx, VIRGE_2D_DEST_SRC_STR,
                   ((dest_stride & 0xFFF) << 16) | (dest_stride & 0xFFF));
-    /* Left/top = 0, right/bottom = dimension-1 (see engine_init_3d for
+    /* Left/top = 0, right/bottom = dimension-1 (see program_3d_state for
      * why this ordering, not the reverse, matters). */
     virge_write32(ctx, VIRGE_2D_CLIP_L_R,
                   (0 << 16) | ((ctx->width - 1) & 0x7FF));
@@ -1011,6 +1021,7 @@ void virge_draw_triangle_gouraud(struct virge_ctx *ctx,
     float a_s = v0.a;
 
     virge_wait_engine(ctx);
+    program_3d_state(ctx);  /* re-arm: 2D ops clobber Z_STRIDE to 0xFF8 on real DX */
 
     /* --- Program color start values (S8.7 packed) --- */
     virge_write32(ctx, VIRGE_3D_TGS_BS,
@@ -1365,6 +1376,7 @@ void virge_draw_textured_triangle(struct virge_ctx *ctx,
     if (s_val == 0) s_val = 6;  /* safe default */
 
     virge_wait_engine(ctx);
+    program_3d_state(ctx);  /* re-arm: 2D ops clobber Z_STRIDE to 0xFF8 on real DX */
 
     /* --- Color starts + deltas (S8.7, modulation) --- */
     virge_write32(ctx, VIRGE_3D_TGS_BS,
@@ -1723,7 +1735,7 @@ int virge_init(struct virge_ctx *ctx, int width, int height, int bpp)
     ctx->textured_blend_bits = VIRGE_BLEND_NONE;
 
     /* Initialize the 3D register bank */
-    engine_init_3d(ctx);
+    program_3d_state(ctx);
 
     printf("S3 ViRGE: S3d Engine initialized.\n");
     printf("  Screen: %dx%d, %d bpp (stride %u)\n",
