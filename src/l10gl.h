@@ -185,6 +185,7 @@ struct l10gl_backend {
     /* --- Synchronization --- */
     void (*wait_engine)(struct l10gl_ctx *ctx);
     void (*wait_vsync)(struct l10gl_ctx *ctx);
+    void (*swap_buffers)(struct l10gl_ctx *ctx);  /* page-flip back buffer to scanout (double-buffer) */
 
     /* --- Capabilities (queried at init) --- */
     unsigned int caps;   /* bitmask of L10GL_CAP_* bits */
@@ -297,6 +298,13 @@ void l10gl_tex_parameter(struct l10gl_ctx *ctx,
 /* Sync */
 void l10gl_wait_engine(struct l10gl_ctx *ctx);
 void l10gl_wait_vsync(struct l10gl_ctx *ctx);
+
+/* Double-buffering: publish the back buffer (the current render target)
+ * to the scanout via a vsync-synchronized page flip, then make the former
+ * front buffer the new render target. EGL/OpenGL double-buffer model:
+ * render a frame, then call this once. Backends that don't double-buffer
+ * leave the slot NULL and this is a no-op (single-buffer passthrough). */
+void l10gl_swap_buffers(struct l10gl_ctx *ctx);
 
 /* Capabilities query */
 int l10gl_has_cap(struct l10gl_ctx *ctx, unsigned int cap);

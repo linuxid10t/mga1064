@@ -528,6 +528,11 @@ static void virge_be_wait_vsync(struct l10gl_ctx *ctx)
     virge_wait_vsync(&VIRGE_PRIV(ctx)->hw);
 }
 
+static void virge_be_swap_buffers(struct l10gl_ctx *ctx)
+{
+    virge_swap_buffers(&VIRGE_PRIV(ctx)->hw);
+}
+
 /* ========================================================================
  * Backend Vtable
  *
@@ -556,6 +561,7 @@ const struct l10gl_backend virge_backend = {
     .tex_parameter        = virge_be_tex_parameter,
     .wait_engine          = virge_be_wait_engine,
     .wait_vsync           = virge_be_wait_vsync,
+    .swap_buffers         = virge_be_swap_buffers,
     .caps = L10GL_CAP_GOURAUD | L10GL_CAP_ZBUFFER | L10GL_CAP_LINES |
             L10GL_CAP_TEXTURE | L10GL_CAP_BLEND | L10GL_CAP_DITHER |
             L10GL_CAP_BILINEAR | L10GL_CAP_TRILINEAR | L10GL_CAP_PERSPECTIVE,

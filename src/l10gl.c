@@ -229,6 +229,14 @@ void l10gl_wait_vsync(struct l10gl_ctx *ctx)
         ctx->backend->wait_vsync(ctx);
 }
 
+void l10gl_swap_buffers(struct l10gl_ctx *ctx)
+{
+    /* NULL-safe: backends without double-buffer (e.g. mga1064) leave the
+     * slot unset, so this degrades to a single-buffer no-op. */
+    if (ctx->backend->swap_buffers)
+        ctx->backend->swap_buffers(ctx);
+}
+
 /* ========================================================================
  * Capabilities
  * ======================================================================== */
