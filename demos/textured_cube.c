@@ -58,7 +58,10 @@ static void project(struct screen_vertex *out, const float in[3],
 
     out->sx = (float)screen_w * 0.5f + in[0] * scale;
     out->sy = (float)screen_h * 0.5f - in[1] * scale;
-    out->sz = (in[2] + camera_dist) / 1000.0f;
+    /* Map eye-z to a wide [0,1] slice (~32k of 65536 Z levels separate
+     * front/back), not the old /1000 collapse (~130 levels -> back faces
+     * Z-fight through front at grazing angles). */
+    out->sz = (in[2] + camera_dist - 3.0f) / 4.0f;
     out->sw = 1.0f / z;  /* 1/Z_eye for perspective-correct texturing */
 
     if (out->sz < 0.0f) out->sz = 0.0f;
