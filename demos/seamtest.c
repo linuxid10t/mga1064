@@ -1,25 +1,22 @@
 /*
- * seamtest.c - measure the S3d triangle span-END fill rule on silicon.
+ * seamtest.c - measure the S3d triangle span fill rule on silicon.
  *
- * Diagnosis (Fable 5, 2026-07-07, verified against this repo): the cube's
- * persistent shared-edge bleedthrough is NOT Z-fighting -- it is a coverage
- * defect in triangle setup. The S3d span END is INCLUSIVE on real DX silicon
- * (datasheet: TXEND01/12 = "X of the last pixel drawn"), one pixel wider than
- * 86Box's end-exclusive model. Two triangles sharing a silhouette edge walk
- * bit-identical DDAs, so under the exclusive model they would be watertight;
- * the visible 1px band on real hardware is the evidence that DX draws the end
- * edge inclusive -> both triangles claim the boundary column, and under
- * LEQUAL+back-to-front the nearer face wins it, reading as a band on the
- * farther face. The fix lives in setup (bias the end edge), but the exact
- * bias needs the exact rule, so measure first.
+ * The cube's persistent shared-edge bleedthrough is a COVERAGE defect, not
+ * Z-fighting. This probe measures the span-start and span-end fill rules
+ * directly and checks whether two triangles sharing an edge actually
+ * double-draw the boundary column.
  *
- * Method: draw a flat triangle whose END edge (edge 01) is VERTICAL at a
- * controlled X (v0 and v1 both at x=X), v2 on the far side. For L/R=1
- * (v2 left of X) edge 01 is the RIGHT/end edge; for L/R=0 (v2 right of X)
- * it is the LEFT/end edge. CPU-read the framebuffer over the bottom-half
- * rows and report the min/max filled column. Integer vs half-integer X
- * reveals inclusive vs exclusive and the rounding (ceil/floor), for both
- * directions -- exactly what the span-end bias needs.
+ * Three tests, one run:
+ *   (END)  edge 01 vertical at X -> end-edge rule (L/R=1 right, L/R=0 left).
+ *   (START) edge 02 vertical at X -> start-edge rule (L/R=1 left, L/R=0 right).
+ *   (OVERLAP) two triangles sharing a vertical edge at x=N, drawn in both
+ *             orders; if column N's owner flips with draw order, both
+ *             triangles claim it (double-draw = the bleedthrough cause).
+ *
+ * First-run result (2026-07-07): END edge is direction-asymmetric --
+ * L/R=1 exclusive (last filled = ceil(X)-1), L/R=0 inclusive (first filled =
+ * ceil(X)) -- NOT uniformly inclusive. So the double-draw suspect is the START
+ * edge (edge 02), measured below, plus the direct overlap check.
  *
  * Build: make -B BACKEND=virge seamtest     Run: sudo ./seamtest
  */
@@ -40,18 +37,35 @@ static uint16_t pix(const uint8_t *fb, uint32_t stride, int x, int y)
     return *(const uint16_t *)(fb + (size_t)y * stride + (size_t)x * 2);
 }
 
-/* Draw a flat white triangle whose edge-01 is VERTICAL at x=X (bottom half).
- *   lr=1: v2 LEFT of X  -> L/R=1, X is the RIGHT (end) edge.
- *   lr=0: v2 RIGHT of X -> L/R=0, X is the LEFT  (end) edge.
- * Returns the filled column range over bottom-half rows y=[340,460]. */
-static void edge_test(struct virge_ctx *vctx, uint8_t *vram, uint32_t stride,
-                      float X, int lr, int *minx, int *maxx)
+static void clear_fb(uint8_t *vram, int W, int H, uint32_t stride)
 {
-    int W = vctx->width, H = vctx->height;
     for (int y = 0; y < H; y++) {
         uint16_t *r = (uint16_t *)(vram + (size_t)y * stride);
         for (int x = 0; x < W; x++) r[x] = 0;
     }
+}
+
+/* Filled column range over bottom-half rows y=[340,460]. */
+static void filled_range(uint8_t *vram, uint32_t stride, int W, int *minx, int *maxx)
+{
+    *minx = W; *maxx = -1;
+    for (int y = 340; y <= 460; y += 2) {
+        for (int x = 0; x < W; x++) {
+            if (pix(vram, stride, x, y) != 0) {
+                if (x < *minx) *minx = x;
+                if (x > *maxx) *maxx = x;
+            }
+        }
+    }
+    if (*minx == W) *minx = -1;
+}
+
+/* END edge test: edge 01 vertical at X (v0,v1 at X; v2 on the far side). */
+static void end_test(struct virge_ctx *vctx, uint8_t *vram, uint32_t stride,
+                     float X, int lr, int *minx, int *maxx)
+{
+    int W = vctx->width, H = vctx->height;
+    clear_fb(vram, W, H, stride);
     virge_clear_z(vctx, 1.0f);
     virge_wait_engine(vctx);
 
@@ -61,17 +75,69 @@ static void edge_test(struct virge_ctx *vctx, uint8_t *vram, uint32_t stride,
     struct virge_vertex v2 = { .x = farx, .y = 100, .z = 0.5f, .w = 1, .r = 1, .g = 1, .b = 1, .a = 1 };
     virge_draw_triangle_gouraud(vctx, v0, v1, v2);
     virge_wait_engine(vctx);
+    filled_range(vram, stride, W, minx, maxx);
+}
 
-    *minx = W; *maxx = -1;
-    for (int y = 340; y <= 460; y += 2) {   /* bottom half, away from the y_mid/y_bot junctions */
-        for (int x = 0; x < W; x++) {
-            if (pix(vram, stride, x, y) != 0) {
-                if (x < *minx) *minx = x;
-                if (x > *maxx) *maxx = x;
-            }
-        }
+/* START edge test: edge 02 vertical at X (v0,v2 at X; v1 on the far side). */
+static void start_test(struct virge_ctx *vctx, uint8_t *vram, uint32_t stride,
+                       float X, int lr, int *minx, int *maxx)
+{
+    int W = vctx->width, H = vctx->height;
+    clear_fb(vram, W, H, stride);
+    virge_clear_z(vctx, 1.0f);
+    virge_wait_engine(vctx);
+
+    float midx = lr ? (X + 200.0f) : (X - 200.0f); /* v1 right of X for L/R=1, left for L/R=0 */
+    struct virge_vertex v0 = { .x = X,   .y = 500, .z = 0.5f, .w = 1, .r = 1, .g = 1, .b = 1, .a = 1 };
+    struct virge_vertex v1 = { .x = midx,.y = 300, .z = 0.5f, .w = 1, .r = 1, .g = 1, .b = 1, .a = 1 };
+    struct virge_vertex v2 = { .x = X,   .y = 100, .z = 0.5f, .w = 1, .r = 1, .g = 1, .b = 1, .a = 1 };
+    virge_draw_triangle_gouraud(vctx, v0, v1, v2);
+    virge_wait_engine(vctx);
+    filled_range(vram, stride, W, minx, maxx);
+}
+
+/* Classify a 555 pixel: "A(red)" / "B(grn)" / " . "(empty). */
+static const char *classify(uint16_t v)
+{
+    if (v == 0) return ".";
+    int r = (v >> 10) & 0x1F, g = (v >> 5) & 0x1F;
+    if (r > g) return "A";
+    if (g > r) return "B";
+    return "?";
+}
+
+/* OVERLAP test: two triangles sharing vertical edge at x=N (both long edges),
+ * drawn in both orders. If column N's owner flips with order -> double-draw. */
+static void overlap_test(struct virge_ctx *vctx, uint8_t *vram, uint32_t stride,
+                         int N, int ab_first)
+{
+    int W = vctx->width, H = vctx->height;
+    clear_fb(vram, W, H, stride);
+    virge_clear_z(vctx, 1.0f);
+    virge_wait_engine(vctx);
+
+    /* A = left, red; B = right, green. Shared vertical edge at x=N (edge 02). */
+    struct virge_vertex A0 = { .x = N,     .y = 500, .z = 0.5f, .w = 1, .r = 1, .g = 0, .b = 0, .a = 1 };
+    struct virge_vertex A1 = { .x = N-200, .y = 300, .z = 0.5f, .w = 1, .r = 1, .g = 0, .b = 0, .a = 1 };
+    struct virge_vertex A2 = { .x = N,     .y = 100, .z = 0.5f, .w = 1, .r = 1, .g = 0, .b = 0, .a = 1 };
+    struct virge_vertex B0 = { .x = N,     .y = 500, .z = 0.5f, .w = 1, .r = 0, .g = 1, .b = 0, .a = 1 };
+    struct virge_vertex B1 = { .x = N+200, .y = 300, .z = 0.5f, .w = 1, .r = 0, .g = 1, .b = 0, .a = 1 };
+    struct virge_vertex B2 = { .x = N,     .y = 100, .z = 0.5f, .w = 1, .r = 0, .g = 1, .b = 0, .a = 1 };
+
+    if (ab_first) {
+        virge_draw_triangle_gouraud(vctx, A0, A1, A2);
+        virge_draw_triangle_gouraud(vctx, B0, B1, B2);
+    } else {
+        virge_draw_triangle_gouraud(vctx, B0, B1, B2);
+        virge_draw_triangle_gouraud(vctx, A0, A1, A2);
     }
-    if (*minx == W) *minx = -1;             /* nothing filled */
+    virge_wait_engine(vctx);
+
+    printf("    cols N-2..N+2: ");
+    for (int y = 300; y <= 300; y++)               /* one mid row is enough */
+        for (int x = N - 2; x <= N + 2; x++)
+            printf("%s ", classify(pix(vram, stride, x, y)));
+    printf(" (%s first)\n", ab_first ? "A" : "B");
 }
 
 int main(void)
@@ -90,39 +156,43 @@ int main(void)
 
     uint8_t *vram = (uint8_t *)vctx.fb;
     uint32_t stride = vctx.stride;
-
-    printf("\nseamtest: S3d span fill rule (%dx%d stride %u)\n",
-           vctx.width, vctx.height, stride);
-    printf("Triangle with vertical edge-01 at x=X; filled cols over y=[340,460].\n");
-    printf("'end extent' = the END-edge side (max for L/R=1 right, min for L/R=0 left).\n\n");
-
     float Xs[] = { 300.0f, 300.5f, 301.0f, 301.5f };
+
+    printf("\nseamtest: S3d span fill rule (%dx%d stride %u)\n\n",
+           vctx.width, vctx.height, stride);
+
+    printf("=== END edge (edge 01 vertical at X) ===\n");
     for (int lr = 1; lr >= 0; lr--) {
-        printf("L/R=%d (%s edge at X):\n", lr, lr ? "RIGHT / end" : "LEFT / end");
-        printf("  %-8s %-10s %-10s %-10s\n", "X", "min", "max", "endExtent");
-        for (size_t i = 0; i < sizeof(Xs) / sizeof(Xs[0]); i++) {
-            int minx, maxx;
-            edge_test(&vctx, vram, stride, Xs[i], lr, &minx, &maxx);
-            int ext = lr ? maxx : minx;
-            printf("  %-8.1f %-10d %-10d %-10d\n", Xs[i], minx, maxx, ext);
+        printf("L/R=%d (%s):\n  %-7s %-6s %-6s %-10s\n", lr,
+               lr ? "right/end" : "left/end", "X", "min", "max", "endExtent");
+        for (size_t i = 0; i < sizeof(Xs)/sizeof(Xs[0]); i++) {
+            int mn, mx; end_test(&vctx, vram, stride, Xs[i], lr, &mn, &mx);
+            int ext = lr ? mx : mn;
+            printf("  %-7.1f %-6d %-6d %-10d\n", Xs[i], mn, mx, ext);
         }
         printf("\n");
     }
 
-    printf("How to read it:\n");
-    printf("  END edge at INTEGER X: endExtent == X  -> INCLUSIVE (draws through X;\n");
-    printf("                                    shared edges double-draw 1px -> the band).\n");
-    printf("                          endExtent == X-1 -> EXCLUSIVE (watertight).\n");
-    printf("  HALF-INTEGER X (e.g. 300.5): endExtent 300 vs 301 reveals ceil vs floor.\n");
-    printf("  L/R=0 (left end) may differ from L/R=1 -- measure both before biasing.\n");
-    printf("Fix once the rule is known: bias the END edge toward the triangle interior\n");
-    printf("(TXEND01/12 down 1px for L/R=1, up 1px for L/R=0) so the mesh is watertight.\n");
+    printf("=== START edge (edge 02 vertical at X) ===\n");
+    for (int lr = 1; lr >= 0; lr--) {
+        printf("L/R=%d (%s):\n  %-7s %-6s %-6s %-10s\n", lr,
+               lr ? "left/start" : "right/start", "X", "min", "max", "startExtent");
+        for (size_t i = 0; i < sizeof(Xs)/sizeof(Xs[0]); i++) {
+            int mn, mx; start_test(&vctx, vram, stride, Xs[i], lr, &mn, &mx);
+            int ext = lr ? mn : mx;
+            printf("  %-7.1f %-6d %-6d %-10d\n", Xs[i], mn, mx, ext);
+        }
+        printf("\n");
+    }
+
+    printf("=== OVERLAP: two triangles sharing edge at N=350 ===\n");
+    printf("  A=red(left) B=green(right); cols shown left->right as N-2 N-1 N N+1 N+2.\n");
+    printf("  If col N flips A<->B between the two orders, BOTH claim it (double-draw).\n");
+    overlap_test(&vctx, vram, stride, 350, 1);
+    overlap_test(&vctx, vram, stride, 350, 0);
 
     printf("\nProbe complete. Ctrl-C to exit.\n");
-    while (running) {
-        if (getchar() == EOF)
-            break;
-    }
+    while (running) { if (getchar() == EOF) break; }
     virge_cleanup(&vctx);
     return 0;
 }
