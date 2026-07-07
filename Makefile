@@ -85,5 +85,12 @@ gltritest: demos/gltritest.c src/backends/virge/virge.c src/backends/virge/virge
 fliptest: demos/fliptest.c src/backends/virge/virge.c src/backends/virge/virge.h
 	$(CC) $(CFLAGS) -o $@ demos/fliptest.c src/backends/virge/virge.c $(LDFLAGS)
 
+# Diagnostic: measure the 3D engine's per-pixel X Z-gradient (TdZdX) on silicon
+# (back-face bleedthrough). Draws a z=f(X) ramp triangle, Z-update ON, and
+# CPU-reads the Z buffer to compute the rendered slope vs intended. Virge-
+# specific, links only the chip driver (no frontend).
+dztest: demos/dztest.c src/backends/virge/virge.c src/backends/virge/virge.h
+	$(CC) $(CFLAGS) -o $@ demos/dztest.c src/backends/virge/virge.c $(LDFLAGS)
+
 clean:
 	rm -f $(DEMOS) *.o src/*.o src/backends/*/*.o
