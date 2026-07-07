@@ -84,6 +84,25 @@ static void dump_z_profile(int W, int H, uint32_t stride,
     }
 }
 
+/* Read the Z buffer at a fixed X column across sampled rows. Used to check
+ * whether virge_clear_z actually wrote 0xFFFF to every row: the compare uses
+ * the S16.15 integer part (Zs compares as 0 for z<1), so LESS fails wherever
+ * Zzb==0 -- which is what cuts the triangle at a Z-buffer content boundary. */
+static void dump_z_coverage(const char *label, const uint8_t *zram,
+                            uint32_t stride, int H)
+{
+    static const int ys[] = {0, 100, 200, 230, 234, 238, 300, 450, 599};
+    printf("  %s (x=400):\n", label);
+    for (size_t i = 0; i < sizeof(ys) / sizeof(ys[0]); i++) {
+        int y = ys[i];
+        if (y >= H) continue;
+        uint16_t z = read_px(zram, stride, 400, y);
+        printf("    y=%3d Z=0x%04x%s\n", y, z,
+               z == 0xFFFF ? "" :
+               (z == 0 ? "  <-- ZERO (uncleared)" : "  <-- not 0xFFFF"));
+    }
+}
+
 struct zmode { const char *name; uint32_t bits; };
 
 /* Run the demo sequence (clear_z -> fill -> draw) under one Z mode and read
@@ -141,6 +160,7 @@ int main(int argc, char **argv)
     int W = vctx.width, H = vctx.height;
     uint32_t stride = vctx.stride;
     uint8_t *vram = (uint8_t *)vctx.fb;
+    uint8_t *zram = vram + vctx.z_base;
 
     printf("\n3D triangle Z-mode matrix: requested %dx%d -> adopted %dx%d "
            "stride %u, fb 0x%x z 0x%x\n", req_w, req_h, W, H, stride,
@@ -149,6 +169,18 @@ int main(int argc, char **argv)
     uint32_t clip_lr = virge_read32(&vctx, VIRGE_3D_CLIP_L_R);
     printf("3D clip readback: right=%u bottom=%u (L_R=0x%x T_B=0x%x)\n",
            clip_lr & 0x7FF, clip_tb & 0x7FF, clip_lr, clip_tb);
+
+    /* Fable's decisive check: does virge_clear_z reach every row? Read Z right
+     * after clear_z (before any fill/draw), then again after the FB fill, to
+     * see if the clear covers all rows and whether fill_rect disturbs Z. */
+    printf("\nZ-clear coverage probe (0xFFFF=cleared far, 0=uncleared):\n");
+    cpu_clear_fb(&vctx, W, H, stride);
+    virge_clear_z(&vctx, 1.0f);
+    virge_wait_engine(&vctx);
+    dump_z_coverage("after clear_z            ", zram, stride, H);
+    virge_fill_rect(&vctx, 0, 0, W, H, 0);
+    virge_wait_engine(&vctx);
+    dump_z_coverage("after clear_z + fill_rect", zram, stride, H);
 
     /* The demo sequence under each Z mode. */
     struct zmode modes[] = {
@@ -177,7 +209,6 @@ int main(int argc, char **argv)
     vctx.z_cmd_bits = VIRGE_ZB_NORMAL | VIRGE_ZBC_LESS | VIRGE_ZUP_ENABLE;
     draw_demo_triangle(&vctx, W, H);
     virge_wait_engine(&vctx);
-    uint8_t *zram = vram + vctx.z_base;
     printf("\nZ-buffer profile under LESS (TZS should be 0x4000; cleared far=0xFFFF):\n");
     dump_z_profile(W, H, stride, vram, zram);
 
