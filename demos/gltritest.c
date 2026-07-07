@@ -9,14 +9,14 @@
  *     out. virge_scanout_takeover adopts the live 800x600/1600 raster for any
  *     caller request, so ctx geometry matches gltritest regardless.
  *
- * That leaves exactly ONE engine-state difference vs the working gltritest
- * path: the demo's z_cmd_bits = ZB_NORMAL | ZBC_LESS | ZUP (set by the glue's
- * GL-default LESS), vs virge_init's ZBC_LEQUAL default. Uniform z (0.5 at
- * every vertex, cleared Zzb=0xFFFF) should pass identically under LESS and
- * LEQUAL, so this matrix is expected to be all-FULL -- which would mean the
- * demo cutoff is stale binaries, not current code. ALWAYS/NEVER are controls:
- * ALWAYS must be FULL, NEVER must be EMPTY (they prove the Z compare and the
- * readback are both genuinely wired up).
+ * The matrix found it: ZBC_LESS (code 4) cuts the triangle at maxy~234 while
+ * LEQUAL (6) and ALWAYS (7) are FULL and NEVER (0) is EMPTY. So the GL-default
+ * LESS the glue sets is the culprit. Uniform z (0.5 every vertex, cleared
+ * Zzb=0xFFFF) should make LESS pass everywhere, yet it fails the bottom --
+ * implying Zs drifted up to 0xFFFF there (LEQUAL passes via equality, LESS
+ * fails on strict inequality) even though dzdx=dzdy=0 -> TdZdX=TdZdY=0. This
+ * build dumps the Z-buffer profile under LESS to read the actual written Zs
+ * per row and settle drift vs compare-semantics.
  *
  * Usage: sudo ./gltritest [init_w init_h]   (default 800 600; try 640 480 to
  *        exercise the demo's adoption path).
@@ -63,6 +63,25 @@ static void draw_demo_triangle(struct virge_ctx *ctx, int W, int H)
         .x = 0.19f * W, .y = 0.125f * H, .z = 0.5f, .w = 1,
         .r = 0, .g = 0, .b = 1, .a = 1 };
     virge_draw_triangle_gouraud(ctx, v_red, v_green, v_blue);
+}
+
+/* Sample the Z buffer at the first triangle pixel of every 20th row. After a
+ * draw with ZUP, the Z buffer holds the triangle's Zs where it passed and the
+ * cleared 0xFFFF where it failed, so this prints Zs vs Y directly -- revealing
+ * whether Zs drifted up toward 0xFFFF or stayed flat at ~0x4000. */
+static void dump_z_profile(int W, int H, uint32_t stride,
+                           const uint8_t *vram, const uint8_t *zram)
+{
+    for (int y = 0; y < H; y += 20) {
+        int x_hit = -1;
+        for (int x = 0; x < W; x++) {
+            if (read_px(vram, stride, x, y)) { x_hit = x; break; }
+        }
+        if (x_hit < 0)
+            continue;
+        uint16_t z = read_px(zram, stride, x_hit, y);
+        printf("    y=%3d x=%3d  Z=0x%04x\n", y, x_hit, z);
+    }
 }
 
 struct zmode { const char *name; uint32_t bits; };
@@ -143,11 +162,24 @@ int main(int argc, char **argv)
     for (size_t i = 0; i < sizeof(modes) / sizeof(modes[0]); i++)
         run_zmode(&vctx, W, H, stride, vram, &modes[i]);
 
-    printf("\nReading guide:\n");
-    printf("  LESS FULL (like LEQUAL)      -> Z mode exonerated; demo cutoff is\n"
-           "                                  stale binaries -- rebuild triangle/cube.\n");
-    printf("  LESS CUT, LEQUAL/ALWAYS FULL -> ZBC_LESS mis-encoded on this silicon.\n");
-    printf("  ALWAYS not FULL / NEVER not EMPTY -> Z compare or readback not wired up.\n");
+    printf("\nResult: LESS cuts the triangle below ~y=234 while LEQUAL and ALWAYS\n");
+    printf("  pass and NEVER rejects all. The Z-buffer profile under LESS (next)\n");
+    printf("  shows the actual Zs written per row: values climbing toward 0xFFFF\n");
+    printf("  mean Zs is drifting up; a flat ~0x4000 means the compare itself is\n");
+    printf("  the problem.\n");
+
+    /* Z-buffer profile under LESS: the Z buffer holds the written Zs where the
+     * triangle passed and 0xFFFF where it failed (cleared, not overwritten). */
+    virge_wait_engine(&vctx);
+    cpu_clear_fb(&vctx, W, H, stride);
+    virge_clear_z(&vctx, 1.0f);
+    virge_fill_rect(&vctx, 0, 0, W, H, 0);
+    vctx.z_cmd_bits = VIRGE_ZB_NORMAL | VIRGE_ZBC_LESS | VIRGE_ZUP_ENABLE;
+    draw_demo_triangle(&vctx, W, H);
+    virge_wait_engine(&vctx);
+    uint8_t *zram = vram + vctx.z_base;
+    printf("\nZ-buffer profile under LESS (TZS should be 0x4000; cleared far=0xFFFF):\n");
+    dump_z_profile(W, H, stride, vram, zram);
 
     /* Leave the demo's actual config (LESS) on screen for a photo. */
     printf("\nLeaving the demo's exact config (LESS) on screen. Ctrl-C to exit.\n");
