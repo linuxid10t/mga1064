@@ -89,17 +89,6 @@ static const int cube_faces[12][3] = {
     /* Top    */ {3, 7, 6}, {3, 6, 2},
 };
 
-/* The 4 corner vertices of each face (for depth-sorting visible faces
- * back-to-front). Index order is irrelevant -- only the mean is used. */
-static const int face_quads[6][4] = {
-    {0, 1, 2, 3}, /* Back   */
-    {4, 5, 6, 7}, /* Front  */
-    {0, 3, 4, 7}, /* Left   */
-    {1, 2, 5, 6}, /* Right  */
-    {0, 1, 4, 5}, /* Bottom */
-    {2, 3, 6, 7}, /* Top    */
-};
-
 static const float face_colors[6][3] = {
     {1.0, 0.0, 0.0},  /* Back:   red     */
     {0.0, 1.0, 0.0},  /* Front:  green   */
@@ -200,12 +189,10 @@ int main(int argc, char **argv)
     /* Set clear values */
     l10gl_clear_color(&ctx, 0.0f, 0.0f, 0.0f);   /* black background */
     l10gl_clear_depth(&ctx, 1.0f);                /* far Z */
-    /* LEQUAL + back-to-front draw order: at a shared silhouette edge two
-     * faces tie in z, and LEQUAL lets the later-drawn (nearer) face win the
-     * tie. Drawing visible faces far-to-near therefore makes the nearer
-     * face own each shared edge, so the earlier face no longer bleeds
-     * through (which happened under LESS, where the later face lost ties). */
-    l10gl_depth_func(&ctx, L10GL_LEQUAL);
+    /* Coverage is watertight at shared edges (seamtest: each boundary pixel
+     * owned by exactly one triangle), so draw order and LESS vs LEQUAL do
+     * not affect the cube -- plain LESS, fixed face order, no sort. */
+    l10gl_depth_func(&ctx, L10GL_LESS);
 
     float angle = 0.0f;
     int frame = 0;
@@ -230,23 +217,16 @@ int main(int argc, char **argv)
                     width, height, 5.0f);
         }
 
-        /* Draw the cube in two phases:
-         *   1) cull back-faces, and for each visible face record a
-         *      representative depth (mean eye-z of its 4 corners) and its
-         *      lit color;
-         *   2) draw the visible faces BACK-TO-FRONT (far first).
-         * Under L10GL_LEQUAL a shared silhouette edge -- where two faces
-         * have identical z -- is won by whichever face is drawn LAST, so
-         * far-to-near order hands each edge to the nearer (correct) face
-         * and removes the bleedthrough. */
-        int vis_face[6];
-        float vis_depth[6];
-        float vis_r[6], vis_g[6], vis_b[6];
-        int n_vis = 0;
+        /* Draw all 12 triangles in fixed face order, skipping back-faces.
+         * Coverage is watertight at shared edges (verified by seamtest: each
+         * boundary pixel is owned by exactly one triangle), so draw order and
+         * the LESS compare do not affect the result -- no sort needed. */
+        for (int face = 0; face < 12; face++) {
+            int color_idx = face / 2;
 
-        for (int f = 0; f < 6; f++) {
+            /* Face normal (axis-aligned in model space) */
             float face_normal[3];
-            switch (f) {
+            switch (color_idx) {
             case 0: face_normal[0]=0;  face_normal[1]=0;  face_normal[2]=-1; break;
             case 1: face_normal[0]=0;  face_normal[1]=0;  face_normal[2]=1;  break;
             case 2: face_normal[0]=-1; face_normal[1]=0;  face_normal[2]=0;  break;
@@ -254,6 +234,7 @@ int main(int argc, char **argv)
             case 4: face_normal[0]=0;  face_normal[1]=-1; face_normal[2]=0;  break;
             case 5: face_normal[0]=0;  face_normal[1]=1;  face_normal[2]=0;  break;
             }
+
             float normal_view[3];
             mat3_transform(normal_view, rot, face_normal);
 
@@ -263,67 +244,27 @@ int main(int argc, char **argv)
             if (normal_view[2] >= 0.0f)
                 continue;
 
-            float cz = 0.0f;  /* mean eye-z of the face's 4 corners */
-            for (int k = 0; k < 4; k++)
-                cz += transformed[face_quads[f][k]][2];
-            cz *= 0.25f;
-
             float intensity = diffuse_light(normal_view);
-            vis_face[n_vis]  = f;
-            vis_depth[n_vis] = cz;
-            vis_r[n_vis]     = face_colors[f][0] * intensity;
-            vis_g[n_vis]     = face_colors[f][1] * intensity;
-            vis_b[n_vis]     = face_colors[f][2] * intensity;
-            n_vis++;
-        }
+            float r = face_colors[color_idx][0] * intensity;
+            float g = face_colors[color_idx][1] * intensity;
+            float b = face_colors[color_idx][2] * intensity;
 
-        /* Insertion sort, far (large eye-z) first. At most 3 visible faces.
-         * MUST move the per-face color (vis_r/g/b) in lockstep with the face
-         * index and depth -- otherwise sorted faces draw with another face's
-         * color (the colors visibly swap as the sort order changes). */
-        for (int a = 1; a < n_vis; a++) {
-            int   vf = vis_face[a];
-            float vd = vis_depth[a];
-            float vr = vis_r[a], vg = vis_g[a], vb = vis_b[a];
-            int j = a - 1;
-            while (j >= 0 && vis_depth[j] < vd) {
-                vis_face[j + 1]  = vis_face[j];
-                vis_depth[j + 1] = vis_depth[j];
-                vis_r[j + 1]     = vis_r[j];
-                vis_g[j + 1]     = vis_g[j];
-                vis_b[j + 1]     = vis_b[j];
-                j--;
-            }
-            vis_face[j + 1]  = vf;
-            vis_depth[j + 1] = vd;
-            vis_r[j + 1]     = vr;
-            vis_g[j + 1]     = vg;
-            vis_b[j + 1]     = vb;
-        }
-
-        /* Draw visible faces far-to-near, both triangles per face. */
-        for (int v = 0; v < n_vis; v++) {
-            int color_idx = vis_face[v];
-            float r = vis_r[v], g = vis_g[v], b = vis_b[v];
-            for (int t = 0; t < 2; t++) {
-                int face = color_idx * 2 + t;
-                int i0 = cube_faces[face][0];
-                int i1 = cube_faces[face][1];
-                int i2 = cube_faces[face][2];
-                struct l10gl_vertex v0 = {
-                    .x = projected[i0].sx, .y = projected[i0].sy,
-                    .z = projected[i0].sz, .r = r, .g = g, .b = b, .a = 1.0f
-                };
-                struct l10gl_vertex v1 = {
-                    .x = projected[i1].sx, .y = projected[i1].sy,
-                    .z = projected[i1].sz, .r = r, .g = g, .b = b, .a = 1.0f
-                };
-                struct l10gl_vertex v2 = {
-                    .x = projected[i2].sx, .y = projected[i2].sy,
-                    .z = projected[i2].sz, .r = r, .g = g, .b = b, .a = 1.0f
-                };
-                l10gl_draw_triangle(&ctx, v0, v1, v2);
-            }
+            int i0 = cube_faces[face][0];
+            int i1 = cube_faces[face][1];
+            int i2 = cube_faces[face][2];
+            struct l10gl_vertex v0 = {
+                .x = projected[i0].sx, .y = projected[i0].sy,
+                .z = projected[i0].sz, .r = r, .g = g, .b = b, .a = 1.0f
+            };
+            struct l10gl_vertex v1 = {
+                .x = projected[i1].sx, .y = projected[i1].sy,
+                .z = projected[i1].sz, .r = r, .g = g, .b = b, .a = 1.0f
+            };
+            struct l10gl_vertex v2 = {
+                .x = projected[i2].sx, .y = projected[i2].sy,
+                .z = projected[i2].sz, .r = r, .g = g, .b = b, .a = 1.0f
+            };
+            l10gl_draw_triangle(&ctx, v0, v1, v2);
         }
 
         l10gl_wait_engine(&ctx);
