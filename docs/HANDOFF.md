@@ -167,17 +167,28 @@ diagnosis below (a depth-range/Z-fight issue, not a Z-buffer failure).
 Now that the cube is tear-free, back-face color bleeds through the front
 faces — a depth/edge quality issue, NOT a double-buffer regression (the
 shared Z buffer is cleared each frame; the ZBC matrix is FULL). Likely
-pre-existing but hidden by tearing. Prime suspect:
+pre-existing but hidden by tearing. Suspects, in evidence order:
 
-- **The cube's depth range is needlessly tiny.** `demos/cube.c`
-  `project()` sets `sz = (z_eye + camera_dist) / 1000.0f`, mapping eye-z
-  [4,6] to sz [0.004, 0.006] — a ~0.002 slice of [0,1], so only ~130 of
-  the 65536 Z levels separate front from back faces. At grazing angles
-  and shared silhouette edges this Z-fights and back faces bleed through.
-  Widening the mapping (e.g. sz = (z_eye − 3) / 4.0 → [0.25,0.75],
-  ~32000 levels) is the first thing to try.
-- Secondary: edge/silhouette sub-pixel setup (the V7/V9/V10 Phase-0
-  thread).
+- **Depth range widened — HELPED but not cured.** `demos/cube.c`
+  `project()` used to map eye-z to a ~0.002 slice of [0,1] (~130 of 65536
+  Z levels separating front/back) → Z-fight at grazing angles. Commit
+  `f8fb056` widened it to `sz = (z_eye + camera_dist − 3) / 4.0` (~32k
+  levels). Bleedthrough is now **"reduced but not gone"** — a residual
+  systematic error remains.
+- **Z-gradient scale — TdZdX EXONERATED, TdZdY UNTESTED.** `dztest`
+  (2026-07-07) measured the per-pixel X Z-gradient on silicon at
+  **measured/intended = 1.000** — TdZdX is exactly right, FALSIFYING the
+  86Box-cited "TdZdX is half-strength (added to the post-<<1 accumulator,
+  needs 2^16)" claim. (This also makes 86Box's parallel "TdZdY is fine"
+  untrustworthy — it must be measured.) The X probe cannot exercise Y: its
+  constant-z left edge sets `slope02 = 0` and `dzdy = 0`, so the programmed
+  `TdZdY = −dzdy + slope02·dzdx` is 0 — the per-scanline Z edge-walk never
+  runs. dztest now also probes Y (z=f(Y), dzdx=0). **ACTIVE NEXT STEP:** run
+  it — a Y ratio ≠ 1.0 names the bug (×2 if ~0.5); 1.0 exonerates all
+  gradients and pivots to edges/precision.
+- **Edge/precision (secondary):** sub-pixel seam rules and LEQUAL ties at
+  the cube's shared silhouette edges (the V7/V9/V10 Phase-0 thread). Only
+  worth pursuing once both Z-gradient axes are verified 1.0.
 
 Repro: `sudo ./cube`. Acceptance test: two overlapping triangles at
 z=0.3/0.7 drawn in both orders occluding identically.
@@ -241,6 +252,12 @@ never copy):
   divisors to settle the display-start unit on silicon, plus reports a
   working vsync source (0x3DA retrace vs VSY INT latch w/ VSY ENB).
   Settled x4/dword + VSY ENB on 2026-07-07.
+- `sudo ./dztest` — per-pixel Z-gradient probe (virge.c only): draws a
+  z=f(X) ramp triangle (dzdy=0) and a z=f(Y) ramp triangle (dzdx=0),
+  CPU-reads the Z buffer, and reports the rendered per-pixel Z-word slope
+  vs intended for BOTH axes (TdZdX and TdZdY). X verified 1.000 on
+  2026-07-07; Y is the active open measurement (the X probe can't reach
+  it). NOT in `DEMOS` — build explicitly: `make -B BACKEND=virge dztest`.
 - `sudo ./fbtest` — fbdev-based pattern; useless on this machine (no
   /dev/fb0), kept for machines that have one.
 - Boot log prints: FB/fbdev status, "CRTC raw"/"CRTC truth" dump
