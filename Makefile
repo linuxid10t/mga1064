@@ -104,5 +104,10 @@ dztest: demos/dztest.c src/backends/virge/virge.c src/backends/virge/virge.h
 seamtest: demos/seamtest.c src/backends/virge/virge.c src/backends/virge/virge.h
 	$(CC) $(CFLAGS) -o $@ demos/seamtest.c src/backends/virge/virge.c $(LDFLAGS)
 
+# Diagnostic: render the cube to VRAM and CPU-read it back (bypassing the
+# monitor) to test whether the bleedthrough is in the framebuffer or monitor-side.
+cubefb: demos/cubefb.c src/backends/virge/virge.c src/backends/virge/virge.h
+	$(CC) $(CFLAGS) -o $@ demos/cubefb.c src/backends/virge/virge.c $(LDFLAGS)
+
 clean:
 	rm -f $(DEMOS) *.o src/*.o src/backends/*/*.o
