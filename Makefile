@@ -71,5 +71,12 @@ filltest: demos/filltest.c src/backends/virge/virge.c src/backends/virge/virge.h
 tritest: demos/tritest.c src/backends/virge/virge.c src/backends/virge/virge.h
 	$(CC) $(CFLAGS) -o $@ demos/tritest.c src/backends/virge/virge.c $(LDFLAGS)
 
+# Diagnostic: 3D triangle readback through the DEMO engine sequence (symptom 2,
+# 3D cutoff). Reproduces clear_z->draw (tritest) vs clear_z->fill->draw (demo)
+# and tests sleep / FIFO-wait / re-arm interventions. Virge-specific, links
+# only the chip driver (no frontend); CPU-reads VRAM after each draw.
+gltritest: demos/gltritest.c src/backends/virge/virge.c src/backends/virge/virge.h
+	$(CC) $(CFLAGS) -o $@ demos/gltritest.c src/backends/virge/virge.c $(LDFLAGS)
+
 clean:
 	rm -f $(DEMOS) *.o src/*.o src/backends/*/*.o
