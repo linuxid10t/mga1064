@@ -124,14 +124,12 @@ static int run_zmode(struct virge_ctx *ctx, int W, int H, uint32_t stride,
  * Z_BASE / Z_STRIDE to pin the addressing bug. */
 static void probe_z_layout(struct virge_ctx *ctx, int W, int H, uint32_t stride_fb,
                            uint8_t *vram, uint32_t vram_size, uint16_t target,
-                           uint32_t prog_zb, uint32_t prog_zs, uint32_t zs_to_program)
+                           uint32_t prog_zb, uint32_t prog_zs)
 {
     virge_wait_engine(ctx);
     cpu_clear_fb(ctx, W, H, stride_fb);
     virge_clear_z(ctx, 1.0f);
     virge_fill_rect(ctx, 0, 0, W, H, 0);
-    /* Override Z_STRIDE to test whether the 3D unit honors it. */
-    virge_write32(ctx, VIRGE_3D_Z_STRIDE, zs_to_program & 0xFFF);
     ctx->z_cmd_bits = VIRGE_ZB_NORMAL | VIRGE_ZBC_ALWAYS | VIRGE_ZUP_ENABLE;
     struct virge_vertex v00 = {.x=0,   .y=0,   .z=0.7f,.w=1,.r=1,.g=1,.b=1,.a=1};
     struct virge_vertex vW0 = {.x=W-1, .y=0,   .z=0.7f,.w=1,.r=1,.g=1,.b=1,.a=1};
@@ -154,9 +152,10 @@ static void probe_z_layout(struct virge_ctx *ctx, int W, int H, uint32_t stride_
     uint32_t s_meas = (last > first + (uint32_t)(W - 1) * 2)
                       ? (last - first - (uint32_t)(W - 1) * 2) / (uint32_t)(H - 1)
                       : 0;
-    printf("  programmed Z_STRIDE=%-5u -> measured stride=%-5u, base@0x%06x "
-           "(%ld hits)\n", zs_to_program, s_meas, first, total);
-    (void)prog_zb; (void)prog_zs; (void)target;
+    printf("  measured Z stride=%-5u (programmed %u), base@0x%06x (%ld hits) %s\n",
+           s_meas, prog_zs, first, total,
+           (s_meas == prog_zs && first == prog_zb) ? "[OK]" : "[MISMATCH]");
+    (void)target;
 }
 
 /* Run one LESS draw of the demo triangle with Z relocated to zb; return maxy.
@@ -250,21 +249,17 @@ int main(int argc, char **argv)
      * stride vs the programmed Z_BASE/Z_STRIDE. The demo-triangle 4MB scan
      * already showed writes at 0x1364d2..0x30e7f8 (~2MB span, ~2x expected),
      * implying base ok but stride ~2.5x; this pins the exact stride. */
-    printf("\nZ-layout probe (full-screen rect, ALWAYS+ZUP @ z=0.7; sweeps Z_STRIDE):\n");
+    printf("\nZ-layout probe (full-screen rect, ALWAYS+ZUP @ z=0.7):\n");
     {
         uint16_t target = (uint16_t)((VIRGE_Z_FIXED(0.7f) >> 15) & 0xFFFF);
-        printf("  expected Zs word = 0x%04x; programmed Z_BASE=0x%06x\n",
-               target, orig_zbase);
-        uint32_t zs_vals[] = { (uint32_t)W * 2, (uint32_t)W * 4, (uint32_t)W };
-        for (size_t i = 0; i < sizeof(zs_vals) / sizeof(zs_vals[0]); i++)
-            probe_z_layout(&vctx, W, H, stride, vram, vctx.vram_size, target,
-                           orig_zbase, W * 2, zs_vals[i]);
-        printf("  -> measured stride constant across sweeps: Z_STRIDE write "
-               "ineffective (wrong register / not honored).\n"
-               "  -> measured stride tracks the programmed value: encoding is "
-               "scaled/shifted; the matching value is the fix.\n"
-               "  -> measured stride = W*2 (1600) at Z_STRIDE=1600: Z stride is "
-               "actually correct; re-examine.\n");
+        printf("  expected Zs word = 0x%04x; programmed Z_BASE=0x%06x Z_STRIDE=%u\n",
+               target, orig_zbase, W * 2);
+        probe_z_layout(&vctx, W, H, stride, vram, vctx.vram_size, target,
+                       orig_zbase, W * 2);
+        printf("  -> [OK] means the per-draw re-arm holds (base 0x%06x + stride %u):\n"
+               "     the Z fetch now matches the 2D clear, so the matrix LESS row\n"
+               "     should be FULL and the triangle/cube should render completely.\n",
+               orig_zbase, W * 2);
     }
 
     /* Z_BASE toggle: the default Z region 0xEA600-0x1D4C00 crosses the 1MB
