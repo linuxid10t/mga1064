@@ -4,8 +4,9 @@ Audience: an implementing agent picking up this project cold. Read
 `PLAN.md` (roadmap + current-state snapshot) and
 `docs/datasheets/README.md` (datasheet page index + verified register
 facts) before changing code. This file records the live debugging
-state: symptom 1 (diagnosed -- monitor scaling moire, parked) and
-symptom 2 (engine writes not landing -- open, in progress).
+state: symptom 1 (diagnosed — monitor scaling moiré, parked) and
+symptom 2 (narrowed to the 3D Z unit: wrong TZS scale + Z fetch/update
+not touching the CPU-visible z_base region — kill sequence pending).
 
 ## Test setup (fixed, do not re-derive)
 
@@ -75,46 +76,101 @@ ViRGE may not cleanly hit. **Parked.** Free mitigation: the monitor's
 manual coarse/fine clock & phase controls can reduce it. The scanout
 itself is correct; this is cosmetic and does not block engine work.
 
-## Open symptom 2: engine writes don't land (the next big one)
+## Open symptom 2: now isolated to the 3D Z unit
 
-`./triangle` leaves the **previous scantest pattern** on screen with
-some noise at the top. Scanout is correct (symptom 1 aside), so this
-means the 2D clear (`virge_fill_rect`), Z-clear, and 3D triangle are
-not writing the framebuffer where/how they should. The "noise at top"
-is probably where the engine output actually went.
+The investigation narrowed in stages, each hardware-verified:
 
-What to check, in order:
+1. **2D fills are correct.** `filltest` passes cleanly after the
+   XP/YP direction fix (`b0059e2`) — rects land at the right
+   addresses, full height, correct stride. The old PLAN.md "row
+   ceiling ~299" / "narrow width" mysteries did not reproduce on the
+   fixed scanout for FB-destination fills.
+2. **The 3D cutoff is Z-gated.** A uniform-z (0.5) Gouraud triangle
+   over a Z-buffer cleared to 0xFFFF, varying only CMD_SET ZBC
+   [22:20]: NEVER→empty, ALWAYS→full, LEQUAL→full, **LESS→cut at
+   y≈234** (top ~24% of pixels render; walk is bottom-up so the walk
+   *starts* failing and begins passing at y≈234).
+3. **Z-clear coverage is complete.** CPU readback at
+   `z_base + y*1600` reads 0xFFFF at every sampled row, both after
+   `virge_clear_z` and after the subsequent color fill. The Zzb=0
+   boundary model is refuted.
+4. **The current analysis** (see "established engine facts" below for
+   the receipts): with the driver's `VIRGE_Z_FIXED(z) = z<<15`, the
+   compare-side integer is `TZS>>15` = **0** for any z<1. Therefore
+   LEQUAL (0 ≤ anything) is **vacuous — it always renders full and
+   proves nothing**; and LESS (0 < Zzb) renders a pixel iff the word
+   the Z unit *actually fetches* is nonzero. The LESS image is a map
+   of fetched memory content. Since the CPU-visible z_base region is
+   all 0xFFFF, **the Z unit is not fetching (nor, per the ZUP
+   write-back check, writing) the CPU-visible z_base region**. The
+   y≈234 boundary lives at whatever addresses it really touches.
+   Note the programmed Z region (0xEA600–0x1D4C00) crosses the 1MB
+   boundary — a plausible wrap point for a Z-port addressing erratum
+   that the 2D engine and CPU aperture handle fine.
 
-1. Re-verify the 2D fill on the now-correct scanout: a standalone test
-   that fills known rectangles at known coords (e.g. 100×100 at
-   (50,50), full-width bar at y=300) and then **CPU-reads back** VRAM
-   through `ctx->fb` at stride 1600 and prints pass/fail per corner —
-   plus a photo. That separates "engine writes wrong address/stride"
-   from "engine doesn't run". **Implemented as `demos/filltest.c` — run
-   `sudo ./filltest`**; it also probes the PLAN's suspected "row ceiling
-   ~299" (full-height R3 strip) and "narrow-width fills nothing" (R1/R3)
-   on the fixed scanout.
-2. The engine register programming after the takeover: `engine_init_3d`
-   and every 2D op program `VIRGE_2D/3D_DEST_SRC_STR` with
-   `ctx->stride` (1600) and clip/width with `ctx->width/height`
-   (800/600) — confirm in the boot log ("Screen: 800x600 ... stride
-   1600") and re-read the datasheet units (2D width in pixels at 16bpp,
-   stride in bytes, DB019-B PDF p.232/246).
-3. PLAN.md's two old mysteries — "row ceiling ~299" and "narrow widths
-   fill nothing" — were measured through the old wrong scanout and are
-   flagged likely-artifacts, but if fills still misbehave now they are
-   real engine bugs: re-run those exact tests on the fixed scanout
-   before theorizing.
-4. CR50: the takeover sets only bits 5-4 (pixel length, per s3fb). On
-   older S3 cores CR50 bits 7-6/1-0 also encode a "GE screen width"
-   used by the blit engine. DB019-B does not document CR50 at all;
-   86Box's `vid_s3_virge.c` is the reference for whether the ViRGE 2D
-   engine consumes it. If it does, the engine may be blitting with a
-   wrong internal pitch — which would fit symptom 2.
-5. The V8-era color packing and V9/V10 triangle fixes are already in;
-   once fills land correctly, `./triangle` should show a clean scalene
-   triangle with a smooth red→green→blue ramp. Shape/gradient defects
-   at that point are V7/V9 sub-pixel issues (see PLAN.md Phase 0).
+**Kill sequence (next hardware run, one build):**
+
+1. Fix `VIRGE_Z_FIXED`: the S16.15 integer part is the full 16-bit Z
+   value, so `VIRGE_Z_FIXED(x) = x × 65535 × 32768` (z=1.0 →
+   0x7FFF8000; compare value = TZS>>15). Same ×65535 on TdZdX/TdZdY.
+   This is the Z twin of the V10 color-scale fix (`d101112`); correct
+   the virge.h comment. Needed regardless of the addressing bug.
+2. ALWAYS + ZUP draw at a *distinctive* depth (z=0.7 → Zs=0xB332; do
+   not use 0.5→0x7FFF, which is also RGB555 white and false-positives
+   against the framebuffer).
+3. CPU-scan all 4MB for runs of that value → the Z unit's real write
+   base/stride/orientation, directly comparable to the programmed
+   Z_BASE/Z_STRIDE. Nothing found → the Z unit never writes: suspect
+   the ZUP bit or a Z-unit enable rather than addressing.
+4. Independent discriminator: set Z_BASE = 0x200000 (2MB) and re-run
+   the LESS matrix. Boundary moves/vanishes → fetched-content map
+   confirmed (addressing story, incl. the 1MB-crossing hypothesis).
+   Boundary stays at y≈234 → walk-relative, internal to the span
+   engine — different investigation.
+
+Once Z works: the real acceptance test is two overlapping triangles
+at z=0.3/0.7 drawn in both orders occluding identically. Then
+`./triangle` / `./cube` should finally render correctly; remaining
+shape/gradient defects at that point are V7/V9 sub-pixel issues
+(PLAN.md Phase 0).
+
+**Retroactive warning:** every earlier conclusion that leaned on
+"LEQUAL renders full" as a control is invalid — LEQUAL was vacuously
+true at the current Z scale.
+
+## Established engine facts (verified against 86Box, 2026-07-06)
+
+Register-file architecture, from the MMIO decode in 86Box
+`vid_s3_virge.c` (behavioral reference per repo rules — consult,
+never copy):
+
+- The three **2D banks (0xA4xx BitBLT / 0xA8xx line / 0xACxx poly)
+  are aliases of ONE shared register file**; the **3D banks
+  (0xB0xx line / 0xB4xx triangle) have their own separate file**. A
+  2D kick does not invalidate 3D dest/stride/clip/Z state; one-time
+  `engine_init_3d` programming is architecturally sound.
+- **3D kick semantics:** with autoexecute OFF, the triangle launches
+  on the **CMD_SET (0xB500) write** — all parameters must be written
+  before it. 0xB57C (TY01/TY12 + L/R in bit 31) merely latches, and
+  kicks only when AE is ON. L10GL's order (params → TY01_Y12 →
+  CMD_SET last) is correct.
+- **3D clip is dead state with HC off** (the rasterizer applies
+  clip_t/b/l/r only when the triangle's CMD_SET has HC set; L10GL
+  disables HC everywhere). The clip registers cannot cause cutoffs.
+- **Write masks** (values silently truncated): base addresses
+  `& 0x3FFFF8` on 4MB cards; strides `& 0xFF8`; clip fields and
+  TY01/TY12 counts 11-bit.
+- **Z pipeline:** span start `z = (base_z > 0) ? base_z<<1 : 0`
+  (clamped non-negative); compare uses `z >> 16` as unsigned 16-bit
+  vs the fetched word; ZBC codes match DB019-B p.129 / virge.h; on
+  pass with ZUP the **new Zs is written back** (fail writes nothing);
+  Z addresses = `z_base + y*z_str`, top-down, plain linear VRAM.
+  Scale quirk: `TdZdX` accumulates in the post-shift domain
+  (effectively 16 fractional bits) while TZS/`TdZdY` are pre-shift
+  (15) — matters once real Z gradients are programmed.
+- 86Box renders the current failing case full-screen under LESS — the
+  observed DX behavior is **off the emulator's map**; from here only
+  hardware probes are authoritative.
 
 ## Diagnostic inventory
 
@@ -122,10 +178,16 @@ What to check, in order:
   (C = 555/1600 must be the clean one); phase 2: full-screen CPU
   pattern at adopted geometry. No engine involvement.
 - `sudo ./triangle`, `./cube` — engine paths (2D clear + Z-clear + 3D).
-- `sudo ./filltest` — symptom-2 2D-fill readback: programs known rects via
+- `sudo ./filltest` — 2D-fill readback: programs known rects via
   `virge_fill_rect`, CPU-reads VRAM back at corners/center, prints pass/fail
-  + a bounding-box locater if a color lands wrong. Run first before any
-  engine-code change for symptom 2.
+  + a bounding-box locater if a color lands wrong. PASSES as of `385d11d`
+  (2D engine exonerated).
+- `sudo ./tritest` — raw-path 3D triangle + Z-buffer readback (chip driver
+  only, no frontend).
+- `sudo ./gltritest` — the symptom-2 workhorse: full demo path
+  (l10gl_create → clear → draw) with ZBC compare-code matrix, Z-clear
+  coverage probe, and Z-profile-under-LESS/ALWAYS readbacks. The kill
+  sequence above lands here.
 - `sudo ./fbtest` — fbdev-based pattern; useless on this machine (no
   /dev/fb0), kept for machines that have one.
 - Boot log prints: FB/fbdev status, "CRTC raw"/"CRTC truth" dump
@@ -140,5 +202,11 @@ What to check, in order:
 `b155aaa` CRTC truth dump · `d3cca61` scantest v1 · `266ac9f`
 wait_vsync latch fix · `bc0fc30` takeover v1 (CR67-only — put the
 monitor out of range) · `50cab91` demos adopt geometry · `301d448`
-takeover v2 (hmul=2 + quadword pitch — works) · `3671c38` PLAN.md
-update. Read `301d448`'s message for the full timing-scaling story.
+takeover v2 (hmul=2 + quadword pitch — works; read its message for
+the full timing-scaling story) · `048bc06` CR3B for doubled scanout ·
+`c7c96f0` symptom 1 parked (monitor moiré) · `93e92ed`/`b0059e2`/
+`385d11d` filltest + 2D fill direction fix (2D exonerated) ·
+`e7b66bc`/`52ae126` tritest (cutoff correlates with Z on) ·
+`7fa057e`..`01c220f` gltritest: ZBC matrix (LESS cuts at y≈234),
+Z-clear coverage verified 0xFFFF, ZUP write-back missing from CPU
+view — leading to the "Z unit addressing" analysis above.
