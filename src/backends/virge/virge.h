@@ -481,7 +481,17 @@
  *                  is 32640, which is why the old ×128 scale rendered the
  *                  cube at ~0.4% brightness (the all-black-cube bug).
  *   Z values:      S16.15 — 1 sign + 16 integer + 15 fraction = 32 bits.
- *                  Same convention as the MGA-1064.
+ *                  The 16-bit integer part IS the full Z value 0-65535: the
+ *                  compare is accum>>15 as unsigned 16-bit (86Box tri():
+ *                  z=(base_z>0)?base_z<<1:0, compared as z>>16 -- net >>15),
+ *                  and ZUP writes that same 16-bit word. So a normalized
+ *                  0.0-1.0 depth maps to 0-(65535<<15), NOT 0-(1<<15) -- no
+ *                  internal normalization, the exact trap the S8.7 color
+ *                  scale hit (V10). The old x2^15 scale made every z<1.0
+ *                  compare as 0, which (a) turned ZBC_LESS into "pass iff the
+ *                  fetched Z word is nonzero" -- the 3D cutoff bug -- and
+ *                  (b) left ZUP writing 0, so depth tests could never order
+ *                  triangles. Same x65535 factor on the deltas.
  *   X coordinates: S11.20 — 1 sign + 11 integer + 20 fraction = 32 bits.
  *                  Provides sub-pixel precision for edge interpolation.
  *   W (perspective): S12.19 — for perspective-correct texturing.
@@ -505,7 +515,13 @@ static inline int16_t virge_color_fixed(float x)
 #define VIRGE_COLOR_FIXED(x)    virge_color_fixed((float)(x))
 
 #define VIRGE_Z_FRAC_BITS       15
-#define VIRGE_Z_FIXED(x)        ((int32_t)((x) * (float)(1 << VIRGE_Z_FRAC_BITS)))
+/* S16.15 Z: scale by 65535*2^15 so the integer part (accum>>15) is the full
+ * 0-65535 depth word the Z unit compares and writes -- the Z-analog of
+ * VIRGE_COLOR_FIXED's x255 (V10). The old x2^15 made every z<1 compare as 0.
+ * TODO(86Box quirk): TdZdX is accumulated in the post-shift domain (~16 frac
+ * bits) while TZS/TdZdY are pre-shift (15); irrelevant at zero gradients
+ * (all current demos) but revisit when real per-triangle Z ramps land. */
+#define VIRGE_Z_FIXED(x)        ((int32_t)((x) * 65535.0f * (float)(1 << VIRGE_Z_FRAC_BITS)))
 
 #define VIRGE_X_FRAC_BITS       20
 #define VIRGE_X_FIXED(x)        ((int32_t)((x) * (float)(1 << VIRGE_X_FRAC_BITS)))
