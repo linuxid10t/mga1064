@@ -15,6 +15,10 @@ fractional-Y prestep. Float-dy fix (195260c) closed the wedges but left
 9/36 orientations with a coverage NOTCH at shared face diagonals — root
 caused + fixed (lr=0 X-attribute-delta sign error, df35256) and VERIFIED
 on silicon 2026-07-08: cubefb 36-sweep = 0 holes (see follow-up #4).
+CURRENT OPEN AXIS: textured_cube — texture UV does not interpolate across
+a triangle (texprobe shows U,V dead-constant); all register addresses/
+format/s/command verified datasheet-correct, so the bug is in the deltas
+or the perspective W-divide. See follow-up #5 + run `sudo ./texprobe`.
 
 ## Test setup (fixed, do not re-derive)
 
@@ -355,25 +359,67 @@ NOT in VRAM (cubefb reads VRAM directly and is clean). The back-face
 "bleedthrough" axis is ALSO resolved — David confirms no bleed is
 visible on the live monitor (see the section below).
 
-**2026-07-08 follow-up #5 — NEW open axis: textured_cube mapping
-unverified.** With the flat cube fully clean, David reports textured_cube
-"still isn't right." It was the one demo never silicon-verified (line 180
-only ever confirmed it animates/swaps, not that texture mapping is
-correct). Two concrete suspects in the texture path:
-  - `virge.c:tex_coord_fixed()` stores `val * 2^(27-s)` but its own
-    doc-comment says "U_texel = u * (tex_width-1)" — the `*(tex_width-1)`
-    factor is missing, so UV may collapse to texel 0 (engine sampling a
-    1-texel-wide stripe instead of the full texture).
-  - `textured_cube.c` has NO back-face cull (the perspective cull
-    `3d4e49c` went into cube/cubefb/cubediag only), so it draws all 12
-    tris relying purely on Z=LESS — a separate potential artifact source.
-**Diagnostic `texprobe` added** (demos/texprobe.c): renders a face-on quad
-(constant w, no perspective confound) with a UV-ENCODING 64x64 texture
-(texel color = its own u,v), drives the REAL frontend bind/upload/draw
-path, then CPU-reads the framebuffer — the sampled color per pixel IS the
-(u,v) the engine computed. Correct => R rises 0..31 L->R, G 0..31 T->B;
-collapsed UV => R,G stuck ~0. Run `sudo ./texprobe`; paste the R/G grids
-+ auto-verdict. Build: `make -B BACKEND=virge texprobe`.
+**2026-07-08 follow-up #5 — OPEN: textured_cube mapping broken — UV does
+not interpolate across a triangle.** With the flat cube + bleedthrough
+both verified clean on silicon, David reports textured_cube "still isn't
+right" — and it was the one demo NEVER silicon-verified (line 180 only
+ever confirmed it animates/swaps). This is the current active axis.
+
+SYMPTOM — `texprobe` v1 RAN on david-ta970 (commit 7fda1ca): rendered a
+face-on quad (constant w=1.0, UV 0,0->1,1) with a UV-ENCODING 64x64
+ARGB1555 texture (texel(x,y) color = R=x>>1, G=y>>1) and CPU-read the
+framebuffer (the sampled color per pixel IS the (u,v) the engine
+computed). Result: coverage 100%, but **U and V are DEAD-CONSTANT across
+the quad interior** — R pinned at 13 (U~=0.41, texel 26) at every
+interior x; G oscillates 1..2 (V~=0.04, texel ~3) at every y. They do
+NOT interpolate 0..31. Only a start value survives; the texture
+gradients are not taking effect. (So each cube face reads as ~one flat
+texel color — almost certainly what David sees.)
+
+RULED OUT (all verified against datasheet DB019-B §19.4):
+  - NOT the missing `*(tex_width-1)` in `virge.c:tex_coord_fixed()` —
+    that would pin R at 0 (texel 0), not 13.
+  - NOT wrong register addresses — TUS=0xB538, TdUdX=0xB520, TdVdX=0xB51C,
+    TdUdY=0xB52C, TdVdY=0xB528, TdWdX=0xB50C, TdWdY=0xB510, TWS=0xB514,
+    TVS=0xB534, TEX_BASE=0xB4EC all match the datasheet (the 0xB524 "gap"
+    is TdDdY, the mipmap D-delta).
+  - NOT the `s` field — s=log2(64)=6 (datasheet: "value of 4 => 2^4=16x16").
+  - NOT the UV format — `S(4+s).(27-s)` = S10.21 with perspective, exactly
+    what `tex_coord_fixed` (val*2^(27-s)) produces.
+  - NOT the command — 0101 = lit-texture-with-perspective.
+  - NOT texture placement — TEX_BASE = z_base+z_size, valid VRAM after
+    both color buffers + Z.
+So it is a subtler bug than addressing/format/scale.
+
+REMAINING SUSPECTS: (a) the per-pixel DELTAS TdUdX/TdVdX (+Y) are
+computed non-zero (dudx~=0.0025 for the 400px-wide quad) but the engine
+is not applying them; OR (b) the START register / perspective W-DIVIDE is
+broken. Leading hypothesis = the **perspective W-divide**: U/V are S10.21
+but W is **S12.19** (different fixed-point scales) and W is documented as
+the "homogeneous coordinate / depth coordinate for 3D texture maps";
+`virge.c`'s comment claims the engine "interpolates U/W, V/W, 1/W then
+divides" but the driver feeds plain U (not U*W) and W=1/z_eye. The
+datasheet W register (§19.4) adds "format S12.19, where S must be 0".
+Secondary (revisit AFTER UV is fixed): `textured_cube.c` has NO back-face
+cull (the perspective cull `3d4e49c` went into cube/cubefb/cubediag only),
+so it draws all 12 tris on Z=LESS alone.
+
+PENDING DIAGNOSTIC — `texprobe` v2 (commit f6c635c) NOT YET RUN. Adds:
+(1) a dump of the ACTUAL programmed registers read back via
+`virge_read32` (TUS/TVS/TWS/TdUdX/TdVdX/TdWdX/TdUdY/TdVdY/TdWdY/TEX_BASE/
+CMD_SET — ground truth; write-only regs may read 0 or 0xffffffff); (2)
+TEST 2 = two CONSTANT-UV quads (du=dv=0): uv=(0.5,0.5) then (0.9,0.1).
+  RUN: `git pull && make -B BACKEND=virge texprobe && sudo ./texprobe`.
+  INTERPRET TEST 2:
+    - uv=(0.5,0.5) -> R16/G16 AND (0.9,0.1) -> R28/G3: the START register
+      WORKS => bug is in the DELTAS (TdUdX/TdVdX not applied per pixel).
+    - still reads ~R13/G2 regardless of programmed UV: the START register
+      or the perspective W-divide is broken (engine not using the U/V we
+      write). Cross-check the reg dump for what TUS/TVS/TWS actually hold.
+`texprobe` drives the REAL frontend bind/upload/draw path (= the exact
+textured_cube code) and reaches `struct virge_ctx` via `ctx.backend_data`
+(`hw` is the first field of `virge_private`). Build:
+`make -B BACKEND=virge texprobe`.
 
 ## Established engine facts (verified against 86Box, 2026-07-06)
 
