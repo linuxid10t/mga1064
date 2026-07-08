@@ -153,34 +153,53 @@ static int run_pass(struct virge_ctx *vctx, uint8_t *vram, uint32_t stride,
     return maxgap;
 }
 
-/* Draw tri A ALONE under Z=ALWAYS + Z-update (so A draws its full footprint
- * AND writes its interpolated Z everywhere, ignoring the Z test), then read
- * the Z buffer back across the scanline at three rows (top=correct region,
- * mid, bottom=worst gap). This shows tri A's ACTUAL Z plane as the engine
- * computed it.
+/* Z-readback to pin the notch's Z-setup defect (seed vs X-gradient vs
+ * Y-walk). Two draws, both Z=ALWAYS + Z-update (full footprint drawn, Z
+ * written everywhere):
  *
- * DECISIVE for the notch: A-alone-LESS under-fills the diagonal side but
- * A-alone-ALWAYS fills it perfectly, so the only thing LESS can be rejecting
- * on is A's own Z >= cleared 1.0. If the gap columns here read back saturated
- * at ~1.0 (0xffff) while the red columns show a normal gradient, that
- * confirms A's Z runs past 1.0 on its diagonal side -- a Z-seed/gradient
- * setup error, NOT coverage. The cleared-but-unwritten columns also read
- * 0xffff, so the telling signal is the Z value at the FIRST red column
- * (a_left): if it is ~1.0 there and only drops well inside the triangle,
- * A's Z plane is shifted/saturated at the diagonal. */
+ *  (1) tri A alone -- dump A's Z across the FULL span at 3 rows, from the
+ *      diagonal (edge-12, left) to edge-02 (P4->P0, right, the SEED side).
+ *        - Z correct at edge-02 (seed) but climbing to ~1.0 at the diagonal
+ *          => X-gradient (TdZdX) too steep.
+ *        - Z already ~1.0 at edge-02 too, roughly uniform => Y-walk (TdZdY)
+ *          drifted TZS up over A's long seed->diagonal path.
+ *  (2) tri B alone -- B is coplanar with A and renders correctly, so B's Z
+ *      AT THE SHARED DIAGONAL is the TRUE Z. Printing B's diagonal Z next
+ *      to A's diagonal Z quantifies A's error directly (they must be equal;
+ *      A reads ~1.0, B reads the true ~0.5-0.8).
+ *
+ * A's edge-02 (long edge v0->v2 = P4->P0) X at row y, for the span endpoint:
+ *   t = (P4.sy - y)/(P4.sy - P0.sy);  x = P4.sx + t*(P0.sx - P4.sx). */
+static float edge02_x(struct screen_vertex *P, int y)
+{
+    float dy = P[4].sy - P[0].sy;
+    if (dy == 0.0f) return P[4].sx;
+    float t = (P[4].sy - y) / dy;
+    return P[4].sx + t * (P[0].sx - P[4].sx);
+}
+
+static void zrow_read(const uint8_t *vram, size_t zbase, int zstr, int stride,
+                      int W, int y, int x_lo, int x_hi, int step, int wantcls)
+{
+    const uint16_t *crow = (const uint16_t *)(vram + (size_t)y * stride);
+    const uint16_t *zrow = (const uint16_t *)(vram + zbase + (size_t)y * zstr);
+    int n = 0;
+    for (int x = x_lo; x <= x_hi; x += step) {
+        if (x < 0 || x >= W) continue;
+        int cls = classify555(crow[x]);
+        float zf = zrow[x] / 65535.0f;
+        char c = (wantcls == 1) ? (cls == 1 ? 'A' : '.')
+                                : (cls == 2 ? 'B' : '.');
+        printf("  x%-4d%c z%.3f ", x, c, zf);
+        if (++n % 6 == 0) printf("\n");
+    }
+    if (n % 6) printf("\n");
+}
+
 static void run_z_probe(struct virge_ctx *vctx, uint8_t *vram, uint32_t stride,
                         struct screen_vertex *P, int ylo, int yhi)
 {
     int W = vctx->width;
-    clear_fb(vram, W, vctx->height, stride);
-    virge_clear_z(vctx, 1.0f);
-    virge_wait_engine(vctx);
-    vctx->z_cmd_bits = VIRGE_ZB_NORMAL | VIRGE_ZBC_ALWAYS | VIRGE_ZUP_ENABLE;
-
-    struct virge_vertex A0 = mkvert(P[0],1,0,0), A4 = mkvert(P[4],1,0,0), A7 = mkvert(P[7],1,0,0);
-    virge_draw_triangle_gouraud(vctx, A0, A4, A7);
-    virge_wait_engine(vctx);
-
     size_t zbase = vctx->z_base;
     int zstr = W * 2;                       /* 16-bit Z, one word per pixel */
     float dyd = P[7].sy - P[0].sy;
@@ -188,34 +207,53 @@ static void run_z_probe(struct virge_ctx *vctx, uint8_t *vram, uint32_t stride,
     int yr_hi = ylo < yhi ? yhi : ylo;
     int sample[3];
     const char *tag[3];
-    sample[0] = yr_lo + 1; tag[0] = "top (near v2, should be correct)";
+    sample[0] = yr_lo + 1; tag[0] = "top (near v2)";
     sample[1] = (yr_lo + yr_hi) / 2; tag[1] = "mid";
-    sample[2] = yr_hi;     tag[2] = "bottom (near v1, worst gap)";
+    sample[2] = yr_hi;     tag[2] = "bottom (near v1, worst)";
 
-    printf("\n--- A alone, Z=ALWAYS+Zupdate, Z-readback ---\n");
-    printf("  Z buf @0x%x stride %d (cleared 1.0 = 0xffff). Dumps A's written Z\n", vctx->z_base, zstr);
-    printf("  across each scanline: 'A'=A drew color, '.'=empty; z=Zfloat(0..1).\n");
+    printf("\n--- Z-readback (Z=ALWAYS+Zupdate): A full-span profile + B true-ref ---\n");
+    printf("  Z buf @0x%x stride %d (cleared 1.0=0xffff). 'A'/'B'=color drew, '.'=empty.\n",
+           vctx->z_base, zstr);
+
+    /* (1) A alone: full span diag->edge02 at each row (every 6px), + the
+     *     edge02 X printed so the seed-side Z is visible. */
+    clear_fb(vram, W, vctx->height, stride);
+    virge_clear_z(vctx, 1.0f);
+    virge_wait_engine(vctx);
+    vctx->z_cmd_bits = VIRGE_ZB_NORMAL | VIRGE_ZBC_ALWAYS | VIRGE_ZUP_ENABLE;
+    struct virge_vertex A0 = mkvert(P[0],1,0,0), A4 = mkvert(P[4],1,0,0), A7 = mkvert(P[7],1,0,0);
+    virge_draw_triangle_gouraud(vctx, A0, A4, A7);
+    virge_wait_engine(vctx);
+
+    printf("\n  [A alone] Z across full span (diagonal -> edge-02=seed side):\n");
     for (int r = 0; r < 3; r++) {
         int y = sample[r];
         if (y < yr_lo || y > yr_hi) continue;
-        const uint16_t *crow = (const uint16_t *)(vram + (size_t)y * stride);
-        const uint16_t *zrow = (const uint16_t *)(vram + zbase + (size_t)y * zstr);
         float tx = (dyd != 0.0f) ? P[7].sx + (P[7].sy - y) / dyd * (P[0].sx - P[7].sx) : P[7].sx;
         int xc = (int)tx;
-        int a_left = -1;
-        for (int x = 0; x < W; x++) if (classify555(crow[x]) == 1) { a_left = x; break; }
-        int hi = (a_left > 0 ? a_left : xc) + 6;
-        printf("\n  y=%d %s  trueX=%.1f  a_left=%d  gap=%d\n",
-               y, tag[r], tx, a_left, a_left > 0 ? a_left - xc : -1);
-        int lo = xc - 2, n = 0;
-        for (int x = lo; x <= hi; x++) {
-            if (x < 0 || x >= W) continue;
-            int cls = classify555(crow[x]);
-            float zf = zrow[x] / 65535.0f;
-            printf("  x%-4d%c z%.3f ", x, cls == 1 ? 'A' : '.', zf);
-            if (++n % 6 == 0) printf("\n");
-        }
-        if (n % 6) printf("\n");
+        int e02 = (int)edge02_x(P, y);
+        printf("  y=%d %s  diagX=%d  edge02X=%d (span %dpx)\n",
+               y, tag[r], xc, e02, e02 - xc);
+        zrow_read(vram, zbase, zstr, stride, W, y, xc, e02, 6, 1);
+    }
+
+    /* (2) B alone: Z at the shared diagonal (B is correct => true Z). */
+    clear_fb(vram, W, vctx->height, stride);
+    virge_clear_z(vctx, 1.0f);
+    virge_wait_engine(vctx);
+    vctx->z_cmd_bits = VIRGE_ZB_NORMAL | VIRGE_ZBC_ALWAYS | VIRGE_ZUP_ENABLE;
+    struct virge_vertex B0 = mkvert(P[0],0,1,0), B7 = mkvert(P[7],0,1,0), B3 = mkvert(P[3],0,1,0);
+    virge_draw_triangle_gouraud(vctx, B0, B7, B3);
+    virge_wait_engine(vctx);
+
+    printf("\n  [B alone] Z at the shared diagonal = TRUE Z (B is coplanar + correct):\n");
+    for (int r = 0; r < 3; r++) {
+        int y = sample[r];
+        if (y < yr_lo || y > yr_hi) continue;
+        float tx = (dyd != 0.0f) ? P[7].sx + (P[7].sy - y) / dyd * (P[0].sx - P[7].sx) : P[7].sx;
+        int xc = (int)tx;
+        printf("  y=%d %s  diagX=%d\n", y, tag[r], xc);
+        zrow_read(vram, zbase, zstr, stride, W, y, xc, xc + 12, 2, 2);
     }
 }
 
