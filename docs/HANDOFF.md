@@ -10,8 +10,10 @@ double-buffering with vsync page-flip (LANDED 2026-07-07); back-face
 attribute-base prestep; cubefb 36-sweep clean). NEW symptom 2026-07-08:
 black wedges out of face-corner vertices (coverage gaps — old cubefb was
 blind to background-inside-face). Cause: integer-dy edge slopes vs the
-fractional-Y prestep. Fix landed (float-dy slopes + bounded-interpolation
-prestep) + cubefb HOLES signal — awaiting silicon re-run.
+fractional-Y prestep. Float-dy fix (195260c) closed the wedges but left
+9/36 orientations with a coverage NOTCH at shared face diagonals — root
+caused + fixed (lr=0 X-attribute-delta sign error, df35256) and VERIFIED
+on silicon 2026-07-08: cubefb 36-sweep = 0 holes (see follow-up #4).
 
 ## Test setup (fixed, do not re-derive)
 
@@ -328,8 +330,21 @@ edge-walk along side 02) are lr-independent and stay raw. **Verify on
 next run:** `sudo ./diagap` (310deg) → both-LESS passes 40px→watertight
 and A's diagonal Z drops 1.000→~0.1 (matching B's ~0.086, no
 saturation); `sudo ./cubefb` 36-sweep → 0 holes. Tri B (lr=1) is
-untouched and stays correct. If verification passes, this closes the
-9/36 coverage-hole axis (the bleedthrough axis is separate).
+untouched and stays correct.
+
+**2026-07-08 follow-up #4 — VERIFIED on silicon (df35256 closes the
+coverage-hole axis).** David ran `sudo ./diagap && sudo ./cubefb` on
+david-ta970: diagap 310deg is watertight across ALL passes (A-alone LESS,
+B-alone LESS, both-LESS A-first, both-LESS B-first, both-ALWAYS = 0px;
+was 40px). The Z-readback shows A's diagonal Z now **0.127** at y=377
+x442 (was saturated 1.000), climbing correctly to 0.661 at the seed
+edge-02 — slope magnitude ~0.0068/px in the correct sign, matching B's
+true diagonal Z ~0.086 (no saturation). cubefb 36-sweep: **0 of 36
+orientations contaminated** (0 blends / 0 misplaced / 0 holes; was 9/36,
+310deg worst at 1196 holes). The 9/36 coverage-hole axis is **CLOSED**.
+Tri B (lr=1) untouched, stays correct. Any remaining visible artifact is
+NOT in VRAM (cubefb reads VRAM directly and is clean) — the back-face
+"bleedthrough" axis below is the open one.
 
 ## Established engine facts (verified against 86Box, 2026-07-06)
 
