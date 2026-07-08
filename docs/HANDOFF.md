@@ -6,10 +6,12 @@ Audience: an implementing agent picking up this project cold. Read
 facts) before changing code. Live state: symptom 1 (diagnosed — monitor
 scaling moiré, parked); symptom 2 (3D Z-buffer cutoff — RESOLVED);
 double-buffering with vsync page-flip (LANDED 2026-07-07); back-face
-"bleedthrough" — root cause identified 2026-07-08 (orthographic back-face
-cull draws barely-back-facing slivers inside front faces; missing
-attribute-base prestep inflates their near-tie Z) — fix landed, awaiting
-the cubefb 36-sweep re-run on silicon for the CLEAN verdict.
+"bleedthrough" — RESOLVED on silicon 2026-07-08 (perspective cull +
+attribute-base prestep; cubefb 36-sweep clean). NEW symptom 2026-07-08:
+black wedges out of face-corner vertices (coverage gaps — old cubefb was
+blind to background-inside-face). Cause: integer-dy edge slopes vs the
+fractional-Y prestep. Fix landed (float-dy slopes + bounded-interpolation
+prestep) + cubefb HOLES signal — awaiting silicon re-run.
 
 ## Test setup (fixed, do not re-derive)
 
@@ -233,6 +235,28 @@ Diagnostics retained: `cubediag` (interactive cube + color legend, same
 LESS path as cube), `seamtest` (fill-rule / watertight proof), `cubefb`
 (36-sweep contamination detector — the verdict tool for this fix).
 
+**2026-07-08 follow-up — sweep CLEAN on silicon, cull fix confirmed; new
+symptom: black vertex wedges.** With the cull + base-prestep fix the
+36-sweep reports 0 blends / 0 misplaced, but David sees black triangles
+growing out of some face-corner vertices. cubefb was BLIND to those: a
+background pixel inside a face trips no signal (MISPLACED skips any pixel
+with a bg neighbor). Cause found in setup: `compute_dxdy_snap` divided by
+the INTEGER scanline count while the prestep multiplies by fractional Y —
+the slope is distorted by dy_true/dy_int, which for a short shallow edge
+at a corner (1–2 scanlines, large ΔX; dy_true either side of 1) mis-places
+the span end by tens of px on the vertex rows: a background notch (or
+spill) at the vertex. Fix: `edge_slope` divides by the TRUE float dy
+(clamped to the S11.20 range — only reachable when the accumulator is
+never stepped before reload), `edge_x_at` computes the prestepped edge X
+by bounded interpolation between the endpoints (exact for any slope, no
+overflow, bit-identical for both triangles sharing the edge), and the
+attribute bases are evaluated at (TXS, TYS) via the plane equation
+instead of the yf·edge-walk shortcut (bounded even where the slope
+clamped). cubefb gained a verdict-driving HOLES signal: background >1.5px
+inside the convex hull of the 8 projected vertices (exact silhouette for
+a convex solid). UNVERIFIED on silicon — re-run the sweep AND eyeball the
+spinning cube (expected: 0 holes, no wedges).
+
 ## Established engine facts (verified against 86Box, 2026-07-06)
 
 Register-file architecture, from the MMIO decode in 86Box
@@ -311,12 +335,14 @@ never copy):
   L/R=0, combining to a clean partition at every shared edge. Refutes the
   "double-draw" bleed hypothesis. Build: `make -B BACKEND=virge seamtest`.
 - `sudo ./cubefb [N]` — sweeps N (default 36) orientations, CPU-reads the
-  framebuffer back (bypassing the monitor), and reports three contamination
+  framebuffer back (bypassing the monitor), and reports contamination
   signals per angle: BLENDS, MISPLACED (solid face color inside another
-  face — the direct "blue on teal" detector), and EXCESS (info only).
-  History: 10/36 contaminated before `25786e7`, 9/36 after; this is the
-  verdict tool for the 2026-07-08 cull + base-prestep fix (expected 0).
-  Build: `make -B BACKEND=virge cubefb`.
+  face — the "blue on teal" detector), HOLES (background >1.5px inside
+  the convex hull of the projected vertices — the "black vertex wedge" /
+  coverage-gap detector), and EXCESS (info only). History: 10/36
+  contaminated before `25786e7`, 9/36 after, 0/36 after the cull +
+  base-prestep fix (but holes were not yet a signal); now the verdict
+  tool for the float-dy slope fix. Build: `make -B BACKEND=virge cubefb`.
 - `sudo ./fbtest` — fbdev-based pattern; useless on this machine (no
   /dev/fb0), kept for machines that have one.
 - Boot log prints: FB/fbdev status, "CRTC raw"/"CRTC truth" dump

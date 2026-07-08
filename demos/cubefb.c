@@ -12,6 +12,12 @@
  *   - EXCESS:      a visible face rendering more px than its projected area
  *                  (sum of |det|/2 over its two triangles) -- catches a thin
  *                  sliver spilling onto a neighbor.
+ *   - HOLES:       a background pixel >1.5px INSIDE the projected cube
+ *                  silhouette (= convex hull of the 8 projected vertices,
+ *                  exact for a convex solid). Direct detector for coverage
+ *                  gaps -- "black wedge growing out of a face corner" --
+ *                  which the other signals are blind to (MISPLACED skips
+ *                  any pixel with a background neighbor).
  *
  * SWEEPS 36 orientations over a full rotation (the reported bleed is
  * orientation-specific: Top near-parallel + Left near-edge-on), flags any
@@ -99,12 +105,86 @@ static float tri_area(const struct screen_vertex *a, const struct screen_vertex 
 }
 
 struct metrics {
-    long blends, misplaced;
+    long blends, misplaced, holes;
     int excess_face; long excess_by;
     long face_ct[6];
     float expected[6];
     int mp_x, mp_y, mp_face, mp_other;
+    int hole_x, hole_y;
 };
+
+/* Convex hull of the 8 projected vertices (gift wrap), and a
+ * margin-inside test. The cube is convex, so the hull IS the true
+ * silhouette; any background pixel deeper than HOLE_MARGIN inside it is
+ * a rasterization coverage gap. */
+#define HOLE_MARGIN 1.5f
+
+static int   hull_n;
+static float hull_x[9], hull_y[9];
+static float hull_esign[9], hull_elen[9];
+
+static void build_hull(const struct screen_vertex *p)
+{
+    int start = 0;
+    for (int i = 1; i < 8; i++)
+        if (p[i].sx < p[start].sx ||
+            (p[i].sx == p[start].sx && p[i].sy < p[start].sy))
+            start = i;
+
+    hull_n = 0;
+    int cur = start;
+    do {
+        hull_x[hull_n] = p[cur].sx;
+        hull_y[hull_n] = p[cur].sy;
+        hull_n++;
+        int next = -1;
+        for (int i = 0; i < 8; i++) {
+            if (i == cur) continue;
+            if (next < 0) { next = i; continue; }
+            float cr = (p[next].sx - p[cur].sx) * (p[i].sy - p[cur].sy)
+                     - (p[i].sx - p[cur].sx) * (p[next].sy - p[cur].sy);
+            if (cr < 0.0f) {
+                next = i;
+            } else if (cr == 0.0f) {
+                /* collinear: keep the farther point (avoids loops) */
+                float dnx = p[next].sx - p[cur].sx, dny = p[next].sy - p[cur].sy;
+                float dix = p[i].sx - p[cur].sx,    diy = p[i].sy - p[cur].sy;
+                if (dix*dix + diy*diy > dnx*dnx + dny*dny)
+                    next = i;
+            }
+        }
+        cur = next;
+    } while (cur != start && hull_n < 8);
+
+    /* Precompute each edge's length and its interior sign (the side the
+     * centroid is on), so the per-pixel test is orientation-free. */
+    float cx = 0.0f, cy = 0.0f;
+    for (int i = 0; i < hull_n; i++) { cx += hull_x[i]; cy += hull_y[i]; }
+    cx /= hull_n; cy /= hull_n;
+    for (int i = 0; i < hull_n; i++) {
+        int j = (i + 1) % hull_n;
+        float ex = hull_x[j] - hull_x[i], ey = hull_y[j] - hull_y[i];
+        hull_elen[i]  = sqrtf(ex*ex + ey*ey);
+        float sc = ex * (cy - hull_y[i]) - ey * (cx - hull_x[i]);
+        hull_esign[i] = (sc >= 0.0f) ? 1.0f : -1.0f;
+    }
+}
+
+/* Inside-with-margin: the pixel's signed distance to every hull edge has
+ * the interior sign and magnitude >= HOLE_MARGIN. */
+static int inside_hull(float qx, float qy)
+{
+    if (hull_n < 3) return 0;
+    for (int i = 0; i < hull_n; i++) {
+        if (hull_elen[i] < 1e-3f) continue;
+        int j = (i + 1) % hull_n;
+        float ex = hull_x[j] - hull_x[i], ey = hull_y[j] - hull_y[i];
+        float sq = ex * (qy - hull_y[i]) - ey * (qx - hull_x[i]);
+        if (hull_esign[i] * sq < HOLE_MARGIN * hull_elen[i])
+            return 0;
+    }
+    return 1;
+}
 
 /* Render the cube at ANGLE (flat colors, back-face cull) into VRAM and
  * measure all three contamination signals. Leaves the rendered frame in VRAM. */
@@ -112,7 +192,7 @@ static void measure(struct virge_ctx *vctx, uint8_t *vram, int W, int H,
                     uint32_t stride, float angle, struct metrics *m)
 {
     memset(m, 0, sizeof(*m));
-    m->mp_x = -1; m->mp_face = -1; m->excess_face = -1;
+    m->mp_x = -1; m->mp_face = -1; m->excess_face = -1; m->hole_x = -1;
 
     for (int y = 0; y < H; y++) {
         uint16_t *r = (uint16_t *)(vram + (size_t)y * stride);
@@ -129,6 +209,7 @@ static void measure(struct virge_ctx *vctx, uint8_t *vram, int W, int H,
         mat3_transform(transformed[i], rot, cube_verts[i]);
         project(&projected[i], transformed[i], W, H, 5.0f);
     }
+    build_hull(projected);
     for (int f = 0; f < 6; f++)
         for (int t = 0; t < 2; t++) {
             const int *fc = cube_faces[2*f + t];
@@ -168,6 +249,10 @@ static void measure(struct virge_ctx *vctx, uint8_t *vram, int W, int H,
             int c = classify(row[x]);
             if (c >= 0) m->face_ct[c]++;
             else if (c == -2) m->blends++;
+            else if (inside_hull((float)x, (float)y)) {
+                m->holes++;
+                if (m->hole_x < 0) { m->hole_x = x; m->hole_y = y; }
+            }
         }
     }
 
@@ -230,7 +315,7 @@ static void print_rle(const uint8_t *vram, int W, uint32_t stride, int y)
  * thin faces and would false-alarm. Use it only as a hint.) */
 static long m_tot(const struct metrics *m)
 {
-    return m->blends + m->misplaced;
+    return m->blends + m->misplaced + m->holes;
 }
 
 static volatile sig_atomic_t running = 1;
@@ -257,7 +342,8 @@ int main(int argc, char **argv)
     printf("\ncubefb: cube framebuffer readback (%dx%d stride %u) -- bypasses the monitor\n",
            W, H, stride);
     printf("Signals: BLENDS (non-face color), MISPLACED (face color inside another face),\n");
-    printf("         EXCESS (face renders more px than its projected area).\n");
+    printf("         HOLES (background inside the cube silhouette -- coverage gaps),\n");
+    printf("         EXCESS (face renders more px than its projected area, info only).\n");
     printf("Sweeping %d orientations over [0, 2pi)...\n\n", N);
 
     float worst_angle = 0.0f;
@@ -271,12 +357,14 @@ int main(int argc, char **argv)
         long tot = m_tot(&m);
         if (tot > 0) {
             contaminated++;
-            printf("  angle %.2f (%3.0f deg): blends %ld  misplaced %ld  excess %s",
+            printf("  angle %.2f (%3.0f deg): blends %ld  misplaced %ld  holes %ld  excess %s",
                    angle, angle * 180.0f / (float)PI, m.blends, m.misplaced,
-                   m.excess_face >= 0 ? "YES" : "no");
+                   m.holes, m.excess_face >= 0 ? "YES" : "no");
             if (m.misplaced)
                 printf("  [%c inside %c at (%d,%d)]", face_letter[m.mp_face],
                        face_letter[m.mp_other], m.mp_x, m.mp_y);
+            if (m.holes)
+                printf("  [hole at (%d,%d)]", m.hole_x, m.hole_y);
             printf("\n");
         }
         if (i == 0 || tot > worst_tot) { worst_tot = tot; worst_angle = angle; }
@@ -287,12 +375,15 @@ int main(int argc, char **argv)
     /* Re-render the worst and print full detail + the row readback. */
     struct metrics m;
     measure(&vctx, vram, W, H, stride, worst_angle, &m);
-    printf("\nWorst orientation: angle %.2f (%.0f deg) -- blends %ld, misplaced %ld, excess %s\n",
+    printf("\nWorst orientation: angle %.2f (%.0f deg) -- blends %ld, misplaced %ld, holes %ld, excess %s\n",
            worst_angle, worst_angle * 180.0f / (float)PI, m.blends, m.misplaced,
-           m.excess_face >= 0 ? "YES" : "no");
+           m.holes, m.excess_face >= 0 ? "YES" : "no");
     if (m.misplaced)
         printf("  first misplaced: %c at (%d,%d) inside %c\n",
                face_letter[m.mp_face], m.mp_x, m.mp_y, face_letter[m.mp_other]);
+    if (m.holes)
+        printf("  first hole (background inside the silhouette): (%d,%d) -- "
+               "print_rle that row for the notch\n", m.hole_x, m.hole_y);
     if (m.excess_face >= 0)
         printf("  excess: %c rendered %ld vs expected ~%ld (+%ld)\n",
                face_letter[m.excess_face], m.face_ct[m.excess_face],
@@ -300,11 +391,13 @@ int main(int argc, char **argv)
     printf("  faces[r g b y m c]=%ld %ld %ld %ld %ld %ld\n",
            m.face_ct[0], m.face_ct[1], m.face_ct[2], m.face_ct[3], m.face_ct[4], m.face_ct[5]);
     print_rle(vram, W, stride, H / 2);
+    if (m.holes && m.hole_y != H / 2)
+        print_rle(vram, W, stride, m.hole_y);
 
     printf("\n");
     if (contaminated == 0)
-        printf("=> All %d orientations CLEAN (0 blends, 0 misplaced, no excess). The bleed\n"
-               "   is NOT in VRAM -- it is monitor/scanout-side.\n", N);
+        printf("=> All %d orientations CLEAN (0 blends, 0 misplaced, 0 holes). Any remaining\n"
+               "   visible artifact is NOT in VRAM -- it is monitor/scanout-side.\n", N);
     else
         printf("=> %d orientation(s) CONTAMINATED -- a real per-frame VRAM artifact (the\n"
                "   worst is detailed above, at the printed angle). NOT the monitor.\n",

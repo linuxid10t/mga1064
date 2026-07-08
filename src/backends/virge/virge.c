@@ -942,22 +942,52 @@ void virge_clear_z(struct virge_ctx *ctx, float z)
  * ======================================================================== */
 
 /*
- * Compute dX/dY as S11.20 fixed point, from S11.20-snapped vertex X.
- * The ViRGE convention (from the 2D line programming examples):
- *   dXdY = -(ΔX / ΔY) * (1 << 20)   (ΔX here is already snapped, so no shift)
- * Inverted sign matches the engine's bottom-to-top rendering direction.
+ * Per-scanline edge X step (S11.20), register sign convention: the engine
+ * adds this once per scanline walking UP, so the value is
+ *   (fx_top - fx_bot) / (y_bot - y_top)
+ * with the TRUE (float) vertex Y in the divisor.
  *
- * ΔX is the full-precision snapped vertex X, not (int)-truncated coords:
- * truncation drifts each walked edge up to ~2px, which for a thin sliver
- * exceeds its true width and lands the walked non-shared edge on the wrong
- * side of the shared edge, spilling it onto the neighbor.
+ * ΔX must be the full-precision snapped vertex X (not (int)-truncated
+ * coords: that drifted each walked edge up to ~2px, spilling thin slivers
+ * onto their neighbor). ΔY must be the float vertex Y, NOT the truncated
+ * scanline count: integer dy distorts the slope by dy_true/dy_int, which
+ * for a short shallow edge (1-2 scanlines, large ΔX) mis-places the span
+ * end by tens of pixels on the rows next to the vertex -- the "background
+ * wedge growing out of a face corner" artifact.
+ *
+ * Slopes steeper than S11.20 can hold are clamped: they only occur when
+ * the edge crosses < 2 scanlines, where the accumulator is stepped zero
+ * times before it is reloaded, so the clamped value is never consumed
+ * (the prestepped START value, computed by edge_x_at below, is what
+ * draws; it is exact for any slope).
  */
-static int32_t compute_dxdy_snap(int32_t fx_start, int y_start,
-                                 int32_t fx_end, int y_end)
+static int32_t edge_slope(int32_t fx_bot, float yf_bot,
+                          int32_t fx_top, float yf_top)
 {
-    int dy = y_end - y_start;
-    if (dy == 0) dy = 1;
-    return -(int32_t)(((int64_t)(fx_end - fx_start)) / dy);
+    const float lim = (float)(2047 << VIRGE_X_FRAC_BITS);
+    float dy = yf_bot - yf_top;              /* >= 0 after the Y sort */
+    if (dy < (1.0f / 1024.0f)) dy = 1.0f / 1024.0f;
+    float s = (float)(fx_top - fx_bot) / dy;
+    if (s > lim) s = lim;
+    if (s < -lim) s = -lim;
+    return (int32_t)s;
+}
+
+/*
+ * X (S11.20) of edge a->b at scanline y, by bounded interpolation between
+ * the endpoints (t clamped to [0,1]) -- exact for any slope, cannot
+ * overflow, and bit-identical for both triangles sharing the edge (same
+ * endpoints, and the first walked scanline is floor of the bottom
+ * endpoint's Y in both), preserving the watertight partition.
+ */
+static int32_t edge_x_at(int32_t fx_a, float y_a,
+                         int32_t fx_b, float y_b, float y)
+{
+    float dy = y_a - y_b;
+    float t = (dy > 0.0f) ? (y_a - y) / dy : 0.0f;
+    if (t < 0.0f) t = 0.0f;
+    if (t > 1.0f) t = 1.0f;
+    return fx_a + (int32_t)((float)(fx_b - fx_a) * t);
 }
 
 void virge_draw_triangle_gouraud(struct virge_ctx *ctx,
@@ -1036,9 +1066,9 @@ void virge_draw_triangle_gouraud(struct virge_ctx *ctx,
     int32_t fx0 = VIRGE_X_FIXED(v0.x);
     int32_t fx1 = VIRGE_X_FIXED(v1.x);
     int32_t fx2 = VIRGE_X_FIXED(v2.x);
-    int32_t dXdY02 = compute_dxdy_snap(fx0, y_bot, fx2, y_top);
-    int32_t dXdY01 = compute_dxdy_snap(fx0, y_bot, fx1, y_mid);
-    int32_t dXdY12 = compute_dxdy_snap(fx1, y_mid, fx2, y_top);
+    int32_t dXdY02 = edge_slope(fx0, v0.y, fx2, v2.y);
+    int32_t dXdY01 = edge_slope(fx0, v0.y, fx1, v1.y);
+    int32_t dXdY12 = edge_slope(fx1, v1.y, fx2, v2.y);
 
     /* Determine L/R direction: which side of the triangle is the 02 edge?
      * If v1 is to the left of the v0→v2 line, then side 02 is on the
@@ -1070,18 +1100,17 @@ void virge_draw_triangle_gouraud(struct virge_ctx *ctx,
 
     /* Sub-pixel Y prestep (docs/datasheets/README.md line 168: the part the
      * hardware does NOT do). TYS is an integer scanline but the vertices sit
-     * at fractional Y; step each edge's X from its vertex by its slope times
-     * the fractional Y distance to the first scanline it owns, so the walked
-     * edge begins at the true edge position. Without this a steep sliver edge
+     * at fractional Y; evaluate each edge's X at the first scanline it owns
+     * (bounded interpolation, exact for any slope), so the walked edge
+     * begins at the true edge position. Without this a steep sliver edge
      * starts up to ~|slope| px off and can land past the shared edge. */
-    float yf0 = v0.y - (float)y_bot;   /* >= 0: bottom vertex up to scanline y_bot */
-    float yf1 = v1.y - (float)y_mid;   /* middle vertex up to scanline y_mid */
-    int32_t x_start = fx0 + (int32_t)((float)dXdY02 * yf0);  /* edge 02 @ y_bot */
-    int32_t x_end01 = fx0 + (int32_t)((float)dXdY01 * yf0);  /* edge 01 @ y_bot */
-    int32_t x_end12 = fx1 + (int32_t)((float)dXdY12 * yf1);  /* edge 12 @ y_mid */
+    int32_t x_start = edge_x_at(fx0, v0.y, fx2, v2.y, (float)y_bot);
+    int32_t x_end01 = edge_x_at(fx0, v0.y, fx1, v1.y, (float)y_bot);
+    int32_t x_end12 = edge_x_at(fx1, v1.y, fx2, v2.y, (float)y_mid);
 
     /* Edge-walk Y deltas: -dA/dy + slope02*dA/dx (programmed as Td*dY
-     * below, and reused to prestep the bases). */
+     * below; slope02 is the REGISTER slope, so the deltas track what the
+     * hardware actually walks). */
     float ew_z = -dzdy + slope02 * dzdx;
     float ew_r = -drdy + slope02 * drdx;
     float ew_g = -dgdy + slope02 * dgdx;
@@ -1089,17 +1118,26 @@ void virge_draw_triangle_gouraud(struct virge_ctx *ctx,
     float ew_a = -dady + slope02 * dadx;
 
     /* The engine samples the attribute bases at (TXS, TYS), which the
-     * prestep above moved off the raw bottom vertex -- so the bases must
-     * be prestepped along edge 02 by the same fractional-Y distance
-     * (docs/datasheets/README.md line 171: "and the attribute bases
-     * likewise along edge 02"). Without this the whole triangle's Z is
-     * biased by up to one edge step, which on a steep near-edge-on face
-     * is many 16-bit Z LSBs and inflates near-tie noise at shared edges. */
-    float z_s = v0.z + yf0 * ew_z;
-    float r_s = v0.r + yf0 * ew_r;
-    float g_s = v0.g + yf0 * ew_g;
-    float b_s = v0.b + yf0 * ew_b;
-    float a_s = v0.a + yf0 * ew_a;
+     * prestep above moved off the raw bottom vertex -- so evaluate the
+     * bases there via the plane equation (docs/datasheets/README.md line
+     * 171: "and the attribute bases likewise along edge 02"; the plane
+     * form is equivalent on the edge and stays bounded even where the
+     * edge slope had to be clamped). Without this the whole triangle's Z
+     * is biased by up to one edge step, which on a steep near-edge-on
+     * face is many 16-bit Z LSBs of near-tie noise at shared edges. */
+    float sdx = (float)x_start / (float)(1 << VIRGE_X_FRAC_BITS) - v0.x;
+    float sdy = (float)y_bot - v0.y;
+    float z_s = v0.z + dzdx * sdx + dzdy * sdy;
+    float r_s = v0.r + drdx * sdx + drdy * sdy;
+    float g_s = v0.g + dgdx * sdx + dgdy * sdy;
+    float b_s = v0.b + dbdx * sdx + dbdy * sdy;
+    float a_s = v0.a + dadx * sdx + dady * sdy;
+    /* The sample point is on edge 02, so z_s is a convex combination of
+     * vertex z up to float noise -- but VIRGE_Z_FIXED overflows int32 a
+     * hair above 1.0 (65535*2^15 scale), so clamp the noise off.
+     * VIRGE_COLOR_FIXED saturates internally; z has no such guard. */
+    if (z_s < 0.0f) z_s = 0.0f;
+    if (z_s > 1.0f) z_s = 1.0f;
 
     virge_wait_engine(ctx);
     program_3d_state(ctx);  /* re-arm: 2D ops clobber Z_STRIDE to 0xFF8 on real DX */
@@ -1390,9 +1428,9 @@ void virge_draw_textured_triangle(struct virge_ctx *ctx,
     int32_t fx0 = VIRGE_X_FIXED(v0.x);
     int32_t fx1 = VIRGE_X_FIXED(v1.x);
     int32_t fx2 = VIRGE_X_FIXED(v2.x);
-    int32_t dXdY02 = compute_dxdy_snap(fx0, y_bot, fx2, y_top);
-    int32_t dXdY01 = compute_dxdy_snap(fx0, y_bot, fx1, y_mid);
-    int32_t dXdY12 = compute_dxdy_snap(fx1, y_mid, fx2, y_top);
+    int32_t dXdY02 = edge_slope(fx0, v0.y, fx2, v2.y);
+    int32_t dXdY01 = edge_slope(fx0, v0.y, fx1, v1.y);
+    int32_t dXdY12 = edge_slope(fx1, v1.y, fx2, v2.y);
 
     /* L/R direction */
     int lr_direction;
@@ -1410,14 +1448,12 @@ void virge_draw_textured_triangle(struct virge_ctx *ctx,
     float slope02 = (float)dXdY02 / (float)(1 << VIRGE_X_FRAC_BITS);
 
     /* Sub-pixel Y prestep, same as the Gouraud path: TYS is an integer
-     * scanline but the vertices sit at fractional Y, so step each edge's
-     * X (and, below, the attribute bases) from its vertex to the first
-     * scanline it owns. */
-    float yf0 = v0.y - (float)y_bot;
-    float yf1 = v1.y - (float)y_mid;
-    int32_t x_start = fx0 + (int32_t)((float)dXdY02 * yf0);  /* edge 02 @ y_bot */
-    int32_t x_end01 = fx0 + (int32_t)((float)dXdY01 * yf0);  /* edge 01 @ y_bot */
-    int32_t x_end12 = fx1 + (int32_t)((float)dXdY12 * yf1);  /* edge 12 @ y_mid */
+     * scanline but the vertices sit at fractional Y, so evaluate each
+     * edge's X (and, below, the attribute bases) at the first scanline
+     * it owns. */
+    int32_t x_start = edge_x_at(fx0, v0.y, fx2, v2.y, (float)y_bot);
+    int32_t x_end01 = edge_x_at(fx0, v0.y, fx1, v1.y, (float)y_bot);
+    int32_t x_end12 = edge_x_at(fx1, v1.y, fx2, v2.y, (float)y_mid);
 
     /*
      * Texture coordinate gradients.
@@ -1464,7 +1500,7 @@ void virge_draw_textured_triangle(struct virge_ctx *ctx,
     #undef DFDY
 
     /* Edge-walk Y deltas (-dA/dy + slope02*dA/dx), programmed as Td*dY
-     * below and reused to prestep the bases to (TXS, TYS). */
+     * below; slope02 is the REGISTER slope, tracking the walked edge. */
     float ew_r = -drdy + slope02 * drdx;
     float ew_g = -dgdy + slope02 * dgdx;
     float ew_b = -dbdy + slope02 * dbdx;
@@ -1474,16 +1510,22 @@ void virge_draw_textured_triangle(struct virge_ctx *ctx,
     float ew_v = -dvdy + slope02 * dvdx;
     float ew_w = -dwdy + slope02 * dwdx;
 
-    /* Attribute bases sampled at (TXS, TYS): prestep from v0 along edge
-     * 02, same as the Gouraud path. */
-    float r_s = v0.r + yf0 * ew_r;
-    float g_s = v0.g + yf0 * ew_g;
-    float b_s = v0.b + yf0 * ew_b;
-    float a_s = v0.a + yf0 * ew_a;
-    float z_s = v0.z + yf0 * ew_z;
-    float u_s = v0.u + yf0 * ew_u;
-    float v_s = v0.v + yf0 * ew_v;
-    float w_s = v0.w + yf0 * ew_w;
+    /* Attribute bases sampled at (TXS, TYS): evaluate there via the
+     * plane equation, same as the Gouraud path. */
+    float sdx = (float)x_start / (float)(1 << VIRGE_X_FRAC_BITS) - v0.x;
+    float sdy = (float)y_bot - v0.y;
+    float r_s = v0.r + drdx * sdx + drdy * sdy;
+    float g_s = v0.g + dgdx * sdx + dgdy * sdy;
+    float b_s = v0.b + dbdx * sdx + dbdy * sdy;
+    float a_s = v0.a + dadx * sdx + dady * sdy;
+    float z_s = v0.z + dzdx * sdx + dzdy * sdy;
+    float u_s = v0.u + dudx * sdx + dudy * sdy;
+    float v_s = v0.v + dvdx * sdx + dvdy * sdy;
+    float w_s = v0.w + dwdx * sdx + dwdy * sdy;
+    /* Clamp float noise off z_s: VIRGE_Z_FIXED overflows int32 a hair
+     * above 1.0 (colors saturate internally; z has no guard). */
+    if (z_s < 0.0f) z_s = 0.0f;
+    if (z_s > 1.0f) z_s = 1.0f;
 
     /* Determine the mipmap level size parameter.
      * The texture's power-of-2 dimension determines s where 2^s = tex_size.
