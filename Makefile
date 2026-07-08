@@ -17,7 +17,7 @@ CFLAGS   = -Wall -Wextra -O2 -g -D_GNU_SOURCE -Isrc
 LDFLAGS  = -lm
 
 # Backend selection (which hardware driver to compile in)
-BACKEND  ?= mga1064
+BACKEND  ?= virge
 
 # Map backend name to source files
 BACKEND_SRCS = src/backends/$(BACKEND)/$(BACKEND).c \
