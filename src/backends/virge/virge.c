@@ -1142,6 +1142,17 @@ void virge_draw_triangle_gouraud(struct virge_ctx *ctx,
     virge_wait_engine(ctx);
     program_3d_state(ctx);  /* re-arm: 2D ops clobber Z_STRIDE to 0xFF8 on real DX */
 
+    /* X-direction attribute deltas are sign-flipped for lr=0 (R-to-L). The
+     * engine seeds each attribute at TXS (edge 02) and iterates toward TXEND
+     * adding +TdAdX per pixel; for lr=0 that iteration runs in -X, so the
+     * per-pixel step must be -dA/dx to track the plane, while lr=1 iterates
+     * +X and takes +dA/dx. The Y deltas (ew_*) are edge-walk along side 02
+     * and are lr-independent. Proven on silicon by diagap: a wide lr=0 span's
+     * Z ran the wrong way across the triangle (saturated to 1.0 at the
+     * diagonal where the true Z is ~0.1) because dzdx was programmed with
+     * the wrong sign -- same magnitude, opposite slope. */
+    float sx = (lr_direction == 0) ? -1.0f : 1.0f;
+
     /* --- Program color start values (S8.7 packed) --- */
     virge_write32(ctx, VIRGE_3D_TGS_BS,
                   ((uint16_t)VIRGE_COLOR_FIXED(g_s) << 16) |
@@ -1152,13 +1163,13 @@ void virge_draw_triangle_gouraud(struct virge_ctx *ctx,
 
     /* --- Program color deltas (S8.7 packed) --- */
     virge_write32(ctx, VIRGE_3D_TdGdX_dBdX,
-                  ((uint16_t)VIRGE_COLOR_FIXED(dgdx) << 16) |
-                  (uint16_t)VIRGE_COLOR_FIXED(dbdx));
+                  ((uint16_t)VIRGE_COLOR_FIXED(sx * dgdx) << 16) |
+                  (uint16_t)VIRGE_COLOR_FIXED(sx * dbdx));
     virge_write32(ctx, VIRGE_3D_TdAdX_dRdX,
-                  ((uint16_t)VIRGE_COLOR_FIXED(dadx) << 16) |
-                  (uint16_t)VIRGE_COLOR_FIXED(drdx));
+                  ((uint16_t)VIRGE_COLOR_FIXED(sx * dadx) << 16) |
+                  (uint16_t)VIRGE_COLOR_FIXED(sx * drdx));
     /* Y deltas are edge-walk along side 02: -dA/dy + slope02*dA/dx
-     * (86Box; docs/datasheets/README.md). X deltas above stay raw. */
+     * (86Box; docs/datasheets/README.md); lr-independent, so not flipped. */
     virge_write32(ctx, VIRGE_3D_TdGdY_dBdY,
                   ((uint16_t)VIRGE_COLOR_FIXED(ew_g) << 16) |
                   (uint16_t)VIRGE_COLOR_FIXED(ew_b));
@@ -1168,7 +1179,7 @@ void virge_draw_triangle_gouraud(struct virge_ctx *ctx,
 
     /* --- Program Z start and deltas (S16.15) --- */
     virge_write32(ctx, VIRGE_3D_TZS, (uint32_t)VIRGE_Z_FIXED(z_s));
-    virge_write32(ctx, VIRGE_3D_TdZdX, (uint32_t)VIRGE_Z_FIXED(dzdx));
+    virge_write32(ctx, VIRGE_3D_TdZdX, (uint32_t)VIRGE_Z_FIXED(sx * dzdx));
     virge_write32(ctx, VIRGE_3D_TdZdY, (uint32_t)VIRGE_Z_FIXED(ew_z));
 
     /* --- Program edge geometry --- */
@@ -1538,6 +1549,12 @@ void virge_draw_textured_triangle(struct virge_ctx *ctx,
     virge_wait_engine(ctx);
     program_3d_state(ctx);  /* re-arm: 2D ops clobber Z_STRIDE to 0xFF8 on real DX */
 
+    /* X-direction attribute deltas sign-flipped for lr=0 (R-to-L); see the
+     * Gouraud path for the full rationale (engine iterates -X from the edge-
+     * 02 seed, so the per-pixel step must be -dA/dx). Y deltas (ew_*) are
+     * edge-walk along side 02 and stay raw. */
+    float sx = (lr_direction == 0) ? -1.0f : 1.0f;
+
     /* --- Color starts + deltas (S8.7, modulation) --- */
     virge_write32(ctx, VIRGE_3D_TGS_BS,
                   ((uint16_t)VIRGE_COLOR_FIXED(g_s) << 16) |
@@ -1546,13 +1563,13 @@ void virge_draw_textured_triangle(struct virge_ctx *ctx,
                   ((uint16_t)VIRGE_COLOR_FIXED(a_s) << 16) |
                   (uint16_t)VIRGE_COLOR_FIXED(r_s));
     virge_write32(ctx, VIRGE_3D_TdGdX_dBdX,
-                  ((uint16_t)VIRGE_COLOR_FIXED(dgdx) << 16) |
-                  (uint16_t)VIRGE_COLOR_FIXED(dbdx));
+                  ((uint16_t)VIRGE_COLOR_FIXED(sx * dgdx) << 16) |
+                  (uint16_t)VIRGE_COLOR_FIXED(sx * dbdx));
     virge_write32(ctx, VIRGE_3D_TdAdX_dRdX,
-                  ((uint16_t)VIRGE_COLOR_FIXED(dadx) << 16) |
-                  (uint16_t)VIRGE_COLOR_FIXED(drdx));
+                  ((uint16_t)VIRGE_COLOR_FIXED(sx * dadx) << 16) |
+                  (uint16_t)VIRGE_COLOR_FIXED(sx * drdx));
     /* Y deltas are edge-walk along side 02: -dA/dy + slope02*dA/dx
-     * (86Box; docs/datasheets/README.md). X deltas above stay raw. */
+     * (86Box; docs/datasheets/README.md); lr-independent, not flipped. */
     virge_write32(ctx, VIRGE_3D_TdGdY_dBdY,
                   ((uint16_t)VIRGE_COLOR_FIXED(ew_g) << 16) |
                   (uint16_t)VIRGE_COLOR_FIXED(ew_b));
@@ -1562,7 +1579,7 @@ void virge_draw_textured_triangle(struct virge_ctx *ctx,
 
     /* --- Z starts + deltas (S16.15) --- */
     virge_write32(ctx, VIRGE_3D_TZS, (uint32_t)VIRGE_Z_FIXED(z_s));
-    virge_write32(ctx, VIRGE_3D_TdZdX, (uint32_t)VIRGE_Z_FIXED(dzdx));
+    virge_write32(ctx, VIRGE_3D_TdZdX, (uint32_t)VIRGE_Z_FIXED(sx * dzdx));
     virge_write32(ctx, VIRGE_3D_TdZdY, (uint32_t)VIRGE_Z_FIXED(ew_z));
 
     /* --- Texture coordinates (U, V, W with perspective) --- */
@@ -1571,13 +1588,14 @@ void virge_draw_textured_triangle(struct virge_ctx *ctx,
     int32_t v_start = tex_coord_fixed(v_s, s_val);
     int32_t w_start = (int32_t)(w_s * (float)(1 << 19));  /* S12.19 */
 
-    /* dU/dX in the same format. X deltas are raw plane gradients; Y deltas
-     * are edge-walk along side 02, -dA/dy + slope02*dA/dx (86Box; README). */
-    int32_t du_dx = tex_coord_fixed(dudx, s_val);
+    /* dU/dX in the same format. X deltas are sign-flipped for lr=0 (sx);
+     * Y deltas are edge-walk along side 02, -dA/dy + slope02*dA/dx (86Box;
+     * README), lr-independent. */
+    int32_t du_dx = tex_coord_fixed(sx * dudx, s_val);
     int32_t du_dy = tex_coord_fixed(ew_u, s_val);
-    int32_t dv_dx = tex_coord_fixed(dvdx, s_val);
+    int32_t dv_dx = tex_coord_fixed(sx * dvdx, s_val);
     int32_t dv_dy = tex_coord_fixed(ew_v, s_val);
-    int32_t dw_dx = (int32_t)(dwdx * (float)(1 << 19));
+    int32_t dw_dx = (int32_t)(sx * dwdx * (float)(1 << 19));
     int32_t dw_dy = (int32_t)(ew_w * (float)(1 << 19));
 
     /* Base U/V are common offsets added to all U/V values (usually 0) */
