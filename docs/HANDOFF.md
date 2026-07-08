@@ -306,6 +306,31 @@ distinguishes seed-offset (uniform) vs gradient-sign/magnitude (tilts
 past 1.0 mid-span). Run `sudo ./diagap` (310deg) and a clean-angle
 control. Do NOT commit any TXEND12 edge perturbation — X edges are correct.
 
+**2026-07-08 follow-up #3 — notch SOLVED; fix landed (df35256), awaiting
+silicon verification.** diagap's full-span Z readback (commit 6e3afe3)
+on david-ta970 pinned it: the X-direction attribute deltas were
+programmed with the raw plane gradient for BOTH L/R directions, but the
+engine seeds each attribute at TXS (edge 02) and iterates toward TXEND
+adding +TdAdX per pixel — which runs in -X for lr=0 (R-to-L). So for
+lr=0 the per-pixel step must be -dA/dx, not +dA/dx. Tri A {0,4,7} is
+lr=0 with a wide span (its diagonal is edge-12); its Z gradient tilted
+the WRONG WAY across the span (same magnitude ~0.0068/px, opposite
+sign), climbing to 1.000 (saturated) at the diagonal where the true Z
+(coplanar tri B, lr=1, correct) is ~0.086. Z=LESS rejected those
+pixels => the notch. The seed (edge-02 Z ~0.70) and Y-walk were correct
+— only the across-span X-slope sign was wrong. Flat-shaded cube faces
+hid it in color (color X-deltas == 0); Z=ALWAYS hid it in Z; only a
+wide lr=0 span with a real Z gradient under Z=LESS exposed it.
+**Fix:** `sx = (lr_direction == 0) ? -1.0f : 1.0f;` applied to all
+X-direction deltas (color R/G/B/A, Z, texture U/V/W) in both the
+Gouraud and textured triangle paths; the Y-direction deltas (`ew_*`,
+edge-walk along side 02) are lr-independent and stay raw. **Verify on
+next run:** `sudo ./diagap` (310deg) → both-LESS passes 40px→watertight
+and A's diagonal Z drops 1.000→~0.1 (matching B's ~0.086, no
+saturation); `sudo ./cubefb` 36-sweep → 0 holes. Tri B (lr=1) is
+untouched and stays correct. If verification passes, this closes the
+9/36 coverage-hole axis (the bleedthrough axis is separate).
+
 ## Established engine facts (verified against 86Box, 2026-07-06)
 
 Register-file architecture, from the MMIO decode in 86Box
