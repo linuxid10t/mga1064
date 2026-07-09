@@ -372,6 +372,48 @@ static const uint8_t virge_scanout_regs[] = {
  * Requires vga_ensure_new_mmio() (port access + unlocks) and the S3d
  * enable sequence (virge_wait_vsync reads SUBSYS_STATUS over MMIO).
  */
+
+/* Ctrl-C console-restore probe (2026-07-09). The 4MB save+restore runs (log
+ * confirms 4194304 bytes) yet the cube survives Ctrl-C as a 4-quadrant
+ * color-shifted tile -- i.e. the CRTC, back in 32bpp console mode, is still
+ * scanning our 16bpp 3D frame. Texture upload proves CPU writes via ctx->fb
+ * reach engine VRAM, so the restore *should* displace the cube. This probe
+ * prints, at snapshot and post-restore: the CRTC display-start byte offset
+ * (CR0C/CR0D/CR69, dword unit under ENH MAP) and 16 bytes of VRAM read via
+ * the CPU linear aperture at offset 0 and at the display-start, plus the
+ * saved bytes. That answers: did the snapshot capture the console? did the
+ * restore memcpy land? where is the CRTC actually scanning? */
+static void virge_dump_vram_probe(struct virge_ctx *ctx, const char *label,
+                                  const uint8_t *saved)
+{
+    uint8_t c0c = vga_crtc_read(0x0C);
+    uint8_t c0d = vga_crtc_read(0x0D);
+    uint8_t c69 = vga_crtc_read(0x69);
+    uint32_t dw = ((uint32_t)c69 << 16) | ((uint32_t)c0c << 8) | (uint32_t)c0d;
+    uint32_t start = dw << 2;   /* dword -> byte (ENH MAP, PDF p.193) */
+    const uint8_t *fb = (const uint8_t *)ctx->fb;
+    printf("S3 ViRGE [%s]: display-start CR0C=%02x CR0D=%02x CR69=%02x "
+           "-> byte 0x%x (vram_size=0x%x)\n",
+           label, c0c, c0d, c69, start, (unsigned)ctx->vram_size);
+    printf("  VRAM[0x0]   : ");
+    for (int i = 0; i < 16; i++) printf("%02x ", fb[i]);
+    printf("\n");
+    if (start && start + 16 <= ctx->vram_size) {
+        printf("  VRAM[0x%x]: ", start);
+        for (int i = 0; i < 16; i++) printf("%02x ", fb[start + i]);
+        printf("\n");
+    }
+    if (saved) {
+        printf("  saved[0x0]  : ");
+        for (int i = 0; i < 16; i++) printf("%02x ", saved[i]);
+        if (start && start + 16 <= ctx->vram_size) {
+            printf("\n  saved[0x%x]: ", start);
+            for (int i = 0; i < 16; i++) printf("%02x ", saved[start + i]);
+        }
+        printf("\n");
+    }
+}
+
 static void virge_scanout_takeover(struct virge_ctx *ctx)
 {
     uint8_t r[VIRGE_SCANOUT_REG_COUNT];
@@ -519,6 +561,7 @@ static void virge_scanout_takeover(struct virge_ctx *ctx)
                             "screen garbage\n", bsz, (unsigned)ctx->vram_size);
         }
     }
+    virge_dump_vram_probe(ctx, "snapshot", ctx->saved_console_vram);
     ctx->scanout_owned = 1;
 
     printf("S3 ViRGE: scanout now CR67=%02x CR50=%02x CR00=%02x CR01=%02x "
@@ -2032,6 +2075,7 @@ void virge_cleanup(struct virge_ctx *ctx)
          * of our last 3D frame. No fbdev on this box -> nothing else redraws it. */
         if (ctx->saved_console_vram && ctx->saved_console_vram_size) {
             memcpy(ctx->fb, ctx->saved_console_vram, ctx->saved_console_vram_size);
+            virge_dump_vram_probe(ctx, "post-restore", ctx->saved_console_vram);
             free(ctx->saved_console_vram);
             ctx->saved_console_vram = NULL;
             ctx->saved_console_vram_size = 0;
