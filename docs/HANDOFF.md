@@ -483,19 +483,33 @@ same silicon quirk), and was never re-armed.**
   regardless of UV. This ALSO explains "UV has no effect": the clobbered
   base points at near-uniform memory, so varying UV reads the same texel.
 
-**FIX (this commit): mirror the Z_STRIDE re-arm.** Cache the bound tex_addr
-in ctx->tex_base (set in bind_texture; cleared on unbind), and re-arm
-VIRGE_3D_TEX_BASE in program_3d_state (runs at the start of every triangle,
-after virge_wait_engine, before the coord regs + CMD_SET kick). Harmless
-for the Gouraud path (no texture sampled). VERIFY on next run:
-`sudo ./texprobe` -> TEST 3 should now read RED (R=31); TEST 1 grid should
-now vary across the quad (engine reading our texture). If TEST 1 still
-doesn't rise cleanly 0..31 AFTER TEX_BASE is fixed, the remaining issue is
-the U-feed scale on the DX `_375` persp path (shift 8+max_d, flagged in the
-86Box refinement above) — a separate, secondary bug. texprobe drives the
-REAL frontend bind/upload/draw path (= the exact textured_cube code) and
-reaches `struct virge_ctx` via `ctx.backend_data` (`hw` is the first field
-of `virge_private`). Build: `make -B BACKEND=virge texprobe`.
+**CORRECTION (2026-07-08): the TEX_BASE re-arm did NOT fix it — TEX_BASE
+clobber was a red herring.** The re-arm fix (commit 8588c26, KEPT as
+defensive — mirrors Z_STRIDE and is correct in principle) DID land the
+register: TEX_BASE 0xB4EC now reads back `0x002bf200` (was 0xffffffff).
+But the rendering is **unchanged** — TEST 3 still 0x3436 (not red), TEST 1
+still R=13 constant. And TEST 3 had already moved the bound texture to
+0x2c1200 (a different TEX_BASE) with the same 0x3436 result. So: **the
+engine is NOT reading TEX_BASE at all** — changing TEX_BASE (and texture
+content, and UV) changes nothing; output is a constant 0x3436 that is not
+any texel of our texture. Coherence is NOT the issue: the BAR0 aperture is
+mmap'd O_SYNC (uncached; virge.c:643), and scantest writes the framebuffer
+via the SAME CPU path (fill_rows→vram+base) and displays correctly, so CPU
+texture writes really are in VRAM (the v3 readback is truthful). No
+missing register either — datasheet §19.4 has only TEX_BASE (0xB4EC, bits
+21-3); format 010=ARGB1555 is right; 0x2bf200 is valid (<4MB, QW-aligned).
+86Box reads `vram[tex_base]` and would render our texture; real DX does
+not — another emulator/36-fidelity gap (like the Z_STRIDE clobber 86Box
+never reproduced). CONCLUSION: real DX fetches the texture from an address
+that does not track TEX_BASE. texprobe v4 (this commit) localizes:
+  TEST 4a = VRAM scan for 0x3436 (find the offset(s) the engine reads).
+  TEST 4b = TEX_BASE marker sweep incl. a LOW addr (0xea600 back buffer,
+            not cleared) — does the engine honor TEX_BASE at all, and is
+            texture fetch banked/range-limited to low VRAM?
+RUN: `git pull && make -B BACKEND=virge texprobe && sudo ./texprobe`.
+Paste TEST 4a + 4b (and the rest). texprobe drives the REAL frontend path
+(= textured_cube's bind/upload/draw) and reaches struct virge_ctx via
+ctx.backend_data. Build: `make -B BACKEND=virge texprobe`.
 
 ## Established engine facts (verified against 86Box, 2026-07-06)
 

@@ -246,6 +246,70 @@ int main(int argc, char **argv)
         }
     }
 
+    /* ---- TEST 4: WHERE does the engine read? TEX_BASE=0x2bf200 is confirmed
+     * (reads back) and our texture is really there (O_SYNC aperture, matches
+     * scantest), yet the engine samples 0x3436 from elsewhere. Two sub-tests:
+     *  (a) VRAM scan for 0x3436 -> find the offset(s) holding the value the
+     *      engine actually reads (its true texture-fetch site).
+     *  (b) TEX_BASE marker sweep incl. a LOW address -> does the engine honor
+     *      TEX_BASE at all, and is texture fetch banked/range-limited (only
+     *      low VRAM)? We CPU-fill each candidate region (uncached O_SYNC =>
+     *      really in VRAM) with a distinct marker, override hw->tex_base, and
+     *      draw UV=(0,0). If the engine honors TEX_BASE, center == that base's
+     *      marker; if all read 0x3436, TEX_BASE is ignored. Back-buffer
+     *      (0xea600) is NOT cleared by l10gl_clear (only fb_base=0 + Z), so its
+     *      marker survives. */
+    /* (a) VRAM scan for 0x3436 */
+    {
+        uint16_t *vram = (uint16_t *)hw->fb;
+        uint32_t total = hw->vram_size / 2;
+        uint32_t hits = 0, first[8]; size_t nf = 0;
+        uint32_t cur_run = 0, cur_at = 0, best_run = 0, best_at = 0;
+        for (uint32_t i = 0; i < total; i++) {
+            if (vram[i] == 0x3436) {
+                hits++;
+                if (nf < 8) first[nf++] = i * 2;
+                if (cur_run == 0) cur_at = i * 2;
+                cur_run++;
+            } else {
+                if (cur_run > best_run) { best_run = cur_run; best_at = cur_at; }
+                cur_run = 0;
+            }
+        }
+        if (cur_run > best_run) { best_run = cur_run; best_at = cur_at; }
+        printf("\nTEST 4a: VRAM scan for 0x3436 (engine's constant output)\n");
+        printf("  %u hits in %u texels; first byte offsets:", hits, total);
+        for (size_t i = 0; i < nf; i++) printf(" 0x%x", first[i]);
+        printf("\n  longest contiguous run: %u bytes starting at byte 0x%x\n",
+               best_run * 2, best_at);
+    }
+    /* (b) TEX_BASE marker sweep */
+    {
+        l10gl_bind_texture(&ctx, &tex);     /* restore cmd bits (ARGB1555,s=6) */
+        l10gl_tex_parameter(&ctx, L10GL_FILTER_NEAREST, L10GL_WRAP_CLAMP);
+        struct { uint32_t base; uint16_t mark; const char *name; } mb[] = {
+            { 0x000ea600, 0xF800, "backbuf LOW (0xea600)" },
+            { 0x002bf200, 0x07E0, "tex-heap (0x2bf200)" },
+            { 0x002d0000, 0x001F, "offscreen (0x2d0000)" },
+            { 0x00300000, 0xFFE0, "high (0x300000)" },
+        };
+        printf("\nTEST 4b: TEX_BASE marker sweep (CPU-fill region, override TEX_BASE, draw UV=0,0)\n");
+        float uv00[4][2] = { {0,0},{0,0},{0,0},{0,0} };
+        for (int i = 0; i < 4; i++) {
+            uint16_t *r = (uint16_t *)(hw->fb + mb[i].base);
+            for (int j = 0; j < 4096; j++) r[j] = mb[i].mark;   /* 8 KB solid */
+            hw->tex_base = mb[i].base;          /* program_3d_state re-arms this */
+            l10gl_clear(&ctx);                   /* clears fb_base=0 + Z only */
+            draw_quad(&ctx, x0, y0, x1, y1, zv, uv00);
+            int mx = (x0 + x1) / 2, my = (y0 + y1) / 2;
+            uint16_t px = *(uint16_t *)(base + (size_t)my * stride + (size_t)mx * 2);
+            printf("  TEX_BASE=0x%06x mark=0x%04x %-22s center=0x%04x  %s\n",
+                   mb[i].base, mb[i].mark, mb[i].name, px,
+                   (px == mb[i].mark) ? "<-- HONORS TEX_BASE" : "(not marker)");
+        }
+        hw->tex_base = (uint32_t)(uintptr_t)tex.backend_data;   /* restore */
+    }
+
     printf("\nDone. Ctrl-C to exit.\n");
     while (running) { if (getchar() == EOF) break; }
     l10gl_destroy(&ctx);
