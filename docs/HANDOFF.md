@@ -459,57 +459,63 @@ than the start-vs-delta fork: the engine is NOT reading our texture at all.**
   format=ARGB1555=(2<<5) (2B/texel, correct), program_3d_state does NOT
   touch TEX_BASE. So the bug is subtle / silicon-specific — must probe.
 
-**`texprobe` v3 RAN on david-ta970 2026-07-08 — ROOT CAUSE FOUND: TEX_BASE
-is clobbered by the 2D clear between bind and draw (the Z_STRIDE lesson,
-same silicon quirk), and was never re-armed.**
-- TEX VRAM readback: all 5 texels MATCH (texel(0,0)=0x8001, (2,0)=0x8401,
-  (63,0)=0xfc01, (0,1)=0x8001, (32,32)=0xc201). tex_addr=0x2bf200. So the
-  upload IS correct in engine-visible VRAM. (H1 refuted.)
-- TEST 3 (solid-RED texture 0xFC00): solid tex_addr=0x2c1200, VRAM[0]=0xfc00
-  (upload OK), but center STILL renders 0x3436 R=13 (NOT red). So the
-  engine is NOT reading our texture even though it's correctly in VRAM =>
-  TEX_BASE is WRONG at kick time (H2 confirmed). TEX_BASE 0xB4EC reads
-  0xffffffff (write-only) so its live value is unverifiable by readback,
-  but TEST 3 is the proof: a correctly-placed texture is invisible to the
-  engine until TEX_BASE is right.
-- CODE ROOT CAUSE: TEX_BASE (0xB4EC) is written ONLY in bind_texture
-  (l10gl_virge.c ~L463) — never re-armed. Every other texture reg
-  (TUS/TVS/TdUdX/TdVdY/TWS/…) IS rewritten per-triangle in
-  virge_draw_textured_triangle, and program_3d_state re-arms
-  DEST_BASE/Z_BASE/strides/Z_STRIDE/clip — but NOT TEX_BASE. l10gl_clear's
-  2D fills run between bind and the triangle and clobber it on real DX
-  (exactly the 2D-invalidates-3D-Z_STRIDE behavior, commit f0811f1); the
-  first triangle after any clear then reads off-texture garbage (0x3436)
-  regardless of UV. This ALSO explains "UV has no effect": the clobbered
-  base points at near-uniform memory, so varying UV reads the same texel.
+**ROOT CAUSE FOUND 2026-07-09 (texprobe v6, commit 0be1ce9): the engine
+emits TEX_BDR_CLR (texture BORDER color, reg 0xB4F0) for EVERY texel — it
+is NOT reading any VRAM texel at all.** Earlier theories (TEX_BASE
+clobbered; engine ignores TEX_BASE / reads a fixed base; v4/v5 "tiling")
+were all RED HERRINGS. Proof:
+- 6a/6b: fill ALL of VRAM uniform (black `0x8000`, then white `0xBFFF`)
+  and draw UV=(0,0). If the engine reads ANY texel the quad takes that
+  color. White fill → output stayed the border color (NOT white) => no
+  VRAM texel sampled. (6a black-fill was a false-positive verdict one run
+  — the border register happened to read 0x0000/black that run, colliding
+  with the fill; 6b white fill is the trustworthy signal.) NOTE: the
+  border register is UNPROGRAMMED, so its incidental value varies per run
+  (0x3436 in the v6 run, 0x0000 in the v7 run) — that is why TEST 1-5
+  showed 0x3436 earlier and black later. Same behavior, different color.
+- 6c: program each 3D color reg to white one at a time — TEX_BDR_CLR
+  (0xB4F0) flips the output to white; FOG_CLR/COLOR0/COLOR1 do nothing.
+  So the constant = TEX_BDR_CLR, emitted because every texture coordinate
+  resolves out-of-range → border (the ViRGE "CLAMP"/`_nowrap` texel reader
+  returns the border color, NOT clamp-to-edge; 86Box condition is
+  `((u|v) & 0xf8000000) == 0xf8000000`, i.e. a negative/overflowed coord).
 
-**CORRECTION (2026-07-08): the TEX_BASE re-arm did NOT fix it — TEX_BASE
-clobber was a red herring.** The re-arm fix (commit 8588c26, KEPT as
-defensive — mirrors Z_STRIDE and is correct in principle) DID land the
-register: TEX_BASE 0xB4EC now reads back `0x002bf200` (was 0xffffffff).
-But the rendering is **unchanged** — TEST 3 still 0x3436 (not red), TEST 1
-still R=13 constant. And TEST 3 had already moved the bound texture to
-0x2c1200 (a different TEX_BASE) with the same 0x3436 result. So: **the
-engine is NOT reading TEX_BASE at all** — changing TEX_BASE (and texture
-content, and UV) changes nothing; output is a constant 0x3436 that is not
-any texel of our texture. Coherence is NOT the issue: the BAR0 aperture is
-mmap'd O_SYNC (uncached; virge.c:643), and scantest writes the framebuffer
-via the SAME CPU path (fill_rows→vram+base) and displays correctly, so CPU
-texture writes really are in VRAM (the v3 readback is truthful). No
-missing register either — datasheet §19.4 has only TEX_BASE (0xB4EC, bits
-21-3); format 010=ARGB1555 is right; 0x2bf200 is valid (<4MB, QW-aligned).
-86Box reads `vram[tex_base]` and would render our texture; real DX does
-not — another emulator/36-fidelity gap (like the Z_STRIDE clobber 86Box
-never reproduced). CONCLUSION: real DX fetches the texture from an address
-that does not track TEX_BASE. texprobe v4 (this commit) localizes:
-  TEST 4a = VRAM scan for 0x3436 (find the offset(s) the engine reads).
-  TEST 4b = TEX_BASE marker sweep incl. a LOW addr (0xea600 back buffer,
-            not cleared) — does the engine honor TEX_BASE at all, and is
-            texture fetch banked/range-limited to low VRAM?
-RUN: `git pull && make -B BACKEND=virge texprobe && sudo ./texprobe`.
-Paste TEST 4a + 4b (and the rest). texprobe drives the REAL frontend path
-(= textured_cube's bind/upload/draw) and reaches struct virge_ctx via
-ctx.backend_data. Build: `make -B BACKEND=virge texprobe`.
+**v7 (760be61) RULED OUT the U/V fractional-bit scale.** Swept ufrac in
+{2,4,6,8,10,12,14,21} at UV=(0,0) and UV=(0.5,0.5) with a solid-RED
+texture + BLUE border: EVERY row = blue border (no texel read). So the U/V
+encoding scale is NOT the cause. Crucially, at UV=(0,0) TUS=0 for all
+ufrac → u_final=0 (in range) yet it STILL borders. **Real DX borders even
+when the computed coordinate is zero** — so the trigger is NOT the U
+magnitude. The driver's `tex_coord_fixed` (frac_bits=27-s_val=21, S10.21,
+the datasheet format) is correct for the NON-perspective path; the
+PERSPECTIVE sampler (`tex_sample_persp_normal_375`, selected by command
+0101 / bit29=1) divides U by W and on real DX that path borders
+unconditionally. (86Box's _375 math disagrees with silicon here — it
+predicts texel 0 at UV=0 — another fidelity gap.)
+
+**v8 (ba69ed7) PENDING RUN: tests the NON-perspective path.** Forces the
+non-perspective command (0001, sampler `tex_sample_normal`, uses U/V
+directly — no W divide) via debug flag `virge_ctx.tex_dbg_nopersp`, draws
+the gradient with UV 0..TEX (texel units; the driver does NOT normalize
+caller UV), BLUE border. Expected: 8a non-persp R/G interpolate 0..31 →
+texturing WORKS, bug isolated to the perspective divide; 8a still flat →
+more fundamental (TEX_BASE reach / format / dispatch). 8b persp baseline
+→ blue border (reproduces bug).
+  RUN: `git pull && make -B BACKEND=virge texprobe && sudo ./texprobe`.
+  Paste TEST 8 (8a grid + 8b).
+
+VERIFIED FACTS (still hold): upload IS correct in VRAM (v3: 5/5 texels
+match at 0x2bf200); coherence is NOT the issue (BAR0 O_SYNC, scantest same
+path); texture fields decode correctly (max_d=bits11:8=6, format=bits7:5=
+2=ARGB1555 — matches 86Box); TEX_BASE re-arm (8588c26) is KEPT as
+defensive/correct. texprobe reaches struct virge_ctx via ctx.backend_data.
+Build: `make -B BACKEND=virge texprobe`.
+
+History (superseded, kept for the record): v3 wrongly claimed TEX_BASE
+clobber was root cause (re-arm landed the reg, didn't fix it). v4/v5
+concluded "engine ignores TEX_BASE, reads a fixed base" — the observation
+(TEX_BASE/content/UV don't matter) was right but the REASON was wrong: it
+borders everything, so of course none of those matter. v6 corrected it.
 
 ## Established engine facts (verified against 86Box, 2026-07-06)
 
