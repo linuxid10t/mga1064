@@ -29,6 +29,13 @@
  *      rises 0..31 our coordinates are CORRECT (WRAP fetches the right texel)
  *      and CLAMP is the sole bug -> use WRAP. If flat/scrambled, our U/V
  *      encoding is wrong and WRAP was only masking garbage.
+ *   v12 RESULT (silicon): WRAP reads all texel(0,0) (R0 G0 everywhere) -- the
+ *      U/V coordinate does NOT select the texel; the fetch address is stuck at
+ *      TEX_BASE+0. Fetch works, addressing does not.
+ *   TEST 13 - gradient under WRAP with CONSTANT UV (du=dv=0): does the START
+ *      register pick the texel (-> deltas dead, iteration is the bug) or is it
+ *      stuck at texel(0,0) too (-> whole U/V->address path dead)? Raw pixel
+ *      readback so texel(0,0)=0x8001 != border 0x0000.
  *
  * Drives the real frontend API and reaches struct virge_ctx via
  * ctx.backend_data (hw is the first field of virge_private) for readback.
@@ -684,6 +691,68 @@ int main(int argc, char **argv)
         draw_quad(&ctx, x0, y0, x1, y1, zv, uv_tex);
         rg_grid("TEST 12c: NON-perspective CLAMP gradient (expect all 0 = border)",
                 base, stride, x0, y0, x1, y1);
+
+        hw->tex_dbg_nopersp = 0;
+        hw->tex_dbg_ufrac = -1;
+        l10gl_tex_parameter(&ctx, L10GL_FILTER_NEAREST, L10GL_WRAP_CLAMP);
+        virge_write32(hw, VIRGE_3D_TEX_BDR_CLR, 0x00000000);
+        l10gl_bind_texture(&ctx, &tex);
+    }
+
+    /* ---- TEST 13: gradient under WRAP, CONSTANT UV (deltas=0) -- does the
+     * START coordinate select the texel, or is the address stuck at base
+     * texel(0,0)? TEST 12 showed varying-UV-under-WRAP reads all texel(0,0)
+     * (R0 G0) -- either the deltas are dead (START works, only iteration is
+     * broken) or the whole U/V->address path is dead (START ignored too).
+     * Constant UV makes du=dv=0, so the START register alone picks the texel.
+     * Sweep known texels; print the RAW pixel so texel(0,0)=0x8001 (B=1) is
+     * distinct from border 0x0000 (B=0). VERDICT:
+     *   - center tracks UV (UV=32,32 -> R16 G16) -> START selects the texel ->
+     *     deltas are the bug (TdUdX/TdVdX/TdUdY/TdVdY dead on real DX).
+     *   - always texel(0,0) -> START ignored too -> whole U/V->address path
+     *     dead; chase tex_coord_fixed / the texel-int bit field / a missing
+     *     setup register. */
+    {
+        l10gl_tex_parameter(&ctx, L10GL_FILTER_NEAREST, L10GL_WRAP_REPEAT);
+        l10gl_bind_texture(&ctx, &tex);
+        hw->tex_dbg_nopersp = 1;   /* clean affine path (no W divide) */
+        hw->tex_dbg_ufrac = 19;
+        virge_write32(hw, VIRGE_3D_TEX_BDR_CLR, 0x00000000);
+
+        int mx = (x0 + x1) / 2, my = (y0 + y1) / 2;
+        struct { int u, v, expR, expG; const char *nm; } cs[] = {
+            { 0,  0,  0,  0, "(0,0)"   },
+            {16, 16,  8,  8, "(16,16)" },
+            {32, 32, 16, 16, "(32,32)" },
+            {48, 48, 24, 24, "(48,48)" },
+            {63, 63, 31, 31, "(63,63)" },
+        };
+        printf("\nTEST 13: gradient WRAP, CONSTANT UV (deltas=0) -- START picks the texel?\n");
+        printf("  non-persp u19; texel(x,y)=R=x>>1 G=y>>1; raw px (texel(0,0)=0x8001 != border 0x0000)\n");
+        for (int i = 0; i < (int)(sizeof(cs)/sizeof(cs[0])); i++) {
+            float uv[4][2] = { {(float)cs[i].u,(float)cs[i].v},
+                               {(float)cs[i].u,(float)cs[i].v},
+                               {(float)cs[i].u,(float)cs[i].v},
+                               {(float)cs[i].u,(float)cs[i].v} };
+            l10gl_clear(&ctx);
+            draw_quad(&ctx, x0, y0, x1, y1, zv, uv);
+            uint16_t px = *(uint16_t *)(base + (size_t)my * stride + (size_t)mx * 2);
+            int r = (px >> 10) & 0x1F, g = (px >> 5) & 0x1F;
+            const char *v;
+            if (r == cs[i].expR && g == cs[i].expG) v = "OK";
+            else if (px == 0x8001)                 v = "<-- stuck @ texel(0,0)";
+            else if (px == 0x0000)                 v = "<-- border";
+            else                                   v = "";
+            printf("  UV=%-8s center=0x%04x R=%-2d G=%-2d  (exp R%-2d G%-2d) %s\n",
+                   cs[i].nm, px, r, g, cs[i].expR, cs[i].expG, v);
+        }
+        printf("  regs (best-effort; TUS/TVS/Td* may be write-only): "
+               "TUS=0x%08x TVS=0x%08x TdUdX=0x%08x TdVdX=0x%08x TdUdY=0x%08x TdVdY=0x%08x "
+               "TEX_BASE=0x%08x CMD=0x%08x\n",
+               virge_read32(hw, 0xB538), virge_read32(hw, 0xB534),
+               virge_read32(hw, 0xB520), virge_read32(hw, 0xB51C),
+               virge_read32(hw, 0xB52C), virge_read32(hw, 0xB528),
+               virge_read32(hw, 0xB4EC), virge_read32(hw, 0xB500));
 
         hw->tex_dbg_nopersp = 0;
         hw->tex_dbg_ufrac = -1;
