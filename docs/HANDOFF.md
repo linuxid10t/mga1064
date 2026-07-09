@@ -428,18 +428,49 @@ so it draws all 12 tris on Z=LESS alone.
   work — that would be a U-feed-scale sub-bug on the _375 path, separate
   from the W-divide. Not asserted yet; verify empirically from the grid.
 
-PENDING DIAGNOSTIC — `texprobe` v2 (commit f6c635c) NOT YET RUN. Adds:
-(1) a dump of the ACTUAL programmed registers read back via
-`virge_read32` (TUS/TVS/TWS/TdUdX/TdVdX/TdWdX/TdUdY/TdVdY/TdWdY/TEX_BASE/
-CMD_SET — ground truth; write-only regs may read 0 or 0xffffffff); (2)
-TEST 2 = two CONSTANT-UV quads (du=dv=0): uv=(0.5,0.5) then (0.9,0.1).
+**`texprobe` v2 (f6c635c) RAN on david-ta970 2026-07-08 — result is BIGGER
+than the start-vs-delta fork: the engine is NOT reading our texture at all.**
+- TEST 2 (constant-UV quads uv=(0.5,0.5) and (0.9,0.1)) both read the
+  IDENTICAL pixel 0x3434... center px=0x3436 R=13 G=1 — the SAME as the
+  TEST 1 gradient interior. So programming different UV changes NOTHING:
+  the texture-coordinate registers (TUS/TVS + deltas) have ZERO effect.
+- The rendered pixel 0x3436 is NOT any texel of our uploaded texture.
+  Our texels are all `0x8000|(x>>1)<<10|(y>>1)<<5|1` (alpha=1, B=1);
+  0x3436 has alpha=0, B=22. So the engine samples memory that is NOT our
+  texture. (UV-irrelevant + non-texture value => the engine reads a fixed
+  off-texture location regardless of UV.)
+- REG dump (read back after TEST 1) confirms the WRITES land correctly:
+  TdUdX=0xffffeb86=-5242 (= sx·dudx·2^21 with the lr=0 sign-flip, dudx
+  =0.0025 for the 400px quad — CORRECT), TdVdX=0 (correct, dvdx=0),
+  TdVdY=0xffffe4b2=-6990 (correct, ew_v), TWS=0x00080000 (=1.0·2^19,
+  CORRECT), TdWdX/TdWdY=0 (W const, correct). TEX_BASE 0xB4EC reads
+  0xffffffff (write-only — uninformative). (TdUdY/TUS/TVS readbacks look
+  aliased/stale: TdUdY==TdVdY and TUS==TVS, both ≠ their written values —
+  readback artifact, not necessarily the engine's working values.)
+- So: deltas ARE programmed correctly but have no effect; output isn't
+  our texture. Two surviving root-cause hypotheses, both predict "UV no
+  effect + non-texture output": (H1) the upload did NOT land at TEX_BASE
+  in engine-visible VRAM and the memory there is uniform 0x3436; (H2) the
+  engine reads a DIFFERENT address than TEX_BASE (TEX_BASE write ignored/
+  overridden, or texel addressing reads off-texture). All driver code
+  reads correct on paper: tex_addr = tex_heap_next = z_base+z_size =
+  0x1d4c00+0xea600 = 0x27F200 (valid <4MB), upload writes ctx->fb+tex_addr
+  (linear BAR0 aperture = engine VRAM), bind writes TEX_BASE=tex_addr&~7,
+  format=ARGB1555=(2<<5) (2B/texel, correct), program_3d_state does NOT
+  touch TEX_BASE. So the bug is subtle / silicon-specific — must probe.
+
+PENDING DIAGNOSTIC — `texprobe` v3 (this commit). Adds two decisive tests:
+(1) TEX VRAM readback: CPU-read VRAM at tex_addr (==TEX_BASE written) and
+dump 5 texels vs gen_uv_gradient's expected values. MISMATCH => upload
+never landed at TEX_BASE (H1). MATCH => upload is fine, engine reads
+elsewhere (H2).
+(2) TEST 3 = solid-RED texture (every texel 0xFC00, a=1 R=31) under the
+gradient-UV quad. center R=31 (red) => engine IS sampling our texture =>
+the dead-constant/UV bug is purely the coord pipeline. center still
+~0x3436 (R=13) => engine is NOT reading our texture at all => TEX_BASE/
+upload/addressing is the root cause (H1 or H2).
   RUN: `git pull && make -B BACKEND=virge texprobe && sudo ./texprobe`.
-  INTERPRET TEST 2:
-    - uv=(0.5,0.5) -> R16/G16 AND (0.9,0.1) -> R28/G3: the START register
-      WORKS => bug is in the DELTAS (TdUdX/TdVdX not applied per pixel).
-    - still reads ~R13/G2 regardless of programmed UV: the START register
-      or the perspective W-divide is broken (engine not using the U/V we
-      write). Cross-check the reg dump for what TUS/TVS/TWS actually hold.
+  Paste: TEX readback block + TEST 1 grid + REG dump + TEST 2 + TEST 3.
 `texprobe` drives the REAL frontend bind/upload/draw path (= the exact
 textured_cube code) and reaches `struct virge_ctx` via `ctx.backend_data`
 (`hw` is the first field of `virge_private`). Build:

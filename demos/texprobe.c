@@ -149,6 +149,32 @@ int main(int argc, char **argv)
     printf("cached tex_cmd_bits=0x%08x (s field bits11-8 = %d -> UV format S%u.%u)\n",
            hw->tex_cmd_bits, s_val, 4 + s_val, 27 - s_val);
 
+    /* ---- TEX VRAM readback: is the uploaded texture actually at TEX_BASE? ----
+     * tex->backend_data holds the absolute VRAM offset the bump allocator
+     * assigned (== the value written to VIRGE_3D_TEX_BASE). CPU-read it back
+     * straight from the linear aperture and compare to what gen_uv_gradient
+     * wrote. If these MISMATCH, the upload never landed in engine-visible
+     * VRAM (aperture/write-path bug). If they MATCH but the rendered quad
+     * below still isn't our texture, the engine reads ELSEWHERE (TEX_BASE
+     * write ignored / overridden, or texel addressing off-texture). */
+#define TEXEL(x,y) ((uint16_t)(0x8000 | (((x)>>1)<<10) | (((y)>>1)<<5) | 1))
+    uint32_t tex_addr = (uint32_t)(uintptr_t)tex.backend_data;
+    uint16_t *tvram = (uint16_t *)(hw->fb + tex_addr);
+    printf("\nTEX upload readback: tex_addr (== TEX_BASE written) = 0x%x\n", tex_addr);
+    printf("  dumping VRAM at that offset (expect the gen_uv_gradient texels):\n");
+    struct { int idx, x, y; uint16_t exp; } tchk[] = {
+        { 0,           0,  0,  TEXEL(0,0)   },
+        { 2,           2,  0,  TEXEL(2,0)   },
+        { 63,         63,  0,  TEXEL(63,0)  },
+        { 64,          0,  1,  TEXEL(0,1)   },
+        { 32*64+32,   32, 32,  TEXEL(32,32) },
+    };
+    for (int i = 0; i < 5; i++)
+        printf("  texel(%2d,%2d) idx %4d = 0x%04x  (expect 0x%04x) %s\n",
+               tchk[i].x, tchk[i].y, tchk[i].idx, tvram[tchk[i].idx], tchk[i].exp,
+               tvram[tchk[i].idx] == tchk[i].exp ? "OK" : "*** MISMATCH ***");
+#undef TEXEL
+
     /* ---- TEST 1: gradient quad ---- */
     l10gl_clear(&ctx);
     float uv_grad[4][2] = { {0,0},{1,0},{1,1},{0,1} };
@@ -187,6 +213,37 @@ int main(int argc, char **argv)
                ctests[t].name, px, r, g,
                (r == ctests[t].expR && g == ctests[t].expG)
                ? "MATCH (start register works)" : "MISMATCH (start/W-divide broken)");
+    }
+
+    /* ---- TEST 3: solid-color texture (does the engine read OUR texture at all?)
+     * Upload a texture where EVERY texel is solid red (0xFC00: a=1,R=31,G=0,B=0)
+     * and draw the gradient-UV quad over it.
+     *   center R=31 (red)  -> engine IS sampling our texture memory => the
+     *                         dead-constant/UV bug is purely the coord pipeline.
+     *   center still ~(13,1)=0x3436 -> engine is NOT reading our texture at all
+     *                         => TEX_BASE write ignored/overridden, or texel
+     *                         addressing reads off-texture. (Root cause.) */
+    {
+        struct l10gl_texture stex;
+        uint16_t solid[TEX * TEX];
+        for (int i = 0; i < TEX * TEX; i++) solid[i] = 0xFC00;
+        if (l10gl_tex_image_2d(&ctx, &stex, TEX, TEX, L10GL_TEX_FMT_ARGB1555, solid) == 0) {
+            l10gl_bind_texture(&ctx, &stex);
+            l10gl_tex_parameter(&ctx, L10GL_FILTER_NEAREST, L10GL_WRAP_CLAMP);
+            l10gl_clear(&ctx);
+            draw_quad(&ctx, x0, y0, x1, y1, zv, uv_grad);
+            int mx = (x0 + x1) / 2, my = (y0 + y1) / 2;
+            uint16_t px = *(uint16_t *)(base + (size_t)my * stride + (size_t)mx * 2);
+            int r = (px >> 10) & 0x1F, g = (px >> 5) & 0x1F;
+            uint32_t saddr = (uint32_t)(uintptr_t)stex.backend_data;
+            uint16_t *svram = (uint16_t *)(hw->fb + saddr);
+            printf("\nTEST 3: solid RED texture (0xFC00) under gradient UV\n");
+            printf("  solid tex_addr=0x%x  VRAM[0]=0x%04x (expect 0xfc00) %s\n",
+                   saddr, svram[0], svram[0] == 0xFC00 ? "OK" : "*** upload mismatch ***");
+            printf("  center px=0x%04x  R=%d G=%d  %s\n", px, r, g,
+                   (r == 31) ? "RED -> engine reads our texture (UV-only bug)"
+                             : "NOT red -> engine NOT reading our texture (TEX_BASE/upload bug)");
+        }
     }
 
     printf("\nDone. Ctrl-C to exit.\n");
