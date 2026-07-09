@@ -404,6 +404,55 @@ int main(int argc, char **argv)
         hw->tex_base = (uint32_t)(uintptr_t)tex.backend_data;
     }
 
+    /* ---- TEST 7: U/V fractional-bit sweep -- find the perspective scale real
+     * DX actually wants. v6 proved every texel resolves to TEX_BDR_CLR
+     * (border), so the texture COORDINATE is out of range. The driver encodes
+     * U/V with 27-s_val (=21) fractional bits (datasheet S10.21, correct for
+     * the NON-perspective path), but the perspective sampler divides U by W
+     * with an internal shift -- so 21 bits likely overflows the post-divide
+     * coordinate -> out-of-range -> border. 86Box's _375 math disagrees with
+     * observed silicon (DX borders even at UV=0, where _375 predicts texel 0),
+     * so sweep ufrac EMPIRICALLY: a solid texture + a distinct border color,
+     * at a nonzero constant UV (so TUS varies with ufrac).
+     *   center R=31          -> RED texel read (that ufrac works!)
+     *   center B=31, R=0     -> BLUE border (still out of range)            */
+    {
+        struct l10gl_texture rtex;
+        uint16_t red[TEX * TEX];
+        for (int i = 0; i < TEX * TEX; i++) red[i] = 0xFC00;   /* opaque red */
+        l10gl_tex_image_2d(&ctx, &rtex, TEX, TEX, L10GL_TEX_FMT_ARGB1555, red);
+        l10gl_bind_texture(&ctx, &rtex);
+        l10gl_tex_parameter(&ctx, L10GL_FILTER_NEAREST, L10GL_WRAP_CLAMP);
+
+        int mx = (x0 + x1) / 2, my = (y0 + y1) / 2;
+        int ufracs[] = { 2, 4, 6, 8, 10, 12, 14, 21 };
+        float uvs[2][4][2] = {
+            { {0,0},{0,0},{0,0},{0,0} },
+            { {0.5f,0.5f},{0.5f,0.5f},{0.5f,0.5f},{0.5f,0.5f} },
+        };
+        const char *uvn[2] = { "UV=(0,0)   ", "UV=(0.5,0.5)" };
+
+        printf("\nTEST 7: U/V frac-bit sweep (solid RED tex 0xFC00, BLUE border 0x001F)\n");
+        printf("  R=31 -> RED texel read (works!); B=31/R=0 -> BLUE border\n");
+        for (int ui = 0; ui < 2; ui++) {
+            printf("  %s:\n", uvn[ui]);
+            for (size_t k = 0; k < sizeof(ufracs)/sizeof(ufracs[0]); k++) {
+                hw->tex_dbg_ufrac = ufracs[k];
+                l10gl_clear(&ctx);
+                virge_write32(hw, VIRGE_3D_TEX_BDR_CLR, 0x0000001F);  /* blue border */
+                draw_quad(&ctx, x0, y0, x1, y1, zv, uvs[ui]);
+                uint16_t px = *(uint16_t *)(base + (size_t)my * stride + (size_t)mx * 2);
+                int r = (px >> 10) & 0x1F, b = px & 0x1F;
+                printf("    ufrac=%2d  center=0x%04x R=%-2d B=%-2d  %s\n",
+                       ufracs[k], px, r, b,
+                       (r == 31) ? "<-- RED TEXEL READ (works!)" : "blue border");
+            }
+        }
+        hw->tex_dbg_ufrac = -1;                 /* restore default encoding */
+        virge_write32(hw, VIRGE_3D_TEX_BDR_CLR, 0x00000000);
+        l10gl_bind_texture(&ctx, &tex);         /* restore gradient texture */
+    }
+
     printf("\nDone. Ctrl-C to exit.\n");
     while (running) { if (getchar() == EOF) break; }
     l10gl_destroy(&ctx);

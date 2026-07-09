@@ -244,6 +244,7 @@ static int virge_be_init(struct l10gl_ctx *ctx, int w, int h, int bpp)
     priv->tex_wrap = L10GL_WRAP_REPEAT;
     priv->blend_enabled = 0;
     priv->tex_has_alpha = 0;
+    priv->hw.tex_dbg_ufrac = -1;  /* default: datasheet frac_bits = 27-s_val */
 
     /* Seed ctx->z_cmd_bits from the defaults above (GL default: LESS).
      * Overrides the LEQUAL default virge_init set for direct callers.

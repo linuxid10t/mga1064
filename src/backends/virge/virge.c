@@ -1415,12 +1415,12 @@ void virge_upload_texture(struct virge_ctx *ctx, uint32_t dest,
  */
 
 /* Helper: convert float to ViRGE texture coordinate with perspective.
- * s_val = mipmap level parameter from CMD_SET bits 11-8.
- * frac_bits = 27 - s_val.
- */
-static int32_t tex_coord_fixed(float val, int s_val)
+ * frac_bits selects the fixed-point scale of U/V. The datasheet format is
+ * S(4+s).(27-s) -> 27 - s_val fractional bits, which is correct for the
+ * NON-perspective path; ctx->tex_dbg_ufrac overrides it for the perspective-
+ * scale hunt (see virge.h). */
+static int32_t tex_coord_fixed(float val, int frac_bits)
 {
-    int frac_bits = 27 - s_val;
     return (int32_t)(val * (float)(1 << frac_bits));
 }
 
@@ -1554,6 +1554,11 @@ void virge_draw_textured_triangle(struct virge_ctx *ctx,
     int s_val = (ctx->tex_cmd_bits >> 8) & 0xF;
     if (s_val == 0) s_val = 6;  /* safe default */
 
+    /* U/V fractional-bit count. Default = datasheet S(4+s).(27-s); the
+     * tex_dbg_ufrac override (texprobe v7 perspective-scale hunt) replaces it
+     * wholesale for every U/V start and delta below. */
+    int ufrac = (ctx->tex_dbg_ufrac >= 0) ? ctx->tex_dbg_ufrac : (27 - s_val);
+
     virge_wait_engine(ctx);
     program_3d_state(ctx);  /* re-arm: 2D ops clobber Z_STRIDE to 0xFF8 on real DX */
 
@@ -1592,17 +1597,17 @@ void virge_draw_textured_triangle(struct virge_ctx *ctx,
 
     /* --- Texture coordinates (U, V, W with perspective) --- */
     /* Convert to hardware fixed-point */
-    int32_t u_start = tex_coord_fixed(u_s, s_val);
-    int32_t v_start = tex_coord_fixed(v_s, s_val);
+    int32_t u_start = tex_coord_fixed(u_s, ufrac);
+    int32_t v_start = tex_coord_fixed(v_s, ufrac);
     int32_t w_start = (int32_t)(w_s * (float)(1 << 19));  /* S12.19 */
 
     /* dU/dX in the same format. X deltas are sign-flipped for lr=0 (sx);
      * Y deltas are edge-walk along side 02, -dA/dy + slope02*dA/dx (86Box;
      * README), lr-independent. */
-    int32_t du_dx = tex_coord_fixed(sx * dudx, s_val);
-    int32_t du_dy = tex_coord_fixed(ew_u, s_val);
-    int32_t dv_dx = tex_coord_fixed(sx * dvdx, s_val);
-    int32_t dv_dy = tex_coord_fixed(ew_v, s_val);
+    int32_t du_dx = tex_coord_fixed(sx * dudx, ufrac);
+    int32_t du_dy = tex_coord_fixed(ew_u, ufrac);
+    int32_t dv_dx = tex_coord_fixed(sx * dvdx, ufrac);
+    int32_t dv_dy = tex_coord_fixed(ew_v, ufrac);
     int32_t dw_dx = (int32_t)(sx * dwdx * (float)(1 << 19));
     int32_t dw_dy = (int32_t)(ew_w * (float)(1 << 19));
 

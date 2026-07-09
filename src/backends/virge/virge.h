@@ -623,6 +623,18 @@ struct virge_ctx {
                                (texprobe v3 confirmed: solid-red texture still
                                rendered 0x3436, the engine's off-texture texel). */
     int      tex_bound;     /* Non-zero if a texture is currently bound */
+
+    /* DEBUG OVERRIDE for the texture-perspective U/V scale hunt (texprobe v7).
+     * The driver normally encodes U/V with frac_bits = 27 - s_val (S(4+s).(27-s),
+     * the datasheet format, correct for the NON-perspective path). But the
+     * perspective sampler divides U by W with an internal shift, and on real DX
+     * every texel resolves out-of-range -> TEX_BDR_CLR (texprobe v6 proved the
+     * engine emits the border color, not any VRAM texel). 86Box's _375 math
+     * disagrees with observed silicon, so the correct frac_bits must be found
+     * empirically. When >= 0, tex_coord_fixed uses THIS many fractional bits
+     * instead of (27 - s_val); -1 = default. Set by texprobe, ignored in
+     * production. */
+    int      tex_dbg_ufrac;
 };
 
 /* ========================================================================
