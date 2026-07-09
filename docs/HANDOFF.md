@@ -549,15 +549,30 @@ PARADOX: TEST 11's SOLID RED FETCHED under WRAP (0x7c00) but the gradient
 BORDERS under WRAP** — same WRAP/path/ufrac, different texture. Fetch-vs-border
 is TEXTURE-SPECIFIC, not coordinate-specific.
 
-**v14 (266f070) PENDING RUN: white border + VRAM readback + red control.** Sets
-border=WHITE (0x7FFF, bit15=0 — distinct from any gradient texel, all bit15=1)
-so border is unmistakable, re-reads each texture's VRAM, and sweeps UV over the
-ORIGINAL gradient, a FRESH re-uploaded gradient (new address), and a RED control.
+**v14 RESULT (266f070, silicon): TWO findings that REFRAME the whole bug.**
+(1) **CLOBBER**: the startup gradient's VRAM was destroyed to 0x8000. texprobe's
+own TEST 5/6 fill ALL of VRAM (vram_size/2 texels) — they clobbered the gradient
+at 0x2bf200. NOT a driver bug: l10gl_clear is bounded to color+Z (g2 survived
+multiple clears). So every gradient test after TEST 6 (8a, 12, 13) read a DEAD
+texture — that is why they looked like "border". The "every texel is border"
+saga was a dead texture under CLAMP (real DX borders under CLAMP).
+(2) **UFRAC**: a FRESH gradient FETCHES under WRAP — the FIRST real texel read
+ever (GRAD fresh UV=32,32→R4, UV=63,63→R7; RED→R31). But texel_index = U/4: the
+engine reads the texel integer from bits 30:21 (the S(4+s).(27-s) layout, s=6);
+non-persp ufrac=19 (val<<19) put the integer 2 bits low → engine saw val/4
+(32→texel 8 R4; 63→texel 15 R7). ufrac=21 (val<<21) should fix it. PERSPECTIVE
+already defaults to ufrac=21 (=27-s_val), so the cube's path may already be
+correct — the real cube bug may be just CLAMP→border (needs WRAP). [UV=(0,0)
+read 0x0000 for both gradients — secondary; border was white so not border;
+TEST 15 grid will show if ufrac=21 fixes it.]
+
+**v15 (095173e) PENDING RUN: confirm the fix.** Fresh gradient, WRAP, sweep
+{persp ufrac=21 (cube path), non-persp ufrac=21, non-persp ufrac=19 (contrast)},
+varying UV 0..TEX, read R/G grid.
   RUN: `git pull && make -B BACKEND=virge texprobe && sudo ./texprobe`.
-  Paste TEST 14. center=0x7FFF→BORDER, 0x0000→clobbered VRAM, texel-color→FETCH.
-  - GRAD fresh fetches but GRAD orig borders → long-lived gradient VRAM clobbered.
-  - both gradients border but RED fetches → gradient-specific (address or data).
-  - all fetch → v13's 0x0000 was stale state.
+  Paste TEST 15. R rising 0..31 matching expected = TEXTURING CONFIRMED →
+  fix = cube uses WRAP (persp ufrac already 21); then drop the debug overrides.
+  R/4 under non-persp ufrac=19 = confirms the ufrac diagnosis.
 
 VERIFIED FACTS (still hold): upload IS correct in VRAM (v3: 5/5 texels
 match at 0x2bf200); coherence is NOT the issue (BAR0 O_SYNC, scantest same
