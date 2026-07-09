@@ -345,6 +345,65 @@ int main(int argc, char **argv)
         hw->tex_base = (uint32_t)(uintptr_t)tex.backend_data;
     }
 
+    /* ---- TEST 6: is the constant 0x3436 READ FROM VRAM, or SYNTHESIZED?
+     * TEST 5 "decoded" the center 0x3436 to byte 0x686C -- but 0x3436 has been
+     * the engine's output in EVERY test (1/2/3/4b/5), so the decode is only
+     * meaningful if the engine truly samples a VRAM texel. If instead it emits
+     * a register default (texture border / fog / chroma color), the "decode"
+     * was a coincidence. Discriminate two ways:
+     *   (a)/(b) Fill ALL of VRAM with one uniform value (black, then white)
+     *       and draw UV=(0,0). If the engine reads ANY texel, the quad takes
+     *       that color (R=0 black / R=31 white); if it still emits 0x3436
+     *       (R=13), no VRAM texel is sampled -> synthesized constant.
+     *   (c) If synthesized, program each 3D color register to white one at a
+     *       time over a black fill; whichever flips the output to white is the
+     *       source of the constant. None of these regs is written by the draw
+     *       path (grep-verified), so a write after l10gl_clear survives. */
+    {
+        l10gl_bind_texture(&ctx, &tex);
+        l10gl_tex_parameter(&ctx, L10GL_FILTER_NEAREST, L10GL_WRAP_CLAMP);
+        float uv00[4][2] = { {0,0},{0,0},{0,0},{0,0} };
+        int mx = (x0 + x1) / 2, my = (y0 + y1) / 2;
+        uint32_t n = hw->vram_size / 2;
+        uint16_t *vram = (uint16_t *)hw->fb;
+
+        printf("\nTEST 6: is the constant 0x3436 read from VRAM, or synthesized?\n");
+        uint16_t  fills[2] = { 0x8000, 0xBFFF };     /* black, then white; alpha=1 */
+        const char *fn[2]  = { "black 0x8000", "white 0xBFFF" };
+        int       expR[2]  = { 0, 31 };
+        for (int f = 0; f < 2; f++) {
+            l10gl_clear(&ctx);
+            for (uint32_t i = 0; i < n; i++) vram[i] = fills[f];
+            hw->tex_base = 0x002bf200;
+            draw_quad(&ctx, x0, y0, x1, y1, zv, uv00);
+            uint16_t px = *(uint16_t *)(base + (size_t)my * stride + (size_t)mx * 2);
+            int r = (px >> 10) & 0x1F;
+            printf("  6%c fill %-13s center=0x%04x R=%-2d  %s\n", 'a' + f, fn[f], px, r,
+                   (r == expR[f]) ? "<-- FILLS THE QUAD => engine READS VRAM"
+                                  : (r == 13)  ? "still 0x3436 => SYNTHESIZED (no VRAM read)"
+                                               : "(unexpected)");
+        }
+
+        /* (c) which register sources the synthesized constant? */
+        struct { const char *name; uint32_t off; } cregs[] = {
+            { "TEX_BDR_CLR 0xB4F0", 0xB4F0 }, { "FOG_CLR 0xB4F4", 0xB4F4 },
+            { "COLOR0 0xB4F8",      0xB4F8 }, { "COLOR1 0xB4FC", 0xB4FC },
+        };
+        printf("  6c color-register sweep (black fill; one reg -> white 0x7FFF):\n");
+        for (int k = 0; k < 4; k++) {
+            l10gl_clear(&ctx);
+            for (uint32_t i = 0; i < n; i++) vram[i] = 0x8000;   /* black */
+            virge_write32(hw, cregs[k].off, 0x00007FFF);          /* white into one reg */
+            hw->tex_base = 0x002bf200;
+            draw_quad(&ctx, x0, y0, x1, y1, zv, uv00);
+            uint16_t px = *(uint16_t *)(base + (size_t)my * stride + (size_t)mx * 2);
+            printf("     %-19s -> center=0x%04x  %s\n", cregs[k].name, px,
+                   (px == 0x7FFF) ? "<-- THIS reg sources 0x3436" : "(no change)");
+            virge_write32(hw, cregs[k].off, 0x00000000);          /* restore */
+        }
+        hw->tex_base = (uint32_t)(uintptr_t)tex.backend_data;
+    }
+
     printf("\nDone. Ctrl-C to exit.\n");
     while (running) { if (getchar() == EOF) break; }
     l10gl_destroy(&ctx);
