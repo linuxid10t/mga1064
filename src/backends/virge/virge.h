@@ -569,6 +569,15 @@ struct virge_ctx {
      * the display-start address that virge_swap_buffers may have moved. */
     int      scanout_owned;
     uint8_t  saved_scanout[20];
+    /* Snapshot of ALL VRAM taken at scanout takeover and memcpy'd back at
+     * cleanup. On a no-fbdev box the console is the bootloader's VBE
+     * framebuffer living in VRAM; our rendering overwrites it, and with no
+     * kernel fbdev nothing redraws it -- so after Ctrl-C the screen shows our
+     * last 3D frame (garbage) even though the CRTC mode is restored. Saving the
+     * whole aperture (not just the likely-offset-0 console region) covers the
+     * console regardless of its display-start. NULL when no takeover happened. */
+    uint8_t *saved_console_vram;
+    size_t   saved_console_vram_size;
 
     /* Memory layout (byte offsets in VRAM). Two color buffers back the
      * double-buffer page flip: buffer 0 at offset 0 (the scanout at init),

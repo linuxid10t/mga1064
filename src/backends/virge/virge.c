@@ -496,6 +496,25 @@ static void virge_scanout_takeover(struct virge_ctx *ctx)
     vga_crtc_write(0x13, (uint8_t)(lsw & 0xFF));
     vga_crtc_write(0x51, (uint8_t)((r[11] & ~0x30) | (((lsw >> 8) & 3) << 4)));
     vga_crtc_write(0x43, (uint8_t)(r[9] & ~0x04));
+
+    /* Snapshot all VRAM now -- it still holds the console's VBE framebuffer
+     * (this function reprograms CRTC regs only; rendering happens later). On a
+     * no-fbdev box nothing redraws the console, so cleanup memcpy's this back
+     * or Ctrl-C leaves the screen showing our last 3D frame (garbage). The full
+     * aperture covers the console wherever its display-start sits. */
+    {
+        size_t bsz = ctx->vram_size;
+        if (ctx->fb_size && bsz > ctx->fb_size) bsz = ctx->fb_size;
+        ctx->saved_console_vram = malloc(bsz);
+        if (ctx->saved_console_vram) {
+            memcpy(ctx->saved_console_vram, ctx->fb, bsz);
+            ctx->saved_console_vram_size = bsz;
+        } else {
+            ctx->saved_console_vram_size = 0;
+            fprintf(stderr, "S3 ViRGE: WARNING: could not back up %zu bytes of "
+                            "console VRAM -- Ctrl-C will leave screen garbage\n", bsz);
+        }
+    }
     ctx->scanout_owned = 1;
 
     printf("S3 ViRGE: scanout now CR67=%02x CR50=%02x CR00=%02x CR01=%02x "
@@ -1988,7 +2007,19 @@ void virge_cleanup(struct virge_ctx *ctx)
      * protects CR00-CR07, so unlock first and restore CR11 (with its
      * original lock bit) last. */
     if (ctx->scanout_owned && ctx->mmio) {
-        printf("S3 ViRGE: restoring pre-takeover scanout registers\n");
+        printf("S3 ViRGE: restoring pre-takeover scanout (registers + console VRAM)\n");
+        virge_wait_vsync(ctx);
+        /* Restore the console VRAM content BEFORE switching the CRTC back.
+         * memcpy spans a couple of scanouts and tears our (about-to-be-abandoned)
+         * 3D display, but doing it before the mode switch means the first frame
+         * in console mode already shows the restored console instead of a flash
+         * of our last 3D frame. No fbdev on this box -> nothing else redraws it. */
+        if (ctx->saved_console_vram && ctx->saved_console_vram_size) {
+            memcpy(ctx->fb, ctx->saved_console_vram, ctx->saved_console_vram_size);
+            free(ctx->saved_console_vram);
+            ctx->saved_console_vram = NULL;
+            ctx->saved_console_vram_size = 0;
+        }
         virge_wait_vsync(ctx);
         vga_crtc_write(0x11,
                        ctx->saved_scanout[VIRGE_SCANOUT_CR11_IDX] & 0x7F);

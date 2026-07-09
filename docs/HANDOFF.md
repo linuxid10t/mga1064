@@ -27,7 +27,11 @@ datasheet's persp S10.21 is wrong for real DX (ufrac 12), just as its non-persp
 S12.8.11 is (silicon wants 21). **textured_cube AXIS CLOSED.** LINEAR (bilinear)
 verified silicon 2026-07-09 (texprobe TEST 18: 1-texel R-stripe at a texel
 boundary blends to R15 in both U and V); cube switched NEAREST→LINEAR.
-REMAINING: Ctrl-C console restore. See #5 for the full decode.
+Ctrl-C console restore: FIX LANDED -- virge_scanout_takeover now snapshots all
+VRAM (the bootloader's VBE console framebuffer, which our rendering overwrites
+and no kernel fbdev redraws) and virge_cleanup memcpy's it back before the CRTC
+mode switch, so Ctrl-C returns the real console instead of a garbage last-frame.
+AWAITING David's verification. See #5 for the full decode.
 
 ## Test setup (fixed, do not re-derive)
 
