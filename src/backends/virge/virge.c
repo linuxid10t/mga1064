@@ -562,6 +562,7 @@ static void virge_scanout_takeover(struct virge_ctx *ctx)
         }
     }
     virge_dump_vram_probe(ctx, "snapshot", ctx->saved_console_vram);
+    fflush(stdout);
     ctx->scanout_owned = 1;
 
     printf("S3 ViRGE: scanout now CR67=%02x CR50=%02x CR00=%02x CR01=%02x "
@@ -2076,6 +2077,7 @@ void virge_cleanup(struct virge_ctx *ctx)
         if (ctx->saved_console_vram && ctx->saved_console_vram_size) {
             memcpy(ctx->fb, ctx->saved_console_vram, ctx->saved_console_vram_size);
             virge_dump_vram_probe(ctx, "post-restore", ctx->saved_console_vram);
+            fflush(stdout);
             free(ctx->saved_console_vram);
             ctx->saved_console_vram = NULL;
             ctx->saved_console_vram_size = 0;
