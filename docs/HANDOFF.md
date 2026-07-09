@@ -493,16 +493,54 @@ PERSPECTIVE sampler (`tex_sample_persp_normal_375`, selected by command
 unconditionally. (86Box's _375 math disagrees with silicon here — it
 predicts texel 0 at UV=0 — another fidelity gap.)
 
-**v8 (ba69ed7) PENDING RUN: tests the NON-perspective path.** Forces the
-non-perspective command (0001, sampler `tex_sample_normal`, uses U/V
-directly — no W divide) via debug flag `virge_ctx.tex_dbg_nopersp`, draws
-the gradient with UV 0..TEX (texel units; the driver does NOT normalize
-caller UV), BLUE border. Expected: 8a non-persp R/G interpolate 0..31 →
-texturing WORKS, bug isolated to the perspective divide; 8a still flat →
-more fundamental (TEX_BASE reach / format / dispatch). 8b persp baseline
-→ blue border (reproduces bug).
+**v8–v10 RULED OUT the path, the format, and the source stride:**
+- v8 (ba69ed7): the NON-perspective command (0001, no W divide) ALSO borders
+  — 8a gradient flat, 8b persp baseline borders. So it is NOT the perspective
+  divide alone.
+- v9: swept ufrac {11,13,15,17,19,21,23} under non-perspective (datasheet
+  S12.8.11 affine format, texel int ~bits 30:19) — ALL border. Not the format.
+- v10: fixed DEST_SRC_STR (0xB4E4) source-stride field to the texture row
+  pitch (was erroneously the dest/screen stride) — STILL all border. Fix is
+  correct and KEPT, but was not the cause.
+
+**BREAKTHROUGH v11 (4170fbc, silicon 2026-07-09): the texture fetch IS
+ALIVE — it just needs WRAP.** TEST 11 draws a solid-RED texture + BLUE
+border under CLAMP vs WRAP (CommandSet bit26 TWE), persp u21 and non-persp
+u19, at in-bounds UV (0.5,0.5) and OOB UV (70,70):
+- **CLAMP borders EVERY coord** — including the provably in-range (0.5,0.5)
+  AND (per v7) UV=(0,0) itself.
+- **WRAP reads RED at EVERY coord** — incl. (0.5,0.5) and OOB (70,70), both
+  paths.
+This EXONERATES TEX_BASE, the upload, ARGB1555, s=6 and NEAREST (all proven
+by the WRAP fetch reading the correct texel region). The divergence is purely
+in address-range handling. The datasheet (3d_regs.txt:425-430, 786-789) ties
+TEX_BDR_CLR to "wrapping disabled (bit26=0) AND the texture rectangle too
+small to complete the fill" — i.e. CLAMP is clamp-to-BORDER (not
+clamp-to-edge), and real DX fires it for coordinates that are in-range on
+paper. (Per the source-trust hierarchy: datasheet > driver > 86Box; 86Box's
+`_nowrap` border condition `((u|v)&0xf8000000)==0xf8000000` is NOT what real
+DX does — real DX borders u=0, which that condition never would. Treat 86Box
+as a weak tie-breaker here.)
+
+**OPEN QUESTION (v11 could not answer): are our coordinates actually
+CORRECT, or is WRAP just masking a garbage coordinate back into range?**
+A SOLID texture reads RED for any in-range texel, so it can't tell which
+texel WRAP fetched.
+
+**v12 (a7ab1ee) PENDING RUN: gradient-under-WRAP discriminator.** Draws the
+gradient texture (R=x>>1, G=y>>1) under WRAP, UV 0..TEX in texel units, and
+reads back the R/G grid:
+  12a non-perspective (0001, ufrac 19 — datasheet S12.8.11 affine format)
+  12b perspective     (0101, ufrac 21 — the path the animated cube uses)
+  12c non-perspective CLAMP (contrast — expect all 0 / border)
   RUN: `git pull && make -B BACKEND=virge texprobe && sudo ./texprobe`.
-  Paste TEST 8 (8a grid + 8b).
+  Paste TEST 12 (a/b/c grids). VERDICT:
+  - 12a/12b R rises 0..31 L→R AND G rises 0..31 T→B → coords CORRECT, WRAP
+    fetches the right texel → CLAMP is the sole bug (real-DX clamp-to-border
+    misfiring in-range) → fix = use WRAP for the cube, then drop the debug
+    overrides (tex_dbg_ufrac/tex_dbg_nopersp).
+  - 12a/12b flat/scrambled → U/V encoding wrong, WRAP masking garbage →
+    chase `tex_coord_fixed` / the W divide next.
 
 VERIFIED FACTS (still hold): upload IS correct in VRAM (v3: 5/5 texels
 match at 0x2bf200); coherence is NOT the issue (BAR0 O_SYNC, scantest same
