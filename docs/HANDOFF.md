@@ -15,14 +15,17 @@ fractional-Y prestep. Float-dy fix (195260c) closed the wedges but left
 9/36 orientations with a coverage NOTCH at shared face diagonals — root
 caused + fixed (lr=0 X-attribute-delta sign error, df35256) and VERIFIED
 on silicon 2026-07-08: cubefb 36-sweep = 0 holes (see follow-up #4).
-CURRENT OPEN AXIS: textured_cube — texture mapping FIXED for the non-persp
-path (v15/v16, 2026-07-09): texprobe proved non-persp+ufrac=21+WRAP renders
-the gradient exactly, so the engine works. Two real bugs found+fixed: (1)
-driver wasn't scaling normalized [0,1] UV by texture side (contract bug);
-(2) the PERSPECTIVE command saturates on real DX (U/W blows up even at
-W=1.0) — so the cube now defaults to non-perspective (affine). The cube
-should now render its textures (NEAREST; LINEAR unverified). REMAINING
-"after" axis: debug the broken perspective path + verify LINEAR. See #5.
+CURRENT OPEN AXIS: textured_cube — AFFINE PATH VERIFIED ON SILICON
+2026-07-09 (David): cube renders its 6 textures (NEAREST) with the expected
+affine texture-swim; texprobe TEST 15 non-persp ufrac=21 is STILL the perfect
+grid (confirms the UV-scaling fix didn't regress). Two real bugs were found+
+fixed: (1) driver wasn't scaling normalized [0,1] UV by texture side (contract
+bug); (2) the PERSPECTIVE command saturates on real DX (U/W blows up even at
+W=1.0) — so the cube defaults to non-perspective (affine). REMAINING "after"
+axis: debug the broken perspective path (would eliminate the swim) + verify
+LINEAR. Driver audit 2026-07-09: the persp register footprint is IDENTICAL to
+non-persp (same code; only the command bits differ, 0101 vs 0001), so the bug
+is engine/format-side, not an obvious driver mistake. See #5.
 
 ## Test setup (fixed, do not re-derive)
 
@@ -607,11 +610,27 @@ hierarchy). Only behavioral hint is 86Box (weak).
   then `make BACKEND=virge textured_cube && sudo ./textured_cube` — the cube
   should render its 6 textures (affine; mild swim during rotation = cosmetic).
 
+**v16 VERIFIED ON SILICON (2026-07-09, David):** TEST 15 non-persp ufrac=21 =
+exact grid (R 0,4,8,…,28; G 5,10,16,21,26) — UV-scaling fix correct, no
+regression; non-persp u19 = R/4 (re-confirms ufrac=21); persp u21 still
+saturates (unchanged — the "after" axis). textured_cube RENDERS its 6 textures
+with the expected affine swim (David: "definitely texture swim, but it looks as
+described"). The affine/NEAREST cube is DONE.
+
 **PERSPECTIVE DEBUG (separate open axis, "after"):** why does U/W saturate even
-at W=1.0? Leads to probe: (a) persp may want ufrac≠21 (silicon already
-contradicted the datasheet for non-persp, which wants ufrac=21 not 19); (b) persp
-may need U,V pre-multiplied by W=1/Z (homogeneous). Also verify LINEAR (bilinear)
-so the cube can drop back to it. tex_dbg_ufrac / tex_dbg_nopersp stay for these.
+at W=1.0? Driver audit 2026-07-09: TUS/TVS/TWS + every delta are computed by the
+SAME code for both paths — persp vs non-persp differ ONLY in the command bits
+(0101 vs 0001, virge.c:1672). At the probe's W=1.0 (TWS=1<<19, TdWdX=TdWdY=0) the
+divide is by 1 and MUST equal non-persp, yet it saturates → the `0101` command
+interprets the registers with a different format/semantic. Fresh clue in the v16
+persp grid: the U-channel texel saturates only when BOTH U≠0 and V≠0, while the
+V-channel saturates whenever V≠0 (independent of U) — i.e. U's result depends on
+V, suggesting the divisor W is coupled to V somehow. Decisive first probe: sweep
+TWS at fixed UV (W=0.5,1,2,4,…) and read the sampled texel — if it moves, the
+engine divides by TWS (then hunt the format); if invariant, TWS isn't the divisor
+(hunt elsewhere — maybe W from Z, or U,V must be pre-multiplied by W). Re-verify
+the datasheet perspective/divide text FIRST (top of [[source-trust-hierarchy]]).
+tex_dbg_ufrac / tex_dbg_nopersp stay for these.
 
 VERIFIED FACTS (still hold): upload IS correct in VRAM (v3: 5/5 texels
 match at 0x2bf200); coherence is NOT the issue (BAR0 O_SYNC, scantest same
