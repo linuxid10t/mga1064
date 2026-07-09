@@ -24,9 +24,10 @@ Three bugs were found+fixed across v15–v17: (1) driver wasn't scaling normaliz
 vs U/W) — fixed by persp ufrac 12 (TEST 17 confirmed EXACT); (3) for the divide
 to recover U, supply TUS=U·W / TVS=V·W (perspective-correct, d982e42). The
 datasheet's persp S10.21 is wrong for real DX (ufrac 12), just as its non-persp
-S12.8.11 is (silicon wants 21). **textured_cube AXIS CLOSED.** REMAINING
-(secondary): verify LINEAR filter (cube is on NEAREST) + Ctrl-C console restore.
-See #5 for the full decode.
+S12.8.11 is (silicon wants 21). **textured_cube AXIS CLOSED.** LINEAR (bilinear)
+verified silicon 2026-07-09 (texprobe TEST 18: 1-texel R-stripe at a texel
+boundary blends to R15 in both U and V); cube switched NEAREST→LINEAR.
+REMAINING: Ctrl-C console restore. See #5 for the full decode.
 
 ## Test setup (fixed, do not re-derive)
 

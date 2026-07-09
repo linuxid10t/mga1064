@@ -264,11 +264,12 @@ int main(int argc, char **argv)
         }
 
         if (has_texture) {
-            /* NEAREST: silicon-proven correct (texprobe v15 non-persp u21 + WRAP
-             * rendered the gradient exactly). LINEAR (bilinear) is NOT yet
-             * silicon-verified on this engine -- using it here risks the cube
-             * not rendering at all. Switch back once a probe confirms LINEAR. */
-            l10gl_tex_parameter(&ctx, L10GL_FILTER_NEAREST, L10GL_WRAP_REPEAT);
+            /* LINEAR (bilinear): silicon-verified 2026-07-09 (texprobe TEST 18 --
+             * a 1-texel R-stripe sampled at a texel boundary blends to R15 in
+             * both U and V). Smoother textures than NEAREST. The filter is
+             * path-independent (operates on the final texel address), so it is
+             * valid under the cube's PERSPECTIVE path. */
+            l10gl_tex_parameter(&ctx, L10GL_FILTER_LINEAR, L10GL_WRAP_REPEAT);
             printf("Uploaded %d textures (%dx%d ARGB1555)\n",
                    6, TEX_SIZE, TEX_SIZE);
         }
