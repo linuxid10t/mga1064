@@ -574,6 +574,55 @@ int main(int argc, char **argv)
         l10gl_bind_texture(&ctx, &tex);
     }
 
+    /* ---- TEST 11: WRAP vs CLAMP. The datasheet ties TEX_BDR_CLR to wrapping
+     * being OFF (bit 26 = 0): "used ... when texture wrapping is not enabled
+     * ... and the texture rectangle is too small." If real DX borders every
+     * coordinate under CLAMP (without fetching), enabling WRAP (bit 26 = 1)
+     * should skip the border check and fetch a (wrapped) texel -> RED. Solid
+     * RED + BLUE border; in-bounds UV (0.5,0.5) and OOB UV (70,70); each path
+     * at its datasheet frac (persp 21 / non-persp 19). */
+    {
+        struct l10gl_texture rtex;
+        uint16_t red[TEX * TEX];
+        for (int i = 0; i < TEX * TEX; i++) red[i] = 0xFC00;
+        l10gl_tex_image_2d(&ctx, &rtex, TEX, TEX, L10GL_TEX_FMT_ARGB1555, red);
+
+        int mx = (x0 + x1) / 2, my = (y0 + y1) / 2;
+        float uv_in[4][2]  = { {0.5f,0.5f},{0.5f,0.5f},{0.5f,0.5f},{0.5f,0.5f} };
+        float uv_oob[4][2] = { {70,70},{70,70},{70,70},{70,70} };
+        struct { enum l10gl_tex_wrap w; const char *nm; } wraps[] = {
+            { L10GL_WRAP_CLAMP, "CLAMP" }, { L10GL_WRAP_REPEAT, "WRAP " } };
+        struct { int nopersp; int ufrac; const char *nm; } paths[] = {
+            { 0, 21, "persp    u21" }, { 1, 19, "nonpersp u19" } };
+
+        printf("\nTEST 11: WRAP vs CLAMP (solid RED, BLUE border)\n");
+        printf("  R=31 -> RED texel read; B=31/R=0 -> BLUE border\n");
+        for (int wi = 0; wi < 2; wi++) {
+            l10gl_tex_parameter(&ctx, L10GL_FILTER_NEAREST, wraps[wi].w);
+            l10gl_bind_texture(&ctx, &rtex);   /* rebind so tex_cmd_bits picks up wrap bit */
+            for (int pi = 0; pi < 2; pi++) {
+                hw->tex_dbg_nopersp = paths[pi].nopersp;
+                hw->tex_dbg_ufrac = paths[pi].ufrac;
+                for (int oi = 0; oi < 2; oi++) {
+                    float (*uvp)[2] = oi ? uv_oob : uv_in;
+                    l10gl_clear(&ctx);
+                    virge_write32(hw, VIRGE_3D_TEX_BDR_CLR, 0x0000001F);
+                    draw_quad(&ctx, x0, y0, x1, y1, zv, uvp);
+                    uint16_t px = *(uint16_t *)(base + (size_t)my * stride + (size_t)mx * 2);
+                    int r = (px >> 10) & 0x1F, b = px & 0x1F;
+                    printf("  %s %-14s UV=%-9s center=0x%04x R=%-2d B=%-2d  %s\n",
+                           wraps[wi].nm, paths[pi].nm, oi ? "(70,70)  " : "(0.5,0.5)",
+                           px, r, b, (r == 31) ? "<-- RED" : "border");
+                }
+            }
+        }
+        hw->tex_dbg_nopersp = 0;
+        hw->tex_dbg_ufrac = -1;
+        l10gl_tex_parameter(&ctx, L10GL_FILTER_NEAREST, L10GL_WRAP_CLAMP);
+        virge_write32(hw, VIRGE_3D_TEX_BDR_CLR, 0x00000000);
+        l10gl_bind_texture(&ctx, &tex);
+    }
+
     printf("\nDone. Ctrl-C to exit.\n");
     while (running) { if (getchar() == EOF) break; }
     l10gl_destroy(&ctx);
