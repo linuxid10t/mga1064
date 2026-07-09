@@ -42,6 +42,18 @@
  *      UV over the ORIGINAL gradient, a FRESH re-uploaded gradient (new addr),
  *      and a RED control; plus VRAM readback of each. White=BORDER, 0x0000=
  *      clobbered VRAM, texel-color=fetch. Resolves clobber-vs-address-vs-data.
+ *   v14 RESULT (silicon): TWO findings. (1) GRAD orig VRAM is CLOBBERED to
+ *      0x8000 -- texprobe's own TEST 5/6 fill ALL VRAM (vram_size/2 texels),
+ *      destroying the startup gradient; every gradient test after read a dead
+ *      texture. NOT a driver bug (l10gl_clear is bounded to color+Z; g2
+ *      survived clears). (2) a FRESH gradient FETCHES under WRAP, but
+ *      texel_index=U/4 -- the engine reads the texel integer from bits 30:21
+ *      (the S(4+s).(27-s) layout, s=6); non-persp ufrac=19 (val<<19) makes the
+ *      engine see val/4. ufrac=21 (val<<21) should fix it. PERSP already
+ *      defaults to ufrac=21 (=27-s_val), so the cube's path may already be right.
+ *   TEST 15 - fresh gradient, WRAP, sweep {persp u21 (cube path), non-persp u21,
+ *      non-persp u19 contrast}, varying UV 0..TEX, read R/G grid. R rising
+ *      0..31 = texturing CONFIRMED (then fix = cube uses WRAP; ufrac already 21).
  *
  * Drives the real frontend API and reaches struct virge_ctx via
  * ctx.backend_data (hw is the first field of virge_private) for readback.
@@ -827,6 +839,52 @@ int main(int argc, char **argv)
                        tns[t].nm, uvs[ui], uvs[ui], px,
                        (px >> 10) & 0x1F, (px >> 5) & 0x1F, px & 0x1F, v);
             }
+        }
+
+        hw->tex_dbg_nopersp = 0;
+        hw->tex_dbg_ufrac = -1;
+        l10gl_tex_parameter(&ctx, L10GL_FILTER_NEAREST, L10GL_WRAP_CLAMP);
+        virge_write32(hw, VIRGE_3D_TEX_BDR_CLR, 0x00000000);
+        l10gl_bind_texture(&ctx, &tex);
+    }
+
+    /* ---- TEST 15: confirm the fix -- fresh gradient, WRAP, ufrac=21. v14
+     * showed a FRESH gradient FETCHES under WRAP but with texel_index = U/4
+     * (engine reads the integer from bits 30:21; non-persp ufrac=19 put val 2
+     * bits low -> engine saw val/4). ufrac=21 (val<<21) should land it right.
+     * The CUBE uses PERSPECTIVE, whose default ufrac is already 21 (27-s_val).
+     * Re-upload a FRESH gradient (TEST 5/6 filled all VRAM and destroyed the
+     * startup one), set WRAP, white border, and sweep varying UV 0..TEX over:
+     *   persp    ufrac=21  (the cube's path)
+     *   non-persp ufrac=21 (clean affine, no W divide)
+     *   non-persp ufrac=19 (contrast -- expect R = expected/4)
+     * R rising 0..31 matching the expected column = TEXTURING WORKS. */
+    {
+        struct l10gl_texture g3;
+        uint16_t g3mem[TEX * TEX];
+        gen_uv_gradient(g3mem, TEX);
+        l10gl_tex_image_2d(&ctx, &g3, TEX, TEX, L10GL_TEX_FMT_ARGB1555, g3mem);
+        l10gl_tex_parameter(&ctx, L10GL_FILTER_NEAREST, L10GL_WRAP_REPEAT);
+        l10gl_bind_texture(&ctx, &g3);
+        virge_write32(hw, VIRGE_3D_TEX_BDR_CLR, 0x00007FFF);  /* white border */
+
+        float uv_tex[4][2] = { {0,0},{TEX,0},{TEX,TEX},{0,TEX} };
+        struct { int nopersp; int ufrac; const char *nm; } paths[] = {
+            { 0, 21, "persp    u21 (cube path)" },
+            { 1, 21, "nonpersp u21" },
+            { 1, 19, "nonpersp u19 (contrast)" },
+        };
+        printf("\nTEST 15: fresh gradient, WRAP, ufrac sweep -- confirm texturing\n");
+        printf("  (R rising 0..31 matching expected = CORRECT; R/4 = ufrac too low; white = border)\n");
+        for (int p = 0; p < 3; p++) {
+            hw->tex_dbg_nopersp = paths[p].nopersp;
+            hw->tex_dbg_ufrac = paths[p].ufrac;
+            l10gl_clear(&ctx);
+            draw_quad(&ctx, x0, y0, x1, y1, zv, uv_tex);
+            char title[96];
+            snprintf(title, sizeof title,
+                     "TEST 15 [%s] gradient (UV 0,0 -> TEX,TEX)", paths[p].nm);
+            rg_grid(title, base, stride, x0, y0, x1, y1);
         }
 
         hw->tex_dbg_nopersp = 0;
