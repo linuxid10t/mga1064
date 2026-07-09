@@ -54,6 +54,19 @@
  *   TEST 15 - fresh gradient, WRAP, sweep {persp u21 (cube path), non-persp u21,
  *      non-persp u19 contrast}, varying UV 0..TEX, read R/G grid. R rising
  *      0..31 = texturing CONFIRMED (then fix = cube uses WRAP; ufrac already 21).
+ *   v15 RESULT (silicon 2026-07-09): non-persp u21 + WRAP = TEXTURING CONFIRMED
+ *      (R,G rise 0..31 EXACT). non-persp u19 = R/4 (confirms ufrac=21, texel int
+ *      = bits 30:21). persp u21 SATURATES (R=G=31 for all non-zero UV, even at
+ *      W=1.0) -> the perspective command (0101) is broken on real DX; root cause
+ *      TBD. So "fix = cube uses WRAP" was half-right: the cube ALREADY wraps; its
+ *      real bug is the broken persp path.
+ *   v16 (this build): (1) driver now scales normalized [0,1] UV by the texture
+ *      side 2^s (the l10gl.h contract -- was missing, so UV=1.0 picked texel 1,
+ *      not 63; texprobe v1/v2 had assumed this scaling). ALL UV in texprobe is
+ *      now normalized [0,1]. (2) driver DEFAULTS to non-perspective (persp
+ *      saturates on silicon). (3) textured_cube drops to NEAREST (LINEAR is
+ *      unverified on silicon). Expected after this build: TEST 15 non-persp u21
+ *      still the perfect grid; textured_cube renders its textures.
  *
  * Drives the real frontend API and reaches struct virge_ctx via
  * ctx.backend_data (hw is the first field of virge_private) for readback.
@@ -501,7 +514,7 @@ int main(int argc, char **argv)
     {
         l10gl_bind_texture(&ctx, &tex);
         l10gl_tex_parameter(&ctx, L10GL_FILTER_NEAREST, L10GL_WRAP_CLAMP);
-        float uv_tex[4][2] = { {0,0},{TEX,0},{TEX,TEX},{0,TEX} };
+        float uv_tex[4][2] = { {0,0},{1,0},{1,1},{0,1} };  /* normalized [0,1] */
         int mx = (x0 + x1) / 2, my = (y0 + y1) / 2;
 
         printf("\nTEST 8: NON-perspective (0001) vs perspective (0101); UV 0..%d; BLUE border\n", TEX);
@@ -674,7 +687,7 @@ int main(int argc, char **argv)
      * and WRAP was masking garbage -- chase tex_coord_fixed / the W divide. */
     {
         l10gl_bind_texture(&ctx, &tex);          /* gradient: R=x>>1, G=y>>1 */
-        float uv_tex[4][2] = { {0,0},{TEX,0},{TEX,TEX},{0,TEX} };
+        float uv_tex[4][2] = { {0,0},{1,0},{1,1},{0,1} };  /* normalized [0,1] */
         virge_write32(hw, VIRGE_3D_TEX_BDR_CLR, 0x00000000); /* border=black */
 
         printf("\nTEST 12: gradient under WRAP -- are our coordinates correct?\n");
@@ -748,10 +761,10 @@ int main(int argc, char **argv)
         printf("\nTEST 13: gradient WRAP, CONSTANT UV (deltas=0) -- START picks the texel?\n");
         printf("  non-persp u19; texel(x,y)=R=x>>1 G=y>>1; raw px (texel(0,0)=0x8001 != border 0x0000)\n");
         for (int i = 0; i < (int)(sizeof(cs)/sizeof(cs[0])); i++) {
-            float uv[4][2] = { {(float)cs[i].u,(float)cs[i].v},
-                               {(float)cs[i].u,(float)cs[i].v},
-                               {(float)cs[i].u,(float)cs[i].v},
-                               {(float)cs[i].u,(float)cs[i].v} };
+            float uv[4][2] = { {(float)cs[i].u/TEX,(float)cs[i].v/TEX},
+                               {(float)cs[i].u/TEX,(float)cs[i].v/TEX},
+                               {(float)cs[i].u/TEX,(float)cs[i].v/TEX},
+                               {(float)cs[i].u/TEX,(float)cs[i].v/TEX} };
             l10gl_clear(&ctx);
             draw_quad(&ctx, x0, y0, x1, y1, zv, uv);
             uint16_t px = *(uint16_t *)(base + (size_t)my * stride + (size_t)mx * 2);
@@ -827,7 +840,7 @@ int main(int argc, char **argv)
         for (int t = 0; t < 3; t++) {
             l10gl_bind_texture(&ctx, tns[t].t);   /* rebind: tex_cmd_bits per tex */
             for (int ui = 0; ui < 3; ui++) {
-                float uu = (float)uvs[ui];
+                float uu = (float)uvs[ui] / TEX;   /* normalized */
                 float uv[4][2] = { {uu,uu},{uu,uu},{uu,uu},{uu,uu} };
                 l10gl_clear(&ctx);
                 draw_quad(&ctx, x0, y0, x1, y1, zv, uv);
@@ -868,9 +881,9 @@ int main(int argc, char **argv)
         l10gl_bind_texture(&ctx, &g3);
         virge_write32(hw, VIRGE_3D_TEX_BDR_CLR, 0x00007FFF);  /* white border */
 
-        float uv_tex[4][2] = { {0,0},{TEX,0},{TEX,TEX},{0,TEX} };
+        float uv_tex[4][2] = { {0,0},{1,0},{1,1},{0,1} };  /* normalized [0,1] */
         struct { int nopersp; int ufrac; const char *nm; } paths[] = {
-            { 0, 21, "persp    u21 (cube path)" },
+            { 0, 21, "persp    u21 (perspective)" },
             { 1, 21, "nonpersp u21" },
             { 1, 19, "nonpersp u19 (contrast)" },
         };

@@ -1488,8 +1488,20 @@ void virge_draw_textured_triangle(struct virge_ctx *ctx,
      * the same plane-equation approach as color gradients.
      *
      * The caller provides W = 1/Z_eye (perspective) or W = 1.0 (disable).
-     * U and V are in texel units.
+     * Per the API contract (l10gl.h) U and V arrive NORMALIZED in [0,1];
+     * the engine takes texel-unit coords (the texel integer is bits 30:21 of
+     * the S(4+s).(27-s) value), so scale by the texture side 2^s once here --
+     * every gradient and start below then derives in texel units. (texprobe
+     * v1/v2 assumed this scaling; its absence made a normalized UV of 1.0
+     * select texel 1 instead of 63. Independent of the persp-saturates bug.)
      */
+    int s_val = (ctx->tex_cmd_bits >> 8) & 0xF;
+    if (s_val == 0) s_val = 6;  /* safe default */
+    float tex_scale = (float)(1 << s_val);
+    v0.u *= tex_scale; v0.v *= tex_scale;
+    v1.u *= tex_scale; v1.v *= tex_scale;
+    v2.u *= tex_scale; v2.v *= tex_scale;
+
     float dx10 = v1.x - v0.x;
     float dy10 = v1.y - v0.y;
     float dx20 = v2.x - v0.x;
@@ -1551,13 +1563,8 @@ void virge_draw_textured_triangle(struct virge_ctx *ctx,
     if (z_s < 0.0f) z_s = 0.0f;
     if (z_s > 1.0f) z_s = 1.0f;
 
-    /* Determine the mipmap level size parameter.
-     * The texture's power-of-2 dimension determines s where 2^s = tex_size.
-     * We use the cached s value from tex_cmd_bits (set during bind_texture).
-     * For now, extract s from the cached CMD_SET bits 11-8.
-     * Default to s=6 (64×64) if no texture is properly configured. */
-    int s_val = (ctx->tex_cmd_bits >> 8) & 0xF;
-    if (s_val == 0) s_val = 6;  /* safe default */
+    /* s_val (texture side 2^s, from CMD_SET bits 11-8) was computed above,
+     * where tex_scale = 2^s scaled the normalized vertex UV into texel units. */
 
     /* U/V fractional-bit count. Default = datasheet S(4+s).(27-s); the
      * tex_dbg_ufrac override (texprobe v7 perspective-scale hunt) replaces it
