@@ -17,6 +17,19 @@
  *              reads that one texel's color; if it still reads ~(13,2) the
  *              start / perspective W-divide is what's broken, not the deltas.
  *
+ *   STATE (v11, silicon 2026-07-09): the texture fetch WORKS under WRAP
+ *      (CommandSet bit26 TWE=1) -- solid-RED reads RED at every coord
+ *      incl. OOB (70,70). CLAMP (bit26=0) borders EVERY coord, even the
+ *      provably in-range (0,0) and (0.5,0.5). TEX_BASE / upload / ARGB1555 /
+ *      s=6 / NEAREST are all PROVEN correct by the WRAP fetch. The datasheet
+ *      (3d_regs.txt:425-430,786-789) ties TEX_BDR_CLR to "wrapping disabled
+ *      AND the texture rectangle too small to complete the fill" -- so CLAMP
+ *      is clamp-to-BORDER, and real DX is firing it for in-range coords.
+ *   TEST 12 - gradient texture (R=x>>1,G=y>>1) under WRAP: if the R/G grid
+ *      rises 0..31 our coordinates are CORRECT (WRAP fetches the right texel)
+ *      and CLAMP is the sole bug -> use WRAP. If flat/scrambled, our U/V
+ *      encoding is wrong and WRAP was only masking garbage.
+ *
  * Drives the real frontend API and reaches struct virge_ctx via
  * ctx.backend_data (hw is the first field of virge_private) for readback.
  *
@@ -616,6 +629,62 @@ int main(int argc, char **argv)
                 }
             }
         }
+        hw->tex_dbg_nopersp = 0;
+        hw->tex_dbg_ufrac = -1;
+        l10gl_tex_parameter(&ctx, L10GL_FILTER_NEAREST, L10GL_WRAP_CLAMP);
+        virge_write32(hw, VIRGE_3D_TEX_BDR_CLR, 0x00000000);
+        l10gl_bind_texture(&ctx, &tex);
+    }
+
+    /* ---- TEST 12: gradient texture under WRAP -- are our coordinates CORRECT?
+     * TEST 11 proved WRAP fetches A texel (RED on solid-red) but a solid
+     * texture can't reveal WHICH texel. gen_uv_gradient encodes R=x>>1, G=y>>1,
+     * so a CORRECT coordinate path renders R rising left->right and G top->
+     * bottom. UV spans 0..TEX in texel units (driver does not normalize caller
+     * UV). 12a uses non-perspective (0001) at ufrac 19 -- the datasheet S12.8.11
+     * affine format; 12b uses perspective (0101) ufrac 21; 12c is the CLAMP
+     * contrast (expect all-border = 0). VERDICT: if 12a/12b R/G rise 0..31 ->
+     * coords are right, CLAMP is the sole remaining bug (real-DX clamp-to-border
+     * firing in-range; use WRAP). If flat/scrambled -> our U/V encoding is wrong
+     * and WRAP was masking garbage -- chase tex_coord_fixed / the W divide. */
+    {
+        l10gl_bind_texture(&ctx, &tex);          /* gradient: R=x>>1, G=y>>1 */
+        float uv_tex[4][2] = { {0,0},{TEX,0},{TEX,TEX},{0,TEX} };
+        virge_write32(hw, VIRGE_3D_TEX_BDR_CLR, 0x00000000); /* border=black */
+
+        printf("\nTEST 12: gradient under WRAP -- are our coordinates correct?\n");
+        printf("  (R/G rising 0..31 = coords correct; flat/scrambled = encoding wrong)\n");
+
+        /* 12a: non-perspective, WRAP -- datasheet-correct affine format */
+        l10gl_tex_parameter(&ctx, L10GL_FILTER_NEAREST, L10GL_WRAP_REPEAT);
+        l10gl_bind_texture(&ctx, &tex);           /* rebind: tex_cmd_bits picks up wrap */
+        hw->tex_dbg_nopersp = 1;
+        hw->tex_dbg_ufrac = 19;
+        l10gl_clear(&ctx);
+        draw_quad(&ctx, x0, y0, x1, y1, zv, uv_tex);
+        rg_grid("TEST 12a: NON-perspective WRAP gradient (UV 0,0 -> TEX,TEX)",
+                base, stride, x0, y0, x1, y1);
+
+        /* 12b: perspective, WRAP (the path the animated cube uses) */
+        l10gl_tex_parameter(&ctx, L10GL_FILTER_NEAREST, L10GL_WRAP_REPEAT);
+        l10gl_bind_texture(&ctx, &tex);
+        hw->tex_dbg_nopersp = 0;
+        hw->tex_dbg_ufrac = 21;
+        l10gl_clear(&ctx);
+        draw_quad(&ctx, x0, y0, x1, y1, zv, uv_tex);
+        rg_grid("TEST 12b: PERSPECTIVE WRAP gradient (UV 0,0 -> TEX,TEX)",
+                base, stride, x0, y0, x1, y1);
+
+        /* 12c: non-perspective, CLAMP -- contrast (expect all 0 = border) */
+        l10gl_tex_parameter(&ctx, L10GL_FILTER_NEAREST, L10GL_WRAP_CLAMP);
+        l10gl_bind_texture(&ctx, &tex);
+        hw->tex_dbg_nopersp = 1;
+        hw->tex_dbg_ufrac = 19;
+        l10gl_clear(&ctx);
+        draw_quad(&ctx, x0, y0, x1, y1, zv, uv_tex);
+        rg_grid("TEST 12c: NON-perspective CLAMP gradient (expect all 0 = border)",
+                base, stride, x0, y0, x1, y1);
+
         hw->tex_dbg_nopersp = 0;
         hw->tex_dbg_ufrac = -1;
         l10gl_tex_parameter(&ctx, L10GL_FILTER_NEAREST, L10GL_WRAP_CLAMP);
