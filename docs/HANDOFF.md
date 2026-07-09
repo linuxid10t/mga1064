@@ -404,6 +404,30 @@ Secondary (revisit AFTER UV is fixed): `textured_cube.c` has NO back-face
 cull (the perspective cull `3d4e49c` went into cube/cubefb/cubediag only),
 so it draws all 12 tris on Z=LESS alone.
 
+**86BOX REFINEMENT (2026-07-08, pre-v2-run) — sharpens the suspects above
+(86Box `vid_s3_virge.c` is the behavioral reference per repo rules):**
+- The engine DIVIDES U by W for perspective cmds. `tex_sample_persp_*`
+  (line ~3821) computes `w_inv = 2^46 / W; u_final = (U * w_inv) >> (shift)`.
+  The virge.c comment at line 1473 ("interpolates U, V, W linearly... when
+  perspective enabled") is WRONG — it interpolates them, then divides U by W.
+  The persp path is selected by CMD_SET bit 29 (the `|8` term in the switch
+  at line ~4513); cmd 0101 sets bit 29, so it IS taken.
+- CONSEQUENCE for the W=1.0 texprobe: the divide is a CONSTANT scale (W=1
+  → no-op on whether U varies). A working-but-scale-mismatched delta would
+  TILE, not pin. Dead-constant UV therefore ⟹ `state->u` is not advancing
+  ⟹ the DELTAS are not applied (or only the START survives) — NOT the
+  W-divide. So suspect (a) [deltas] is the cause of the *constancy*; the
+  W-divide is a SEPARATE, real bug for the cube only (W≠1).
+- W-divide feed IS wrong for the real cube (confirmed caller passes
+  `sw = 1.0f/z` at textured_cube.c:65): engine computes U/W = U·z_eye; the
+  correct feed is `TUS = U·w`, `TWS = w` (and `d(U·w)/dX`, `dw/dX`), giving
+  (U·w)/(w) = U perspective-correct. Fix AFTER deltas (mixing muddies v2).
+- DX-specific: ViRGE/DX selects `tex_sample_persp_normal_375` (line ~4548),
+  whose shift is `(8 + max_d)` not the non-DX `(12 + max_d)`. Watch TEST 1's
+  R/EXPECTED-R grid for a scale mismatch (tiling / wrong range) once deltas
+  work — that would be a U-feed-scale sub-bug on the _375 path, separate
+  from the W-divide. Not asserted yet; verify empirically from the grid.
+
 PENDING DIAGNOSTIC — `texprobe` v2 (commit f6c635c) NOT YET RUN. Adds:
 (1) a dump of the ACTUAL programmed registers read back via
 `virge_read32` (TUS/TVS/TWS/TdUdX/TdVdX/TdWdX/TdUdY/TdVdY/TdWdY/TEX_BASE/
