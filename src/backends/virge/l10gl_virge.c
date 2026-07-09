@@ -451,6 +451,7 @@ static void virge_be_bind_texture(struct l10gl_ctx *ctx,
 
     if (!tex || !tex->backend_data) {
         hw->tex_bound = 0;
+        hw->tex_base = 0;
         priv->tex_has_alpha = 0;
         virge_update_blend_bits(priv);
         return;
@@ -458,9 +459,12 @@ static void virge_be_bind_texture(struct l10gl_ctx *ctx,
 
     uint32_t tex_addr = (uint32_t)(uintptr_t)tex->backend_data;
 
-    /* Program TEX_BASE (quadword aligned) */
+    /* Program TEX_BASE (quadword aligned) and cache it so the per-primitive
+     * re-arm in program_3d_state can restore it after a 2D clear clobbers it
+     * (the Z_STRIDE lesson, commit f0811f1). */
     virge_wait_engine(hw);
-    virge_write32(hw, VIRGE_3D_TEX_BASE, tex_addr & ~0x7);
+    hw->tex_base = tex_addr & ~0x7;
+    virge_write32(hw, VIRGE_3D_TEX_BASE, hw->tex_base);
 
     /* Cache CMD_SET bits for this texture's format.
      *

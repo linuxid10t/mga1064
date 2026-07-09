@@ -459,22 +459,43 @@ than the start-vs-delta fork: the engine is NOT reading our texture at all.**
   format=ARGB1555=(2<<5) (2B/texel, correct), program_3d_state does NOT
   touch TEX_BASE. So the bug is subtle / silicon-specific — must probe.
 
-PENDING DIAGNOSTIC — `texprobe` v3 (this commit). Adds two decisive tests:
-(1) TEX VRAM readback: CPU-read VRAM at tex_addr (==TEX_BASE written) and
-dump 5 texels vs gen_uv_gradient's expected values. MISMATCH => upload
-never landed at TEX_BASE (H1). MATCH => upload is fine, engine reads
-elsewhere (H2).
-(2) TEST 3 = solid-RED texture (every texel 0xFC00, a=1 R=31) under the
-gradient-UV quad. center R=31 (red) => engine IS sampling our texture =>
-the dead-constant/UV bug is purely the coord pipeline. center still
-~0x3436 (R=13) => engine is NOT reading our texture at all => TEX_BASE/
-upload/addressing is the root cause (H1 or H2).
-  RUN: `git pull && make -B BACKEND=virge texprobe && sudo ./texprobe`.
-  Paste: TEX readback block + TEST 1 grid + REG dump + TEST 2 + TEST 3.
-`texprobe` drives the REAL frontend bind/upload/draw path (= the exact
-textured_cube code) and reaches `struct virge_ctx` via `ctx.backend_data`
-(`hw` is the first field of `virge_private`). Build:
-`make -B BACKEND=virge texprobe`.
+**`texprobe` v3 RAN on david-ta970 2026-07-08 — ROOT CAUSE FOUND: TEX_BASE
+is clobbered by the 2D clear between bind and draw (the Z_STRIDE lesson,
+same silicon quirk), and was never re-armed.**
+- TEX VRAM readback: all 5 texels MATCH (texel(0,0)=0x8001, (2,0)=0x8401,
+  (63,0)=0xfc01, (0,1)=0x8001, (32,32)=0xc201). tex_addr=0x2bf200. So the
+  upload IS correct in engine-visible VRAM. (H1 refuted.)
+- TEST 3 (solid-RED texture 0xFC00): solid tex_addr=0x2c1200, VRAM[0]=0xfc00
+  (upload OK), but center STILL renders 0x3436 R=13 (NOT red). So the
+  engine is NOT reading our texture even though it's correctly in VRAM =>
+  TEX_BASE is WRONG at kick time (H2 confirmed). TEX_BASE 0xB4EC reads
+  0xffffffff (write-only) so its live value is unverifiable by readback,
+  but TEST 3 is the proof: a correctly-placed texture is invisible to the
+  engine until TEX_BASE is right.
+- CODE ROOT CAUSE: TEX_BASE (0xB4EC) is written ONLY in bind_texture
+  (l10gl_virge.c ~L463) — never re-armed. Every other texture reg
+  (TUS/TVS/TdUdX/TdVdY/TWS/…) IS rewritten per-triangle in
+  virge_draw_textured_triangle, and program_3d_state re-arms
+  DEST_BASE/Z_BASE/strides/Z_STRIDE/clip — but NOT TEX_BASE. l10gl_clear's
+  2D fills run between bind and the triangle and clobber it on real DX
+  (exactly the 2D-invalidates-3D-Z_STRIDE behavior, commit f0811f1); the
+  first triangle after any clear then reads off-texture garbage (0x3436)
+  regardless of UV. This ALSO explains "UV has no effect": the clobbered
+  base points at near-uniform memory, so varying UV reads the same texel.
+
+**FIX (this commit): mirror the Z_STRIDE re-arm.** Cache the bound tex_addr
+in ctx->tex_base (set in bind_texture; cleared on unbind), and re-arm
+VIRGE_3D_TEX_BASE in program_3d_state (runs at the start of every triangle,
+after virge_wait_engine, before the coord regs + CMD_SET kick). Harmless
+for the Gouraud path (no texture sampled). VERIFY on next run:
+`sudo ./texprobe` -> TEST 3 should now read RED (R=31); TEST 1 grid should
+now vary across the quad (engine reading our texture). If TEST 1 still
+doesn't rise cleanly 0..31 AFTER TEX_BASE is fixed, the remaining issue is
+the U-feed scale on the DX `_375` persp path (shift 8+max_d, flagged in the
+86Box refinement above) — a separate, secondary bug. texprobe drives the
+REAL frontend bind/upload/draw path (= the exact textured_cube code) and
+reaches `struct virge_ctx` via `ctx.backend_data` (`hw` is the first field
+of `virge_private`). Build: `make -B BACKEND=virge texprobe`.
 
 ## Established engine facts (verified against 86Box, 2026-07-06)
 

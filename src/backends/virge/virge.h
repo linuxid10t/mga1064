@@ -610,6 +610,18 @@ struct virge_ctx {
     uint32_t tex_cmd_bits;  /* Pre-shifted CMD_SET bits for current texture:
                                format [7-5], mipmap size [11-8],
                                filter [14-12], blend [16-15], wrap [26] */
+    uint32_t tex_base;      /* TEX_BASE (0xB4EC) for the currently-bound
+                               texture (quadword-aligned VRAM offset). Cached
+                               so program_3d_state can RE-ARM it per primitive:
+                               on real DX silicon, 2D commands (the clear/fill
+                               between bind and draw) clobber 3D register
+                               state -- the established Z_STRIDE lesson
+                               (commit f0811f1). TEX_BASE is written only in
+                               bind_texture otherwise, so without this re-arm
+                               the first triangle after any clear reads from a
+                               clobbered/default base -> off-texture garbage
+                               (texprobe v3 confirmed: solid-red texture still
+                               rendered 0x3436, the engine's off-texture texel). */
     int      tex_bound;     /* Non-zero if a texture is currently bound */
 };
 

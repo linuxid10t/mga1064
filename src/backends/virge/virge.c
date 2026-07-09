@@ -782,6 +782,14 @@ static void program_3d_state(struct virge_ctx *ctx)
                   (0 << 16) | ((ctx->width - 1) & 0x7FF));
     virge_write32(ctx, VIRGE_3D_CLIP_T_B,
                   (0 << 16) | ((ctx->height - 1) & 0x7FF));
+
+    /* RE-ARM TEX_BASE: like Z_STRIDE, 2D commands (the clear/fill that runs
+     * between bind_texture and the next triangle) clobber it on real DX
+     * silicon -- without this, the textured triangle reads off-texture
+     * garbage (texprobe v3: a solid-red texture still rendered 0x3436, the
+     * engine's clobbered/default-base texel). bind_texture caches the value
+     * in ctx->tex_base; harmless for the Gouraud path (no texture sampled). */
+    virge_write32(ctx, VIRGE_3D_TEX_BASE, ctx->tex_base);
 }
 
 /* ========================================================================
