@@ -27,11 +27,20 @@ datasheet's persp S10.21 is wrong for real DX (ufrac 12), just as its non-persp
 S12.8.11 is (silicon wants 21). **textured_cube AXIS CLOSED.** LINEAR (bilinear)
 verified silicon 2026-07-09 (texprobe TEST 18: 1-texel R-stripe at a texel
 boundary blends to R15 in both U and V); cube switched NEAREST→LINEAR.
-Ctrl-C console restore: FIX LANDED -- virge_scanout_takeover now snapshots all
-VRAM (the bootloader's VBE console framebuffer, which our rendering overwrites
-and no kernel fbdev redraws) and virge_cleanup memcpy's it back before the CRTC
-mode switch, so Ctrl-C returns the real console instead of a garbage last-frame.
-AWAITING David's verification. See #5 for the full decode.
+Ctrl-C console restore: REAL ROOT CAUSE FOUND + FIXED (silicon 2026-07-09).
+The first attempt (080e1eb: snapshot+restore all VRAM) was the right shape but
+had an init-order bug: virge_scanout_takeover ran BEFORE ctx->vram_size was set
+(virge_detect_vram was called after the takeover). So the snapshot did
+bsz=ctx->vram_size==0 -> malloc(0) -> memcpy 0 bytes -> saved_console_vram_size=0
+-> the cleanup restore guard (size!=0) was FALSE -> memcpy SKIPPED. The CRTC
+DID switch back to the 32bpp console mode, but VRAM still held our 16bpp 3D
+frame, scanned as 32bpp -> 2x2 quadrant tiling of the last frame, color-shifted
+(two 16bpp pixels pack per 32bpp word; stride 1600 read at 3200). FIX: detect
+VRAM before the takeover, and snapshot the full vram_size (do NOT cap at
+fb_size -- that is our 16bpp framebuffer size = HALF the console's 32bpp VBE
+framebuffer, so capping truncates the backup). Added size prints at backup and
+restore so a zero-size failure can't hide again. AWAITING David's verification.
+See #5 for the full decode.
 
 ## Test setup (fixed, do not re-derive)
 

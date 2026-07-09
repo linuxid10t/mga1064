@@ -501,18 +501,22 @@ static void virge_scanout_takeover(struct virge_ctx *ctx)
      * (this function reprograms CRTC regs only; rendering happens later). On a
      * no-fbdev box nothing redraws the console, so cleanup memcpy's this back
      * or Ctrl-C leaves the screen showing our last 3D frame (garbage). The full
-     * aperture covers the console wherever its display-start sits. */
+     * aperture covers the console wherever its display-start sits -- do NOT
+     * cap at fb_size: that is our 16bpp framebuffer size (stride*height),
+     * which is HALF the console's 32bpp VBE framebuffer, so capping truncates
+     * the backup and the restore leaves the bottom half as 3D garbage. */
     {
         size_t bsz = ctx->vram_size;
-        if (ctx->fb_size && bsz > ctx->fb_size) bsz = ctx->fb_size;
         ctx->saved_console_vram = malloc(bsz);
-        if (ctx->saved_console_vram) {
+        if (ctx->saved_console_vram && bsz > 0) {
             memcpy(ctx->saved_console_vram, ctx->fb, bsz);
             ctx->saved_console_vram_size = bsz;
+            printf("S3 ViRGE: backed up %zu bytes of console VRAM\n", bsz);
         } else {
             ctx->saved_console_vram_size = 0;
             fprintf(stderr, "S3 ViRGE: WARNING: could not back up %zu bytes of "
-                            "console VRAM -- Ctrl-C will leave screen garbage\n", bsz);
+                            "console VRAM (vram_size=%u) -- Ctrl-C will leave "
+                            "screen garbage\n", bsz, (unsigned)ctx->vram_size);
         }
     }
     ctx->scanout_owned = 1;
@@ -1933,6 +1937,17 @@ int virge_init(struct virge_ctx *ctx, int width, int height, int bpp)
         printf("S3 ViRGE: SUBSYS_STATUS readback: 0x%08x\n", status_check);
     }
 
+    /* Detect VRAM size from the CR36 straps BEFORE the scanout takeover.
+     * The takeover snapshots all VRAM so cleanup can restore the console,
+     * and that snapshot is sized off ctx->vram_size. Detecting AFTER the
+     * takeover (as this formerly did) left vram_size == 0 at snapshot time
+     * -> malloc(0) -> a zero-byte backup -> a no-op restore -> Ctrl-C left
+     * the last 3D frame tiled 4x in the restored 32bpp console mode (two
+     * 16bpp pixels pack per 32bpp word, stride 1600 read at 3200). CR36 is
+     * readable without unlock; ioperm + CR38/CR39 unlock are already done
+     * above, so this read is valid here. */
+    ctx->vram_size = virge_detect_vram(pci.device_id);
+
     /* No fbdev driver on the card: nothing set (or will ever set) a
      * matching scanout, so adopt the live raster and own the scanout
      * format/pitch ourselves. Placed after the S3d enable sequence
@@ -1957,7 +1972,7 @@ int virge_init(struct virge_ctx *ctx, int width, int height, int bpp)
     ctx->fb_base_back = one_fb;
     ctx->current_back = 0;
     ctx->z_base = one_fb + one_fb;            /* Z after both color buffers */
-    ctx->vram_size = virge_detect_vram(pci.device_id);
+    /* vram_size detected above, before virge_scanout_takeover. */
 
     /* Texture heap starts after both color buffers + Z buffer, quadword aligned */
     uint32_t z_size = ctx->width * ctx->height * 2;  /* Z is always 16-bit */
@@ -2007,7 +2022,8 @@ void virge_cleanup(struct virge_ctx *ctx)
      * protects CR00-CR07, so unlock first and restore CR11 (with its
      * original lock bit) last. */
     if (ctx->scanout_owned && ctx->mmio) {
-        printf("S3 ViRGE: restoring pre-takeover scanout (registers + console VRAM)\n");
+        printf("S3 ViRGE: restoring pre-takeover scanout (registers + %zu bytes "
+               "console VRAM)\n", ctx->saved_console_vram_size);
         virge_wait_vsync(ctx);
         /* Restore the console VRAM content BEFORE switching the CRTC back.
          * memcpy spans a couple of scanouts and tears our (about-to-be-abandoned)
@@ -2019,6 +2035,10 @@ void virge_cleanup(struct virge_ctx *ctx)
             free(ctx->saved_console_vram);
             ctx->saved_console_vram = NULL;
             ctx->saved_console_vram_size = 0;
+        } else {
+            fprintf(stderr, "S3 ViRGE: WARNING: no console VRAM backup to restore "
+                            "(size=%zu) -- screen will show the last 3D frame\n",
+                    ctx->saved_console_vram_size);
         }
         virge_wait_vsync(ctx);
         vga_crtc_write(0x11,
