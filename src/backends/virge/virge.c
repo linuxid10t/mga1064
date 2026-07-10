@@ -373,47 +373,6 @@ static const uint8_t virge_scanout_regs[] = {
  * enable sequence (virge_wait_vsync reads SUBSYS_STATUS over MMIO).
  */
 
-/* Ctrl-C console-restore probe (2026-07-09). The 4MB save+restore runs (log
- * confirms 4194304 bytes) yet the cube survives Ctrl-C as a 4-quadrant
- * color-shifted tile -- i.e. the CRTC, back in 32bpp console mode, is still
- * scanning our 16bpp 3D frame. Texture upload proves CPU writes via ctx->fb
- * reach engine VRAM, so the restore *should* displace the cube. This probe
- * prints, at snapshot and post-restore: the CRTC display-start byte offset
- * (CR0C/CR0D/CR69, dword unit under ENH MAP) and 16 bytes of VRAM read via
- * the CPU linear aperture at offset 0 and at the display-start, plus the
- * saved bytes. That answers: did the snapshot capture the console? did the
- * restore memcpy land? where is the CRTC actually scanning? */
-static void virge_dump_vram_probe(struct virge_ctx *ctx, const char *label,
-                                  const uint8_t *saved)
-{
-    uint8_t c0c = vga_crtc_read(0x0C);
-    uint8_t c0d = vga_crtc_read(0x0D);
-    uint8_t c69 = vga_crtc_read(0x69);
-    uint32_t dw = ((uint32_t)c69 << 16) | ((uint32_t)c0c << 8) | (uint32_t)c0d;
-    uint32_t start = dw << 2;   /* dword -> byte (ENH MAP, PDF p.193) */
-    const uint8_t *fb = (const uint8_t *)ctx->fb;
-    printf("S3 ViRGE [%s]: display-start CR0C=%02x CR0D=%02x CR69=%02x "
-           "-> byte 0x%x (vram_size=0x%x)\n",
-           label, c0c, c0d, c69, start, (unsigned)ctx->vram_size);
-    printf("  VRAM[0x0]   : ");
-    for (int i = 0; i < 16; i++) printf("%02x ", fb[i]);
-    printf("\n");
-    if (start && start + 16 <= ctx->vram_size) {
-        printf("  VRAM[0x%x]: ", start);
-        for (int i = 0; i < 16; i++) printf("%02x ", fb[start + i]);
-        printf("\n");
-    }
-    if (saved) {
-        printf("  saved[0x0]  : ");
-        for (int i = 0; i < 16; i++) printf("%02x ", saved[i]);
-        if (start && start + 16 <= ctx->vram_size) {
-            printf("\n  saved[0x%x]: ", start);
-            for (int i = 0; i < 16; i++) printf("%02x ", saved[start + i]);
-        }
-        printf("\n");
-    }
-}
-
 static void virge_scanout_takeover(struct virge_ctx *ctx)
 {
     uint8_t r[VIRGE_SCANOUT_REG_COUNT];
@@ -561,8 +520,6 @@ static void virge_scanout_takeover(struct virge_ctx *ctx)
                             "screen garbage\n", bsz, (unsigned)ctx->vram_size);
         }
     }
-    virge_dump_vram_probe(ctx, "snapshot", ctx->saved_console_vram);
-    fflush(stdout);
     ctx->scanout_owned = 1;
 
     printf("S3 ViRGE: scanout now CR67=%02x CR50=%02x CR00=%02x CR01=%02x "
@@ -2075,46 +2032,24 @@ void virge_cleanup(struct virge_ctx *ctx)
          * in console mode already shows the restored console instead of a flash
          * of our last 3D frame. No fbdev on this box -> nothing else redraws it. */
         if (ctx->saved_console_vram && ctx->saved_console_vram_size) {
+            /* NOTE (2026-07-09): INEFFECTIVE on this no-fbdev box, kept as the
+             * skeleton for the real fix. The BAR0 aperture (resource0, opened
+             * O_SYNC and mmap'd MAP_SHARED) maps write-combined, so CPU reads
+             * through ctx->fb return 0 -- the snapshot in virge_scanout_takeover
+             * captured zeros, not the console, and this writes zeros back. The
+             * cube therefore survives Ctrl-C (scanned as 32bpp -> 4-quadrant
+             * color-shifted tile). The 2D engine DOES access VRAM coherently
+             * with the CRTC -- proven: an engine rect-fill at offset 0 displaced
+             * the cube -- so the deferred fix is an engine BitBLT of the console
+             * to a VRAM backup at takeover and back at cleanup (the console is
+             * 32-bit BGRX: a 16bpp 0x7C00 fill showed green, i.e. 0x7C landed in
+             * the G byte). For now the CRTC mode restore below returns the
+             * monitor to the console's timings; only the framebuffer content is
+             * left as the last rendered frame. */
             memcpy(ctx->fb, ctx->saved_console_vram, ctx->saved_console_vram_size);
-            virge_dump_vram_probe(ctx, "post-restore", ctx->saved_console_vram);
-            fflush(stdout);
             free(ctx->saved_console_vram);
             ctx->saved_console_vram = NULL;
             ctx->saved_console_vram_size = 0;
-        } else {
-            fprintf(stderr, "S3 ViRGE: WARNING: no console VRAM backup to restore "
-                            "(size=%zu) -- screen will show the last 3D frame\n",
-                    ctx->saved_console_vram_size);
-        }
-
-        /* Print the SAVED display-start (the console's scanout origin that the
-         * CRTC will scan once the mode restore below takes effect). Indices:
-         * saved_scanout[14]=CR0C, [15]=CR0D, [16]=CR69 (see virge_scanout_regs). */
-        {
-            uint32_t sv = ((uint32_t)ctx->saved_scanout[16] << 16)
-                        | ((uint32_t)ctx->saved_scanout[14] << 8)
-                        | (uint32_t)ctx->saved_scanout[15];
-            printf("S3 ViRGE: saved (console) display-start -> byte 0x%x\n",
-                   sv << 2);
-            fflush(stdout);
-        }
-
-        /* DECISIVE TEST: can the 2D ENGINE (CRTC-coherent memory port) displace
-         * the cube at offset 0, bypassing the CPU aperture? Engine-fill the
-         * scanout region (offset 0, width x height) with bright red. If red
-         * shows after the mode restore, engine writes reach the CRTC scanout
-         * -> the CPU memcpy was the failure (write-combined aperture / reads
-         * returned 0 so the snapshot was zeros). If the cube survives, the
-         * CRTC scans a region the engine doesn't write. */
-        {
-            uint32_t saved_fb_base = ctx->fb_base;
-            ctx->fb_base = 0;
-            virge_fill_rect(ctx, 0, 0, ctx->width, ctx->height, 0x7C00); /* red */
-            virge_wait_engine(ctx);
-            ctx->fb_base = saved_fb_base;
-            printf("S3 ViRGE: engine-filled offset 0 (%dx%d) red as a marker\n",
-                   ctx->width, ctx->height);
-            fflush(stdout);
         }
         virge_wait_vsync(ctx);
         vga_crtc_write(0x11,

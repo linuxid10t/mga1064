@@ -27,19 +27,31 @@ datasheet's persp S10.21 is wrong for real DX (ufrac 12), just as its non-persp
 S12.8.11 is (silicon wants 21). **textured_cube AXIS CLOSED.** LINEAR (bilinear)
 verified silicon 2026-07-09 (texprobe TEST 18: 1-texel R-stripe at a texel
 boundary blends to R15 in both U and V); cube switched NEAREST→LINEAR.
-Ctrl-C console restore: REAL ROOT CAUSE FOUND + FIXED (silicon 2026-07-09).
-The first attempt (080e1eb: snapshot+restore all VRAM) was the right shape but
-had an init-order bug: virge_scanout_takeover ran BEFORE ctx->vram_size was set
-(virge_detect_vram was called after the takeover). So the snapshot did
-bsz=ctx->vram_size==0 -> malloc(0) -> memcpy 0 bytes -> saved_console_vram_size=0
--> the cleanup restore guard (size!=0) was FALSE -> memcpy SKIPPED. The CRTC
-DID switch back to the 32bpp console mode, but VRAM still held our 16bpp 3D
-frame, scanned as 32bpp -> 2x2 quadrant tiling of the last frame, color-shifted
-(two 16bpp pixels pack per 32bpp word; stride 1600 read at 3200). FIX: detect
-VRAM before the takeover, and snapshot the full vram_size (do NOT cap at
-fb_size -- that is our 16bpp framebuffer size = HALF the console's 32bpp VBE
-framebuffer, so capping truncates the backup). Added size prints at backup and
-restore so a zero-size failure can't hide again. AWAITING David's verification.
+Ctrl-C console restore: ROOT-CAUSED; FIX DEFERRED (parked 2026-07-09 per David).
+Symptom after the init-order fix (6221fa4): the 4MB save+restore runs (log
+confirms 4194304 bytes) yet the cube still survives Ctrl-C as a 4-quadrant
+color-shifted tile. Probes nailed it:
+  - Console display-start is 0x0 (the console lives at VRAM offset 0).
+  - saved[0x0] and VRAM[0x0] both read all-zeros via ctx->fb, even though the
+    CRTC scans real console content there. So CPU reads through ctx->fb return
+    0 -- the BAR0 aperture (resource0 opened O_SYNC, mmap'd MAP_SHARED) is
+    write-combined. The snapshot therefore captured ZEROS, not the console, and
+    the CPU memcpy restore writes zeros back -> useless. (The post-restore
+    display-start reads 0xEA600 = the back buffer the last page-flip left; the
+    saved console start is 0x0, restored correctly by the CRTC reg write.)
+  - DECISIVE: a 2D-engine rect-fill at offset 0 DISPLACED the cube (top half
+    changed color) -> the engine accesses VRAM coherently with the CRTC, the
+    CPU aperture does not. (The fill was 16bpp red 0x7C00 but showed GREEN --
+    the console is 32-bit BGRX, so two 16bpp pixels pack per 32bpp word and
+    0x7C lands in the G byte. Same mechanism as the cube's color shift.)
+DEFERRED FIX: capture+restore the console via the 2D ENGINE (BitBLT the 32-bit
+console at offset 0 to a VRAM backup at takeover, BitBLT back at cleanup), NOT
+CPU memcpy. Needs ~2MB VRAM backup (may require dropping double-buffer or using
+the image-data-transfer port to stream through system RAM). The CRTC mode
+restore itself WORKS (monitor returns to console timings); only the framebuffer
+content is left as the last frame for now. Code: the CPU memcpy + saved_console_vram
+skeleton is kept in virge_scanout_takeover/virge_cleanup with an explanatory
+note; the diagnostic probes (VRAM dump, engine-fill marker) were removed.
 See #5 for the full decode.
 
 ## Test setup (fixed, do not re-derive)
