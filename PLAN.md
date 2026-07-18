@@ -660,8 +660,8 @@ rendering.
 outside-the-process ownership handoff for machines with a kernel framebuffer:
 it detaches fbcon, unbinds the `/dev/fb0` owner and selected PCI driver, runs
 L10GL against the released card, then rebinds the exact drivers and fbcon. This
-does not complete P2's in-process VT `KD_GRAPHICS` handling or fbdev mode
-save/restore.
+flow is hardware-verified end to end. It does not complete P2's in-process VT
+`KD_GRAPHICS` handling or fbdev mode save/restore.
 
 ### P3. Frontend swap-buffers API
 `l10gl_swap_buffers(ctx)` + vtable `swap_buffers`. Semantics: finish

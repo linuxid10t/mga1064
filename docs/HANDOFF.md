@@ -79,7 +79,8 @@ For machines where a kernel framebuffer *is* bound, use
 owners of `/dev/fb0` and the selected PCI function, then restores the exact
 drivers and fbcon after the child exits. `--dry-run` prints the planned sysfs
 writes. The primary `david-ta970` setup needs no unbind because it has no
-`/dev/fb0` or bound ViRGE driver.
+`/dev/fb0` or bound ViRGE driver. **Hardware-verified 2026-07-17 by David:**
+the complete detach → L10GL run → driver/fbcon restoration flow works cleanly.
 
 ## Push workflow (non-negotiable — David has corrected agents on this repeatedly)
 
