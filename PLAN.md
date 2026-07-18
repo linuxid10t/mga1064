@@ -990,8 +990,9 @@ that low byte recurred at line 243. The corrected image uses `CR16=f2`
 (`vtotal - 2`), and the general test now derives CR16 from the documented
 blank-width formula. This also corrects 640x480@60 from `0c` to the canonical
 `0b`. The corrected 75Hz retest displayed the complete cube with no black
-upper half, closing P6e. A 60Hz regression check remains before opening the
-next mode.
+upper half, closing P6e. The 60Hz regression also displayed correctly with
+the corrected CR16 byte, so both 640x480 refreshes are signed off. The next
+isolated gate is 800x600@75; keep 1024x768 locked.
 
 P6d's signed-off 60Hz hardware test over SSH:
 

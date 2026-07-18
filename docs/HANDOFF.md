@@ -250,8 +250,9 @@ eight bits. The encoder used `vtotal - 1`, producing `f3` even though the
 the frame wrap and cleared only when low byte `f3` recurred near line 243.
 The corrected 75Hz image uses `CR16=f2`; its hardware retest displayed the
 complete cube with no black upper half. The same general correction changes
-640x480@60 from `0c` to `0b`, so recheck that previously signed-off mode before
-opening the next gate.
+640x480@60 from `0c` to `0b`; its regression retest also displayed correctly.
+Both 640x480 refreshes are signed off. Open 800x600@75 next and keep both
+1024x768 modes locked.
 
 Run over SSH from a clean console baseline:
 
@@ -273,8 +274,8 @@ sudo env L10GL_BACKEND=virge L10GL_MODESET=native L10GL_REFRESH=75 \
 
 Verified: the complete cube is visible with no black upper half; the first
 run also proved recovery of the original console. Target readback is
-`CR15=df CR16=f2`. Run the 60Hz command above once more to regression-check
-its corrected `CR16=0b` before continuing to another mode.
+`CR15=df CR16=f2`. The 60Hz command above also passed its corrected
+`CR16=0b` regression.
 
 ```
 sudo env L10GL_BACKEND=virge L10GL_MODESET=native \
