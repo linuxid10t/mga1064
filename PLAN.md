@@ -446,12 +446,13 @@ range instead of rendering black.
 These unblock everything else (especially agent-side testing) and touch no
 proven hardware paths.
 
-**Status (2026-07-17): F1, F2, and F5 complete.** Both hardware backends use
+**Status (2026-07-17): F1, F2, F3, and F5 complete.** Both hardware backends use
 shared sysfs discovery and read-only probes; frontend demos autodetect at
 runtime with `L10GL_BACKEND` overrides; `make` builds both backends into
 `libl10gl.a` with dependency-tracked objects. README and `docs/BACKEND.md` now
-describe that architecture. F3 (software rasterizer) is the next core task;
-F4 remains optional.
+describe that architecture. The plain-C swrast fallback provides offscreen PPM
+and opt-in fbdev output plus a pixel-level regression suite. F4 remains
+optional; Phase 2 is now unblocked.
 
 ### F1. Runtime backend registry and probe
 Add to the vtable:
@@ -494,6 +495,14 @@ recompiles everything from sources on each demo).
 `make clean && make` works; no `#ifdef BACKEND_*` remains in demos.
 
 ### F3. Software reference backend (`swrast`)
+
+**Complete 2026-07-17.** The always-available final registry entry implements
+top-left Gouraud/Z/textured rasterization, alpha blending, lines, rectangle
+fills, perspective-correct texture coordinates, nearest/bilinear sampling,
+RGB565/RGB888 offscreen output, PPM frame dumps, and opt-in mapping of existing
+16/24/32-bit fbdev modes. `L10GL_FRAMES=N` gives `cube` and `textured_cube`
+bounded capture runs. `make check` validates output pixels without a GPU.
+
 Add `src/backends/swrast/`: a plain-C rasterizer implementing the full
 vtable — Gouraud + Z + textured triangles, lines, rect fill — rendering
 into either `/dev/fb0` (via standard fbdev mmap, no PCI) or an offscreen

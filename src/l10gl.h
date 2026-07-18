@@ -129,9 +129,9 @@ struct l10gl_texture {
 /* ========================================================================
  * Backend Interface
  *
- * Each hardware driver implements this struct. Fields set to NULL mean
- * the operation is not supported in hardware (and would require software
- * fallback if the frontend implements one).
+ * Each hardware or software driver implements this struct. Fields set to NULL
+ * mean the operation is not supported by that backend (and would require a
+ * frontend fallback if one exists).
  * ======================================================================== */
 
 struct l10gl_ctx;  /* forward decl */
@@ -193,12 +193,12 @@ struct l10gl_backend {
 };
 
 /* Capability bits */
-#define L10GL_CAP_GOURAUD     (1 << 0)  /* Hardware Gouraud shading */
-#define L10GL_CAP_ZBUFFER     (1 << 1)  /* Hardware Z-buffer */
-#define L10GL_CAP_LINES       (1 << 2)  /* Hardware line drawing */
-#define L10GL_CAP_TEXTURE     (1 << 3)  /* Hardware texture mapping */
-#define L10GL_CAP_BLEND       (1 << 4)  /* Hardware alpha blending */
-#define L10GL_CAP_DITHER      (1 << 5)  /* Hardware color dithering */
+#define L10GL_CAP_GOURAUD     (1 << 0)  /* Gouraud shading */
+#define L10GL_CAP_ZBUFFER     (1 << 1)  /* Z-buffer */
+#define L10GL_CAP_LINES       (1 << 2)  /* Line drawing */
+#define L10GL_CAP_TEXTURE     (1 << 3)  /* Texture mapping */
+#define L10GL_CAP_BLEND       (1 << 4)  /* Alpha blending */
+#define L10GL_CAP_DITHER      (1 << 5)  /* Color dithering */
 #define L10GL_CAP_TRILINEAR   (1 << 6)  /* Trilinear texture filtering */
 #define L10GL_CAP_BILINEAR    (1 << 7)  /* Bilinear texture filtering */
 #define L10GL_CAP_PERSPECTIVE (1 << 8)  /* Perspective-correct texture mapping */

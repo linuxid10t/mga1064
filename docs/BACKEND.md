@@ -2,7 +2,9 @@
 
 This guide describes the backend contract as it exists today. Start by reading
 `src/l10gl.h`, then use `src/backends/virge/` for a feature-rich example or
-`src/backends/mga1064/` for the smaller baseline.
+`src/backends/mga1064/` for the smaller hardware baseline. The correctness-first
+`src/backends/swrast/` implementation is the reference for generic state,
+coverage, interpolation, depth, blending, and texture behavior.
 
 ## Layering
 
@@ -15,6 +17,9 @@ Keep three responsibilities separate:
 3. The low-level driver (`src/backends/<chip>/<chip>.c`) discovers/maps the
    device and programs registers.
 
+A non-hardware backend can combine the second and third responsibilities in a
+single file, as swrast does, while preserving the same frontend boundary.
+
 Chip-specific types, registers, and workarounds must not leak into `l10gl.c` or
 applications. Keep direct diagnostic tools chip-specific instead of weakening
 the frontend abstraction to accommodate them.
@@ -25,16 +30,18 @@ Add a `const struct l10gl_backend` vtable with a stable lowercase `name`.
 
 - `probe()` is read-only and returns greater than zero when supported hardware
   is present, zero otherwise. It must not map BARs, change VGA state, request
-  I/O permissions, or print a normal “device not found” error.
+  I/O permissions, or print a normal “device not found” error. An
+  always-available software backend returns greater than zero and belongs last
+  in registry priority.
 - `init()` allocates backend-private state, stores it in `ctx->backend_data`,
   maps resources, initializes the engine, and returns a negative errno-style
   value on failure.
 - `cleanup()` waits for outstanding work, restores owned display state, unmaps
   resources, closes descriptors, and frees private state.
 
-Use `l10gl_pci_find()` from `src/pci_scan.h` for sysfs discovery. Put all
-supported device IDs in one backend-owned array and share one finder between
-`probe()` and `init()`. Do not add another PCI directory scanner.
+PCI backends use `l10gl_pci_find()` from `src/pci_scan.h` for sysfs discovery.
+Put all supported device IDs in one backend-owned array and share one finder
+between `probe()` and `init()`. Do not add another PCI directory scanner.
 
 The `width`, `height`, and `bpp` arguments are a request. `bpp` is bytes per
 pixel, not bits. If the backend adopts a different live raster, write the actual
@@ -58,6 +65,8 @@ does not provide a general software rasterization fallback.
 State setters should cache hardware-ready command bits in backend-private state
 and apply them at draw time. The ViRGE glue demonstrates depth-test, depth-mask,
 depth-function, blending, texture format, filter, and wrap mappings.
+Software backends may read the frontend's cached state directly at draw time;
+swrast does this so it remains a simple executable specification.
 
 Vertices reaching a backend are already in screen coordinates:
 
@@ -107,9 +116,10 @@ After the backend builds independently:
 
 Run `make clean && make`. The build must compile every backend into
 `libl10gl.a` with no warnings and build every demo and retained diagnostic.
-On a development machine without supported hardware, also verify that automatic
-detection exits cleanly and a forced backend reaches its own “device not found”
-path.
+Run `make check` to validate generic behavior against swrast without hardware.
+On a development machine without supported hardware, also verify that
+automatic detection selects the software fallback and forced hardware backends
+reach their own “device not found” paths.
 
 ## Hardware handoff
 

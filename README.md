@@ -3,7 +3,7 @@
 L10GL is a userspace OpenGL-style driver framework for vintage fixed-function
 graphics hardware. Applications call a small hardware-independent API; L10GL
 detects a supported PCI card and dispatches directly to its MMIO drawing
-engine.
+engine, or falls back to a plain-C software reference rasterizer.
 
 There is no DRM, DRI, Mesa, kernel module, X11, or GLX. The current target is a
 full-screen Linux console, programmed much like graphics hardware was in the
@@ -24,12 +24,15 @@ of VRAM. The following paths are verified on silicon:
 
 The spinning `cube` and `textured_cube` demos render correctly and tear-free on
 that machine. The Matrox MGA-1064SG backend builds and remains structurally
-supported, but has not yet been validated on hardware.
+supported, but has not yet been validated on hardware. The software backend
+provides deterministic offscreen rendering and pixel-level tests on machines
+without either card.
 
 | Backend | Hardware | Status |
 |---|---|---|
 | `virge` | S3 ViRGE family | Primary; ViRGE/DX verified on silicon |
 | `mga1064` | Matrox Mystique/MGA-1064SG | Builds; hardware-unverified |
+| `swrast` | No graphics hardware required | Reference renderer; offscreen and fbdev output |
 
 The detailed hardware history and test evidence live in
 [`docs/HANDOFF.md`](docs/HANDOFF.md). The implementation roadmap is
@@ -44,7 +47,8 @@ Application / demo
 L10GL frontend (state cache + runtime backend registry)
         │
         ├── S3 ViRGE glue ────── ViRGE register driver
-        └── MGA-1064 glue ────── MGA-1064 register driver
+        ├── MGA-1064 glue ────── MGA-1064 register driver
+        └── swrast ───────────── plain-C reference rasterizer
 ```
 
 Each backend implements `struct l10gl_backend` from `src/l10gl.h`. The frontend
@@ -52,15 +56,18 @@ owns common render state and dispatches through that vtable. Backend glue
 converts generic vertices and state into the low-level chip driver's formats.
 
 PCI discovery is shared in `src/pci_scan.c`. Detection is read-only: ViRGE is
-tried first, followed by MGA-1064. Initialization and hardware access only
-begin after a backend has been selected.
+tried first, followed by MGA-1064, then the always-available software fallback.
+Initialization and hardware access only begin after a backend has been
+selected.
 
 ## Requirements
 
-- Linux on x86 hardware with permission to use legacy VGA I/O ports
-- a supported PCI graphics card
-- root privileges for PCI resource mappings and I/O-port access
 - GCC, GNU Make, and standard Linux development headers
+
+Offscreen swrast needs no graphics hardware or elevated privileges. Hardware
+backends additionally require Linux on x86, a supported PCI card, permission
+to use legacy VGA I/O ports, and normally root privileges for PCI resource
+mappings and I/O-port access.
 
 The ViRGE test machine intentionally has no `/dev/fb0`. In that configuration,
 the backend adopts the live CRTC raster and changes scanout to the RGB555 format
@@ -109,7 +116,43 @@ Build the static library, all backends, demos, and retained diagnostics:
 
 ```sh
 make
+make check
 ```
+
+`make check` exercises the launcher fixture and checks swrast output pixels for
+top-left coverage, blending, depth ordering, perspective correction, bilinear
+filtering, RGB565 conversion, and PPM serialization.
+
+### Software rendering and frame dumps
+
+Force offscreen swrast, render a bounded sequence, and write one PPM per frame:
+
+```sh
+env L10GL_BACKEND=swrast \
+    L10GL_SWRAST_DUMP='frame%04d.ppm' \
+    L10GL_FRAMES=1 \
+    ./cube 640 480 16
+
+env L10GL_BACKEND=swrast \
+    L10GL_SWRAST_DUMP='textured%04d.ppm' \
+    L10GL_FRAMES=1 \
+    ./textured_cube 640 480 24
+```
+
+Offscreen output supports 16-bit RGB565 and 24-bit RGB888. The dump template
+accepts one `%d` or zero-padded `%0Nd` frame conversion; without a conversion,
+each frame replaces the same file. A one-shot application that never swaps is
+dumped during context cleanup.
+
+To draw through an existing packed true/direct-color fbdev mode instead, opt in
+with `L10GL_SWRAST_FB`:
+
+```sh
+sudo env L10GL_BACKEND=swrast L10GL_SWRAST_FB=/dev/fb0 ./cube
+```
+
+This adopts the current 16-, 24-, or 32-bit fbdev mode; it does not change the
+mode or yet put the VT into `KD_GRAPHICS`.
 
 Run a demo as root:
 
@@ -125,10 +168,12 @@ testing discovery or a multi-card machine:
 ```sh
 sudo env L10GL_BACKEND=virge ./cube
 sudo env L10GL_BACKEND=mga1064 ./cube
+env L10GL_BACKEND=swrast L10GL_FRAMES=1 ./cube
 ```
 
 An unknown override is rejected and prints the available backend names. If no
-supported card is present, demos fail without attempting MMIO access.
+supported card is present, automatic selection uses offscreen swrast without
+attempting MMIO access; it prints a reminder when no dump path was configured.
 
 `make` produces `libl10gl.a`. An application can include `src/l10gl.h`, link
 the archive and `libm`, then create a context with `l10gl_create_auto()`.
@@ -160,8 +205,10 @@ src/
 ├── pci_scan.c, pci_scan.h       shared PCI sysfs discovery
 └── backends/
     ├── virge/                   S3 ViRGE glue and register driver
-    └── mga1064/                 Matrox Mystique glue and register driver
+    ├── mga1064/                 Matrox Mystique glue and register driver
+    └── swrast/                  software reference rasterizer
 demos/                           demos and hardware diagnostics
+tests/                           launcher and swrast regression tests
 tools/l10gl-run                  reversible fbcon/driver handoff launcher
 docs/datasheets/                 primary hardware documentation
 docs/HANDOFF.md                  silicon results and active handoff

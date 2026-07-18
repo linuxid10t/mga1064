@@ -82,6 +82,14 @@ writes. The primary `david-ta970` setup needs no unbind because it has no
 `/dev/fb0` or bound ViRGE driver. **Hardware-verified 2026-07-17 by David:**
 the complete detach → L10GL run → driver/fbcon restoration flow works cleanly.
 
+The `swrast` backend is complete as of 2026-07-17 and is the final,
+always-available autodetection fallback after ViRGE and MGA-1064. It renders
+offscreen by default; use `L10GL_SWRAST_DUMP='frame%04d.ppm'` for PPM capture,
+`L10GL_FRAMES=N` for bounded cube/textured-cube runs, or opt into an existing
+fbdev mode with `L10GL_SWRAST_FB=/dev/fb0`. `make check` now verifies top-left
+coverage, blending, depth, perspective texturing, bilinear filtering, RGB565,
+and PPM output at the pixel level. No vintage GPU is needed for this gate.
+
 ## Push workflow (non-negotiable — David has corrected agents on this repeatedly)
 
 The workspace machine has **no ViRGE card**; David tests on a separate box
