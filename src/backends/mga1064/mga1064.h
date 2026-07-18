@@ -15,6 +15,7 @@
 #ifndef MGA1064_H
 #define MGA1064_H
 
+#include <stddef.h>
 #include <stdint.h>
 
 /* ========================================================================
@@ -164,6 +165,16 @@
 #define MGA_VCOUNT     0x1E20  /* Vertical Count (RO) */
 
 #define MGA_OPMODE     0x1E54  /* Operating Mode (R/W) */
+
+/* VGA CRTC and MGA CRTC-extension indexed register pairs in MGABASE1. */
+#define MGA_CRTC_INDEX      0x1FD4
+#define MGA_CRTC_DATA       0x1FD5
+#define MGA_CRTCEXT_INDEX   0x1FDE
+#define MGA_CRTCEXT_DATA    0x1FDF
+
+#define MGA_CRTC_START_HIGH 0x0C
+#define MGA_CRTC_START_LOW  0x0D
+#define MGA_CRTCEXT0        0x00
 
 /* --- Pseudo-DMA / Indirect Write Registers --- */
 
@@ -360,7 +371,33 @@ struct mga1064_ctx {
     uint32_t vram_size;     /* Total VRAM in bytes */
     uint32_t fb_offset;     /* Pixel offset of framebuffer origin in VRAM */
     uint32_t z_offset;      /* Pixel offset of Z buffer origin in VRAM */
+    uint32_t scanout_offset;/* Pixel offset currently scanned out */
+    uint32_t console_offset;/* Original scanout offset, in pixels */
+    int      double_buffered;
+    int      vsync_timeout_warned;
+
+    uint8_t  saved_start_high;
+    uint8_t  saved_start_low;
+    uint8_t  saved_crtcext0;
+    void    *saved_console;
+    size_t   saved_console_size;
 };
+
+struct mga1064_buffer_layout {
+    uint32_t front_bytes;
+    uint32_t back_bytes;
+    uint32_t z_bytes;
+    uint32_t surface_bytes;
+};
+
+/* Pure helpers kept public so buffer planning and register encoding can be
+ * checked without mapping graphics hardware. */
+int mga1064_plan_double_buffer(uint32_t front_bytes, uint32_t stride,
+                               uint32_t height, uint32_t bytes_per_pixel,
+                               uint32_t vram_size,
+                               struct mga1064_buffer_layout *layout);
+int mga1064_encode_start_address(uint32_t byte_offset, uint8_t *high,
+                                 uint8_t *low, uint8_t *extended);
 
 /* Read-only sysfs presence probe used by runtime backend selection. */
 int mga1064_probe(void);
@@ -407,6 +444,9 @@ void mga1064_wait_engine(struct mga1064_ctx *ctx);
  * page flips.
  */
 void mga1064_wait_vsync(struct mga1064_ctx *ctx);
+
+/* Publish the rendered buffer and retarget the engine to the old front. */
+void mga1064_swap_buffers(struct mga1064_ctx *ctx);
 
 /*
  * mga1064_clear_z - Clear the Z buffer to a given value.

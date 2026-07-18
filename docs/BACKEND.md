@@ -81,6 +81,14 @@ paths the backend actually implements. The frontend currently falls back from
 a textured triangle to a plain triangle when no textured draw hook exists; it
 does not provide a general software rasterization fallback.
 
+A backend that implements `swap_buffers` must wait for outstanding rendering,
+publish only the completed back buffer (at vsync when the display interface
+provides it), and retarget subsequent rendering away from the visible front.
+VRAM layouts must use the published byte stride rather than visible width and
+must degrade to a synchronized single-buffer path when capacity is
+insufficient. Cleanup restores any scanout-address registers and console pixels
+owned by the backend before the shared console layer restores fbdev/VT state.
+
 State setters should cache hardware-ready command bits in backend-private state
 and apply them at draw time. The ViRGE glue demonstrates depth-test, depth-mask,
 depth-function, blending, texture format, filter, and wrap mappings.

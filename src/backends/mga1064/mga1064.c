@@ -19,6 +19,7 @@
 #include <sys/ioctl.h>
 #include <sys/io.h>
 #include <stdint.h>
+#include <time.h>
 #include <linux/fb.h>
 
 #include "../../fbdev.h"
@@ -30,6 +31,155 @@ static const uint16_t mga_devices[] = {
     MGA_PCI_DEVICE_1064SG_AGP,
     MGA_PCI_DEVICE_1064SG_ALT,
 };
+
+static uint8_t mga_indexed_read(struct mga1064_ctx *ctx,
+                                uint32_t index_reg, uint32_t data_reg,
+                                uint8_t index)
+{
+    volatile uint8_t *mmio = (volatile uint8_t *)ctx->mmio;
+
+    mmio[index_reg] = index;
+    return mmio[data_reg];
+}
+
+static void mga_indexed_write(struct mga1064_ctx *ctx,
+                              uint32_t index_reg, uint32_t data_reg,
+                              uint8_t index, uint8_t value)
+{
+    volatile uint8_t *mmio = (volatile uint8_t *)ctx->mmio;
+
+    mmio[index_reg] = index;
+    mmio[data_reg] = value;
+}
+
+static int regions_overlap(uint32_t a, uint32_t b, uint32_t size)
+{
+    return (uint64_t)a < (uint64_t)b + size &&
+           (uint64_t)b < (uint64_t)a + size;
+}
+
+static int find_free_surface(uint32_t vram_size, uint32_t surface_size,
+                             const uint32_t *used, size_t used_count,
+                             uint32_t *result)
+{
+    uint64_t candidate = 0;
+
+    for (;;) {
+        int moved = 0;
+
+        candidate = (candidate + 7u) & ~UINT64_C(7);
+        if (candidate + surface_size > vram_size)
+            return -ENOSPC;
+        for (size_t i = 0; i < used_count; i++) {
+            if (regions_overlap((uint32_t)candidate, used[i], surface_size)) {
+                candidate = (uint64_t)used[i] + surface_size;
+                moved = 1;
+                break;
+            }
+        }
+        if (!moved) {
+            *result = (uint32_t)candidate;
+            return 0;
+        }
+    }
+}
+
+int mga1064_plan_double_buffer(uint32_t front_bytes, uint32_t stride,
+                               uint32_t height, uint32_t bytes_per_pixel,
+                               uint32_t vram_size,
+                               struct mga1064_buffer_layout *layout)
+{
+    uint64_t surface_size = (uint64_t)stride * height;
+    uint32_t used[2];
+    int ret;
+
+    if (!layout || !stride || !height ||
+        (bytes_per_pixel != 1 && bytes_per_pixel != 2 &&
+         bytes_per_pixel != 4) || stride % bytes_per_pixel ||
+        front_bytes % 8u || front_bytes % bytes_per_pixel ||
+        surface_size > UINT32_MAX ||
+        (uint64_t)front_bytes + surface_size > vram_size)
+        return -EINVAL;
+
+    memset(layout, 0, sizeof(*layout));
+    layout->front_bytes = front_bytes;
+    layout->surface_bytes = (uint32_t)surface_size;
+    used[0] = front_bytes;
+    ret = find_free_surface(vram_size, layout->surface_bytes, used, 1,
+                            &layout->back_bytes);
+    if (ret)
+        return ret;
+    used[1] = layout->back_bytes;
+    ret = find_free_surface(vram_size, layout->surface_bytes, used, 2,
+                            &layout->z_bytes);
+    if (ret)
+        return ret;
+    return 0;
+}
+
+int mga1064_encode_start_address(uint32_t byte_offset, uint8_t *high,
+                                 uint8_t *low, uint8_t *extended)
+{
+    uint32_t start;
+
+    if (!high || !low || !extended || byte_offset % 8u)
+        return -EINVAL;
+    start = byte_offset / 8u;
+    if (start > 0xfffffu)
+        return -ERANGE;
+    *high = (uint8_t)(start >> 8);
+    *low = (uint8_t)start;
+    *extended = (uint8_t)(start >> 16);
+    return 0;
+}
+
+static uint32_t mga1064_read_start_bytes(struct mga1064_ctx *ctx)
+{
+    uint8_t high = mga_indexed_read(ctx, MGA_CRTC_INDEX, MGA_CRTC_DATA,
+                                    MGA_CRTC_START_HIGH);
+    uint8_t low = mga_indexed_read(ctx, MGA_CRTC_INDEX, MGA_CRTC_DATA,
+                                   MGA_CRTC_START_LOW);
+    uint8_t extended = mga_indexed_read(ctx, MGA_CRTCEXT_INDEX,
+                                        MGA_CRTCEXT_DATA, MGA_CRTCEXT0);
+    uint32_t start = ((uint32_t)(extended & 0x0f) << 16)
+                   | ((uint32_t)high << 8) | low;
+
+    return start * 8u;
+}
+
+static int mga1064_program_start(struct mga1064_ctx *ctx,
+                                 uint32_t byte_offset)
+{
+    uint8_t high, low, extended;
+    uint8_t crtcext0;
+    int ret = mga1064_encode_start_address(byte_offset, &high, &low,
+                                           &extended);
+
+    if (ret)
+        return ret;
+    crtcext0 = mga_indexed_read(ctx, MGA_CRTCEXT_INDEX, MGA_CRTCEXT_DATA,
+                                MGA_CRTCEXT0);
+    mga_indexed_write(ctx, MGA_CRTC_INDEX, MGA_CRTC_DATA,
+                      MGA_CRTC_START_HIGH, high);
+    mga_indexed_write(ctx, MGA_CRTC_INDEX, MGA_CRTC_DATA,
+                      MGA_CRTC_START_LOW, low);
+    /* Datasheet 5.6.5: CRTCEXT0 contains the high nibble and must be last;
+     * this write is what latches the new start address. */
+    mga_indexed_write(ctx, MGA_CRTCEXT_INDEX, MGA_CRTCEXT_DATA,
+                      MGA_CRTCEXT0,
+                      (uint8_t)((crtcext0 & 0xf0) | extended));
+    return 0;
+}
+
+static void mga1064_restore_start(struct mga1064_ctx *ctx)
+{
+    mga_indexed_write(ctx, MGA_CRTC_INDEX, MGA_CRTC_DATA,
+                      MGA_CRTC_START_HIGH, ctx->saved_start_high);
+    mga_indexed_write(ctx, MGA_CRTC_INDEX, MGA_CRTC_DATA,
+                      MGA_CRTC_START_LOW, ctx->saved_start_low);
+    mga_indexed_write(ctx, MGA_CRTCEXT_INDEX, MGA_CRTCEXT_DATA,
+                      MGA_CRTCEXT0, ctx->saved_crtcext0);
+}
 
 static int mga1064_find_device(struct l10gl_pci_device *device)
 {
@@ -89,12 +239,58 @@ void mga1064_wait_engine(struct mga1064_ctx *ctx)
 
 void mga1064_wait_vsync(struct mga1064_ctx *ctx)
 {
+    struct timespec start, now;
+    int64_t elapsed_ns;
+
+    clock_gettime(CLOCK_MONOTONIC, &start);
     /* Wait for vsync to end (not in retrace) */
-    while (mga_read32(ctx, MGA_STATUS) & MGA_STATUS_VSYNCSTS)
-        ;
+    while (mga_read32(ctx, MGA_STATUS) & MGA_STATUS_VSYNCSTS) {
+        clock_gettime(CLOCK_MONOTONIC, &now);
+        elapsed_ns = (int64_t)(now.tv_sec - start.tv_sec) * 1000000000
+                   + (int64_t)now.tv_nsec - start.tv_nsec;
+        if (elapsed_ns >= 250000000)
+            goto timeout;
+    }
     /* Wait for vsync to start (entering retrace) */
-    while (!(mga_read32(ctx, MGA_STATUS) & MGA_STATUS_VSYNCSTS))
-        ;
+    while (!(mga_read32(ctx, MGA_STATUS) & MGA_STATUS_VSYNCSTS)) {
+        clock_gettime(CLOCK_MONOTONIC, &now);
+        elapsed_ns = (int64_t)(now.tv_sec - start.tv_sec) * 1000000000
+                   + (int64_t)now.tv_nsec - start.tv_nsec;
+        if (elapsed_ns >= 250000000)
+            goto timeout;
+    }
+    return;
+
+timeout:
+    if (!ctx->vsync_timeout_warned) {
+        fprintf(stderr, "MGA-1064SG: vsync wait timed out after 250ms; "
+                        "page flips will continue unsynchronized\n");
+        ctx->vsync_timeout_warned = 1;
+    }
+}
+
+void mga1064_swap_buffers(struct mga1064_ctx *ctx)
+{
+    uint32_t new_scanout;
+    uint32_t new_render;
+    int ret;
+
+    mga1064_wait_engine(ctx);
+    if (!ctx->double_buffered)
+        return;
+
+    new_scanout = ctx->fb_offset;
+    new_render = ctx->scanout_offset;
+    mga1064_wait_vsync(ctx);
+    ret = mga1064_program_start(ctx, new_scanout * (uint32_t)ctx->bpp);
+    if (ret) {
+        fprintf(stderr, "MGA-1064SG: cannot encode page-flip address: %s\n",
+                strerror(-ret));
+        return;
+    }
+    ctx->scanout_offset = new_scanout;
+    ctx->fb_offset = new_render;
+    mga_write32(ctx, MGA_YDSTORG, ctx->fb_offset);
 }
 
 /* ========================================================================
@@ -464,6 +660,8 @@ void mga1064_draw_line(struct mga1064_ctx *ctx,
 
 int mga1064_init(struct mga1064_ctx *ctx, int width, int height, int bpp)
 {
+    uint32_t fbdev_offset_bytes = 0;
+
     if (width <= 0 || height <= 0 ||
         (bpp != 1 && bpp != 2 && bpp != 4)) {
         fprintf(stderr, "MGA-1064SG: requires positive geometry and "
@@ -512,6 +710,15 @@ int mga1064_init(struct mga1064_ctx *ctx, int width, int height, int bpp)
         return -ENOMEM;
     }
     printf("  MMIO mapped: %zu bytes at %p\n", ctx->mmio_size, ctx->mmio);
+    ctx->saved_start_high = mga_indexed_read(ctx, MGA_CRTC_INDEX,
+                                             MGA_CRTC_DATA,
+                                             MGA_CRTC_START_HIGH);
+    ctx->saved_start_low = mga_indexed_read(ctx, MGA_CRTC_INDEX,
+                                            MGA_CRTC_DATA,
+                                            MGA_CRTC_START_LOW);
+    ctx->saved_crtcext0 = mga_indexed_read(ctx, MGA_CRTCEXT_INDEX,
+                                           MGA_CRTCEXT_DATA,
+                                           MGA_CRTCEXT0);
 
     /* Map framebuffer via /dev/fb0 */
     ctx->fb_fd = open("/dev/fb0", O_RDWR);
@@ -550,6 +757,21 @@ int mga1064_init(struct mga1064_ctx *ctx, int width, int height, int bpp)
             return -ENOTSUP;
         }
         ctx->pitch = (int)(ctx->stride / (uint32_t)ctx->bpp);
+        {
+            uint64_t fbdev_offset = (uint64_t)mode.var.yoffset * ctx->stride
+                                  + (uint64_t)mode.var.xoffset * ctx->bpp;
+
+            if (fbdev_offset > UINT32_MAX) {
+                fprintf(stderr, "MGA-1064SG: fbdev scanout offset is too "
+                                "large\n");
+                close(ctx->fb_fd);
+                ctx->fb_fd = -1;
+                munmap(ctx->mmio, ctx->mmio_size);
+                ctx->mmio = NULL;
+                return -EOVERFLOW;
+            }
+            fbdev_offset_bytes = (uint32_t)fbdev_offset;
+        }
         ctx->fb_size = mode.fix.smem_len;
         ctx->fb = mmap(NULL, ctx->fb_size, PROT_READ | PROT_WRITE,
                        MAP_SHARED, ctx->fb_fd, 0);
@@ -581,20 +803,99 @@ int mga1064_init(struct mga1064_ctx *ctx, int width, int height, int bpp)
     }
     printf("  Framebuffer mapped: %zu bytes at %p\n", ctx->fb_size, ctx->fb);
 
-    /* Compute memory layout */
-    ctx->fb_offset = 0;
-    ctx->z_offset = (uint32_t)ctx->pitch * (uint32_t)ctx->height;
-    ctx->vram_size = ctx->fb_size;
-    if (((uint64_t)ctx->z_offset * 2u * (uint32_t)ctx->bpp) > ctx->fb_size) {
-        fprintf(stderr, "MGA-1064SG: mode needs color+Z storage beyond "
-                        "%zu-byte framebuffer mapping\n", ctx->fb_size);
+    /* Compute a layout around the buffer the CRTC is actually scanning.
+     * CRTC start addresses are 20-bit quantities in 8-byte units for the
+     * 8/16/32bpp modes this driver accepts (datasheet 5.6.5). */
+    {
+        struct mga1064_buffer_layout layout;
+        uint32_t front_bytes = mga1064_read_start_bytes(ctx);
+        uint64_t surface_size64 = (uint64_t)ctx->stride * ctx->height;
+        uint32_t surface_size;
+        uint32_t used;
+        uint32_t z_bytes;
+        int layout_ret;
+
+        if (ctx->fb_size > UINT32_MAX || surface_size64 > UINT32_MAX) {
+            ret = -EOVERFLOW;
+            goto layout_fail;
+        }
+        ctx->vram_size = (uint32_t)ctx->fb_size;
+        surface_size = (uint32_t)surface_size64;
+        if (front_bytes % 8u || front_bytes % (uint32_t)ctx->bpp ||
+            (uint64_t)front_bytes + surface_size > ctx->vram_size) {
+            if (ctx->using_fbdev && fbdev_offset_bytes % 8u == 0 &&
+                fbdev_offset_bytes % (uint32_t)ctx->bpp == 0 &&
+                (uint64_t)fbdev_offset_bytes + surface_size <=
+                    ctx->vram_size) {
+                fprintf(stderr, "MGA-1064SG: CRTC start 0x%x is outside "
+                                "mapped VRAM; using fbdev offset 0x%x\n",
+                        front_bytes, fbdev_offset_bytes);
+                front_bytes = fbdev_offset_bytes;
+            } else {
+                fprintf(stderr, "MGA-1064SG: live scanout at 0x%x does not "
+                                "fit the framebuffer mapping\n", front_bytes);
+                ret = -EINVAL;
+                goto layout_fail;
+            }
+        } else if (ctx->using_fbdev && front_bytes != fbdev_offset_bytes) {
+            fprintf(stderr, "MGA-1064SG: CRTC scanout 0x%x differs from "
+                            "fbdev offset 0x%x; trusting the CRTC\n",
+                    front_bytes, fbdev_offset_bytes);
+        }
+
+        ctx->console_offset = front_bytes / (uint32_t)ctx->bpp;
+        ctx->scanout_offset = ctx->console_offset;
+        layout_ret = ctx->using_fbdev
+            ? mga1064_plan_double_buffer(front_bytes, ctx->stride,
+                                         (uint32_t)ctx->height,
+                                         (uint32_t)ctx->bpp, ctx->vram_size,
+                                         &layout)
+            : -ENOTSUP;
+        if (layout_ret == 0) {
+            ctx->saved_console = malloc(layout.surface_bytes);
+            if (!ctx->saved_console) {
+                ret = -ENOMEM;
+                goto layout_fail;
+            }
+            memcpy(ctx->saved_console, (uint8_t *)ctx->fb + front_bytes,
+                   layout.surface_bytes);
+            ctx->saved_console_size = layout.surface_bytes;
+            ctx->fb_offset = layout.back_bytes / (uint32_t)ctx->bpp;
+            ctx->z_offset = layout.z_bytes / (uint32_t)ctx->bpp;
+            ctx->double_buffered = 1;
+            printf("MGA-1064SG: double buffering enabled: front 0x%x, "
+                   "back 0x%x, Z 0x%x (%u bytes each)\n",
+                   layout.front_bytes, layout.back_bytes, layout.z_bytes,
+                   layout.surface_bytes);
+        } else {
+            used = front_bytes;
+            ret = find_free_surface(ctx->vram_size, surface_size, &used, 1,
+                                    &z_bytes);
+            if (ret) {
+                fprintf(stderr, "MGA-1064SG: mode needs color+Z storage "
+                                "beyond %u-byte framebuffer mapping\n",
+                        ctx->vram_size);
+                goto layout_fail;
+            }
+            ctx->fb_offset = ctx->console_offset;
+            ctx->z_offset = z_bytes / (uint32_t)ctx->bpp;
+            printf("MGA-1064SG: double buffering unavailable (%s); using "
+                   "single-buffered scanout\n", strerror(-layout_ret));
+        }
+        goto layout_done;
+
+layout_fail:
+        free(ctx->saved_console);
+        ctx->saved_console = NULL;
         munmap(ctx->fb, ctx->fb_size);
         ctx->fb = NULL;
         close(ctx->fb_fd);
         ctx->fb_fd = -1;
         munmap(ctx->mmio, ctx->mmio_size);
         ctx->mmio = NULL;
-        return -ENOSPC;
+        return ret;
+layout_done:
+        ;
     }
 
     /* Initialize drawing engine */
@@ -604,8 +905,8 @@ int mga1064_init(struct mga1064_ctx *ctx, int width, int height, int bpp)
     printf("  Screen: %dx%d, %d bpp (stride %u, pitch %d pixels)\n",
            ctx->width, ctx->height, ctx->bits_per_pixel, ctx->stride,
            ctx->pitch);
-    printf("  FB offset: %u px, Z offset: %u px\n",
-           ctx->fb_offset, ctx->z_offset);
+    printf("  Render offset: %u px, scanout offset: %u px, Z offset: %u px\n",
+           ctx->fb_offset, ctx->scanout_offset, ctx->z_offset);
 
     return 0;
 }
@@ -613,6 +914,16 @@ int mga1064_init(struct mga1064_ctx *ctx, int width, int height, int bpp)
 void mga1064_cleanup(struct mga1064_ctx *ctx)
 {
     mga1064_wait_engine(ctx);
+
+    if (ctx->double_buffered && ctx->saved_console) {
+        memcpy((uint8_t *)ctx->fb
+                   + (size_t)ctx->console_offset * (size_t)ctx->bpp,
+               ctx->saved_console, ctx->saved_console_size);
+        mga1064_wait_vsync(ctx);
+        mga1064_restore_start(ctx);
+    }
+    free(ctx->saved_console);
+    ctx->saved_console = NULL;
 
     if (ctx->fb) {
         munmap(ctx->fb, ctx->fb_size);

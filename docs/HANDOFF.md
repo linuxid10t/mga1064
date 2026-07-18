@@ -81,16 +81,27 @@ run unbound `simple-framebuffer`, rendered the ViRGE cube for 176 frames with
 P2 correctly inactive, restored native scanout, then rebound the framebuffer
 driver and fbcon. No regressions were observed.
 
-**Phase 3 P5a swrast double buffering implemented 2026-07-18; fbdev visual
-sign-off pending.** swrast no longer draws directly into mapped scanout. Its
+**Phase 3 P5 implemented 2026-07-18; swrast fbdev and MGA hardware sign-off
+pending.** swrast no longer draws directly into mapped scanout. Its
 fbdev path renders into a private stride-matched back buffer, optionally waits
 for `FBIO_WAITFORVSYNC`, and copies only completed visible rows during
 `l10gl_swap_buffers`. Offscreen mode rotates two owned color buffers, and PPM
 dumps explicitly read the just-completed buffer. `test-swrast` verifies that
 presentation does not occur before swap and that successive red/green frames
-remain distinct. The full normal suite and the five automated binaries under
+remain distinct.
+
+The MGA-1064 driver now reads the live 20-bit CRTC start, plans non-overlapping
+front/back/Z regions using `line_length * height`, and enables flipping only
+when `smem_len` can hold all three. A swap waits for engine idle and a bounded
+250ms vsync, writes CRTCC and CRTCD, writes CRTCEXT0 last as required by
+datasheet section 5.6.5, and exchanges YDSTORG with the old front. The original
+console raster is copied aside and restored together with the exact three
+start-address registers at cleanup. Insufficient VRAM and the no-fbdev fallback
+remain safely single-buffered. `test-mga1064` checks 4MB 800x600x16 placement,
+nonzero live-front exclusion, 32bpp capacity failure, and exact 8-byte-unit
+register encoding. The full normal suite and all six automated binaries under
 ASan/UBSan pass (LeakSanitizer disabled because the command supervisor uses
-ptrace). P5b MGA-1064 page flipping remains next and hardware-unverified.
+ptrace). Real Mystique/`matroxfb` validation is still required.
 
 ## Test setup (fixed, do not re-derive)
 

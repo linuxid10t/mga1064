@@ -26,8 +26,9 @@ of VRAM. The following paths are verified on silicon:
 The X6 model-space `cube` and `textured_cube` ports render correctly and
 tear-free on that machine, and produce byte-identical first frames to their
 former screen-space implementations under swrast. The Matrox MGA-1064SG
-backend builds and remains structurally supported, but has not yet been
-validated on hardware. The software backend provides deterministic,
+backend now includes VRAM-capacity-aware, vsync-synchronized page flipping and
+clean scanout/console restoration, but has not yet been validated on hardware.
+The software backend provides deterministic,
 double-buffered offscreen rendering and pixel-level tests on machines without
 either card. Its fbdev path renders privately and publishes completed frames
 only from `l10gl_swap_buffers`, using the fbdev vsync ioctl when available.
@@ -49,8 +50,8 @@ unchanged.
 | Backend | Hardware | Status |
 |---|---|---|
 | `virge` | S3 ViRGE family | Primary; ViRGE/DX verified on silicon |
-| `mga1064` | Matrox Mystique/MGA-1064SG | Builds; hardware-unverified |
-| `swrast` | No graphics hardware required | Reference renderer; offscreen and fbdev output |
+| `mga1064` | Matrox Mystique/MGA-1064SG | Double-buffering complete; hardware-unverified |
+| `swrast` | No graphics hardware required | Double-buffered reference; offscreen verified, fbdev sign-off pending |
 
 The detailed hardware history and test evidence live in
 [`docs/HANDOFF.md`](docs/HANDOFF.md). The implementation roadmap is

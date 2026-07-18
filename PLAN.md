@@ -805,7 +805,8 @@ existing `virge_wait_vsync`.
 
 ### P5. swrast + mga1064 double buffering
 
-**P5a swrast complete 2026-07-18; P5b MGA-1064 pending.** Offscreen swrast
+**Implemented 2026-07-18; swrast fbdev and MGA hardware sign-off pending.**
+Offscreen swrast
 now rotates two private color buffers, and PPM output reads the completed
 buffer only after `l10gl_swap_buffers`. The fbdev path also renders into a
 private back buffer instead of the mapped scanout, waits through
@@ -815,8 +816,16 @@ rendering. `test-swrast` proves that no frame is dumped before swap and that
 two consecutive swaps preserve distinct completed frames. The direct fbdev
 copy path still needs a target-system visual check.
 
-P5b: mga1064 must implement the same VRAM-layout + CRTC start-address pattern
-(CRTCEXT0 on MGA), untested-on-HW but structurally complete.
+MGA-1064 now plans front/back/Z surfaces around the live CRTC scanout without
+overlap, uses the real padded stride for each allocation, and falls back to a
+correct single-buffer path when VRAM cannot hold three surfaces. Swap waits for
+engine idle and bounded vsync, writes the 20-bit start address in the
+datasheet-mandated CRTCC/CRTCD/CRTCEXT0-last order, then retargets YDSTORG to
+the old front. Cleanup restores both the saved console pixels and exact start
+registers. `test-mga1064` covers a 4MB 800x600x16 layout, nonzero live fronts,
+32bpp capacity fallback, alignment rejection, and the 8-byte-unit CRTC
+encoding. This path is structurally complete but remains untested on a real
+Mystique with `matroxfb`.
 
 ### P6. Native ViRGE mode setting (no fb-driver dependency)
 The end-state for the primary card: set the mode by programming the chip

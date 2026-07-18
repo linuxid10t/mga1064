@@ -252,6 +252,11 @@ static void mga_be_wait_vsync(struct l10gl_ctx *ctx)
     mga1064_wait_vsync(&MGA_PRIV(ctx)->hw);
 }
 
+static void mga_be_swap_buffers(struct l10gl_ctx *ctx)
+{
+    mga1064_swap_buffers(&MGA_PRIV(ctx)->hw);
+}
+
 /* ========================================================================
  * Backend Vtable
  * ======================================================================== */
@@ -275,5 +280,6 @@ const struct l10gl_backend mga1064_backend = {
     .fill_rect     = mga_be_fill_rect,
     .wait_engine   = mga_be_wait_engine,
     .wait_vsync    = mga_be_wait_vsync,
+    .swap_buffers  = mga_be_swap_buffers,
     .caps = L10GL_CAP_GOURAUD | L10GL_CAP_ZBUFFER | L10GL_CAP_LINES,
 };

@@ -31,11 +31,13 @@ DEMOS = $(FRONTEND_DEMOS) fbtest
 # the complete library; archive extraction pulls only the objects they use.
 TESTS = scantest filltest tritest gltritest fliptest dztest seamtest \
 	cubefb diagap texprobe
-CHECK_PROGRAMS = test-console test-mode test-swrast test-xform test-pipeline
+CHECK_PROGRAMS = test-console test-mode test-swrast test-xform test-pipeline \
+	test-mga1064
 
 PROGRAMS = $(DEMOS) $(TESTS)
 PROGRAM_OBJS = $(addprefix demos/,$(addsuffix .o,$(PROGRAMS)))
-CHECK_OBJS = tests/test_console.o tests/test_mode.o tests/test_swrast.o tests/test_xform.o tests/test_pipeline.o
+CHECK_OBJS = tests/test_console.o tests/test_mode.o tests/test_swrast.o tests/test_xform.o tests/test_pipeline.o \
+	tests/test_mga1064.o
 ALL_OBJS = $(LIB_OBJS) $(PROGRAM_OBJS) $(CHECK_OBJS)
 DEPS = $(ALL_OBJS:.o=.d)
 
@@ -50,6 +52,7 @@ check: all $(CHECK_PROGRAMS)
 	./test-swrast
 	./test-xform
 	./test-pipeline
+	./test-mga1064
 
 $(LIBRARY): $(LIB_OBJS)
 	$(AR) rcs $@ $^
@@ -70,6 +73,9 @@ test-xform: tests/test_xform.o $(LIBRARY)
 	$(CC) -o $@ $< $(LIBRARY) $(LDFLAGS)
 
 test-pipeline: tests/test_pipeline.o $(LIBRARY)
+	$(CC) -o $@ $< $(LIBRARY) $(LDFLAGS)
+
+test-mga1064: tests/test_mga1064.o $(LIBRARY)
 	$(CC) -o $@ $< $(LIBRARY) $(LDFLAGS)
 
 # CPU-drawn fbdev pattern; deliberately independent of L10GL and PCI access.
