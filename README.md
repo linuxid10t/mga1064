@@ -30,6 +30,11 @@ backend builds and remains structurally supported, but has not yet been
 validated on hardware. The software backend provides deterministic offscreen
 rendering and pixel-level tests on machines without either card.
 
+P2 console ownership is also verified on the target system: direct swrast
+through the 800x600x32 `simple-framebuffer` moved VT1 to `KD_GRAPHICS`, kept the
+static frame free of console scribble, and restored the fbdev mode and console
+ownership on Ctrl-C. The `l10gl-run` no-fbdev ViRGE path remains unchanged.
+
 The frontend now also has OpenGL-convention MODELVIEW and PROJECTION matrix
 stacks plus an immediate-mode model-space geometry path. It captures current
 color/normal/texture attributes, assembles triangles, strips, fans, and lines,

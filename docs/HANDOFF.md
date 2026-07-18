@@ -67,15 +67,19 @@ so its immediate hardware check was a regression of native takeover. David
 reported it works with no regressions after P1. True fbdev mode-switch
 acceptance remains to be run on a boot with `s3fb` or `matroxfb`.
 
-**Phase 3 P2 implemented 2026-07-18; fbdev/VT hardware sign-off pending.**
+**Phase 3 P2 complete and hardware-verified 2026-07-18.**
 `src/console.c` snapshots the original fbdev mode before P1 backend init, puts
 the active VT into `KD_GRAPHICS` only when it owns the target framebuffer, and
 restores the mode before returning that VT to its exact prior KD state.
 Backend-init failures unwind ownership; offscreen swrast and no-fbdev native
 takeover remain no-ops. `test-console` covers lifecycle and failure ordering.
-On a machine with `/dev/fb0`, validate over SSH with swrast in the live mode;
-the local display must have no cursor/printk scribble, and Ctrl-C must log
-`restored fbdev mode and console ownership` before returning a usable console.
+David's decisive run used `L10GL_BACKEND=swrast`,
+`L10GL_SWRAST_FB=/dev/fb0`, `L10GL_STATIC=1`, and 800x600x32. It logged
+`VT1 is in KD_GRAPHICS`, displayed the static frame correctly, and Ctrl-C
+logged `restored fbdev mode and console ownership`. The companion launcher
+run unbound `simple-framebuffer`, rendered the ViRGE cube for 176 frames with
+P2 correctly inactive, restored native scanout, then rebound the framebuffer
+driver and fbcon. No regressions were observed.
 
 ## Test setup (fixed, do not re-derive)
 
@@ -83,9 +87,11 @@ the local display must have no cursor/printk scribble, and Ctrl-C must log
   x86-64 Linux, tested over SSH by the human (David). He runs the
   binaries and reports logs + photos of the monitor. You cannot see
   the screen; design every change so one run produces decisive output.
-- **There is no `/dev/fb0` on this machine** — no kernel fb driver is
-  bound to the card. The chip boots into the bootloader's leftover VBE
-  mode: 800×600 raster, CR67 Mode 13, 32-bit pixels, pitch 3200.
+- The normal console exposes `/dev/fb0` through `simple-framebuffer` at
+  800×600, 32-bit pixels, stride 3200. `tools/l10gl-run` detaches fbcon and
+  unbinds that driver before launching L10GL, so the ViRGE child deliberately
+  sees no `/dev/fb0` and takes over the bootloader's leftover VBE scanout
+  directly (CR67 Mode 13 before takeover).
 - Because of that, `virge_init` performs a **native scanout takeover**
   (`virge_scanout_takeover` in `src/backends/virge/virge.c`): switches
   scanout to Mode 9 (15-bit RGB555), doubles all horizontal CRTC

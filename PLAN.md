@@ -742,8 +742,8 @@ comes from the live mode; no `width * bpp` stride math remains.
 
 ### P2. Console ownership and clean restore
 
-**Implemented and software-verified 2026-07-18; fbdev/VT hardware sign-off
-pending.** Backends now declare their fbdev target in the vtable. Before
+**Complete and hardware-verified 2026-07-18.** Backends now declare their
+fbdev target in the vtable. Before
 backend initialization, `src/console.c` snapshots `fb_var_screeninfo`, finds
 the active VT, verifies that VT is mapped to the target framebuffer when the
 kernel supports `FBIOGET_CON2FBMAP`, saves its existing KD mode, and enters
@@ -753,6 +753,15 @@ descriptors. Initialization failures unwind the same state. Offscreen swrast
 and the primary no-fbdev ViRGE takeover do not touch a VT. `test-console`
 covers acquisition, inactive framebuffer mapping, failure unwind, exact mode
 restoration, restore-error continuation, and idempotent release.
+
+David verified both target-machine ownership paths. `l10gl-run -- ./cube`
+unbinds `simple-framebuffer`, leaves P2 inactive in the child, renders normally,
+and rebinds fbcon after Ctrl-C. A direct 800x600x32 swrast run through
+`/dev/fb0` reported `VT1 is in KD_GRAPHICS`; its static frame remained clean,
+and Ctrl-C reported `restored fbdev mode and console ownership` before the
+console resumed. This satisfies P2 acceptance. P1's separate request-to-switch
+branch still needs `s3fb`/`matroxfb`; adopting an already matching live mode is
+verified by this swrast run.
 
 Be a well-behaved fullscreen app. At init: save the current
 `fb_var_screeninfo`, put the owning VT into graphics mode
