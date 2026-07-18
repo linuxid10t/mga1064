@@ -139,10 +139,21 @@ whole-segment depth rejection. These restrictions keep invalid coordinates
 away from vintage hardware while leaving the completed triangle near-plane
 path useful.
 
-X5 will derive reciprocal eye depth for perspective-correct texture mapping.
-Until then, immediate-mode vertices emit `w = 1.0`, so their textures are
-affine. Existing screen-space textured drawing remains unchanged and can still
-supply explicit W.
+## Perspective-correct texture W
+
+After clipping, X5 emits `l10gl_vertex.w = 1 / clip.w`. For matrices created by
+`l10gl_frustum()` or `l10gl_perspective()`, clip W is positive eye-space depth,
+so vertices at depths 2 and 4 emit W values 0.5 and 0.25. Orthographic clip W
+is constant 1, correctly retaining affine interpolation.
+
+When X3 creates a near-plane intersection, it interpolates homogeneous clip W
+first; X5 takes the reciprocal only when projecting that generated vertex.
+Interpolating the already-reciprocal values would be incorrect. The ViRGE and
+swrast backends then interpolate `U*W`, `V*W`, and W and divide per fragment.
+
+This behavior applies only to immediate-mode model-space submission. The
+screen-space `l10gl_draw_textured_triangle()` API remains unchanged and still
+accepts the caller's explicit W values.
 
 ## Validation
 
@@ -152,5 +163,6 @@ strip alternation, fan origin, line pairing, incomplete primitives, bound
 texture selection, front/back culling, near-plane split/interpolation and
 boundary cases, conservative far/line rejection, the 2047-scanline guard,
 directional/ambient lighting, inverse-transpose normals, material capture,
-clamping, and disabled-lighting compatibility. The separate swrast suite
-validates the rasterizer receiving those calls.
+clamping, disabled-lighting compatibility, analytic reciprocal W values,
+MODELVIEW depth, orthographic W, and clipped-vertex W. The separate swrast
+suite validates the rasterizer receiving those calls.

@@ -72,7 +72,9 @@ Vertices reaching a backend are already in screen coordinates:
 
 - `x`, `y`: pixels
 - `z`: normalized depth, near 0 and far 1
-- `w`: reciprocal eye-space depth for perspective correction
+- `w`: reciprocal homogeneous clip W for perspective correction; with the
+  standard perspective matrices this equals reciprocal positive eye-space
+  depth, while orthographic projection supplies 1
 - `r`, `g`, `b`, `a`: normalized channels
 - `u`, `v`: normalized texture coordinates
 

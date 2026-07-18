@@ -556,13 +556,13 @@ other vintage cards).
 
 ## Phase 2 — Frontend geometry pipeline
 
-**Status (2026-07-17): X1 through X4 complete; X5 is next.** Matrix
+**Status (2026-07-18): X1 through X5 complete; X6 is next.** Matrix
 stacks and viewport math live in `src/l10gl_xform.c`; current-attribute
 capture, model-space transformation, streaming primitive assembly,
 eye-space directional lighting, homogeneous near clipping, texture dispatch,
-and post-projection culling live in `src/l10gl_pipeline.c`. `test-xform` and
-`test-pipeline` cover both layers. Existing screen-space drawing remains
-unchanged.
+perspective texture W, and post-projection culling live in
+`src/l10gl_pipeline.c`. `test-xform` and `test-pipeline` cover both layers.
+Existing screen-space drawing remains unchanged.
 
 Move the 3D math out of the demos and into the library, so applications
 supply model-space geometry and the library handles transform → light →
@@ -599,7 +599,7 @@ fans, independent lines, and line strips through X1 into existing backend draw
 calls without allocation. Binding a texture selects textured triangle dispatch;
 binding NULL selects Gouraud dispatch. CCW front/back culling is computed in
 NDC before the framebuffer Y flip. Normals are captured for X4 lighting and
-emitted texture W remains affine (`1.0`) until X5.
+X5 derives perspective texture W after homogeneous clipping.
 
 `l10gl_begin(prim)` / `l10gl_vertex3f` / `l10gl_color4f` / `l10gl_normal3f`
 / `l10gl_texcoord2f` / `l10gl_end()`. Assemble TRIANGLES, TRIANGLE_STRIP,
@@ -646,10 +646,21 @@ in `demos/cube.c:103`. Multiple lights and specular are stretch goals — do
 not block on them.
 
 ### X5. Perspective-correct texture W
+
+**Complete 2026-07-18.** Projected immediate-mode vertices now emit
+`w = 1 / clip.w`. With the standard perspective constructors, positive clip W
+is positive eye-space depth; orthographic clip W remains 1 and therefore keeps
+affine interpolation. X3-generated vertices first interpolate homogeneous
+clip W and only then take the reciprocal, which is the correct value at the
+new near-plane intersection. The existing screen-space API and its explicit W
+values are unchanged. Capture tests cover analytic perspective depths,
+MODELVIEW translation, orthographic projection, textured dispatch, and
+near-clipped vertices.
+
 The pipeline computes `w = 1/z_eye` per vertex and feeds it through
 (`struct l10gl_vertex.w` already exists) so ViRGE perspective-correct
-texturing (`virge.c:927`) finally gets real W values instead of the demo's
-hand-rolled ones.
+texturing (`virge_draw_textured_triangle`) finally gets real W values instead
+of the demo's hand-rolled ones.
 
 ### X6. Port the demos
 Rewrite `demos/cube.c` and `demos/textured_cube.c` on the pipeline

@@ -104,8 +104,7 @@ TRIANGLE_FAN, LINES, and LINE_STRIP through X1 into the existing screen-space
 backend calls. Strip winding alternates correctly; fan origin is fixed;
 texture binding selects textured dispatch; CCW culling happens in NDC before
 the top-left framebuffer Y conversion. `test-pipeline` uses a capture backend
-to verify exact calls and vertices. Existing demos are not ported yet (X6),
-and texture W stays 1 until X5.
+to verify exact calls and vertices. Existing demos are not ported yet (X6).
 
 Phase 2 X3 is complete as of 2026-07-17. Immediate-mode triangles are clipped
 in homogeneous space against `Z + W >= 0` before perspective division and
@@ -128,7 +127,18 @@ and material alpha are clamped and captured before X3 clipping. `test-pipeline`
 covers full diffuse, ambient-only, invalid directions, normalization, clamping,
 per-vertex material changes, non-uniform/reflected/singular transforms, and
 disabled-lighting compatibility. Existing demos and all backend code remain
-unchanged; X5 perspective texture W is now the next Phase 2 task.
+unchanged.
+
+Phase 2 X5 is complete as of 2026-07-18. The immediate-mode projection path
+now emits reciprocal homogeneous clip W. Under L10GL's standard perspective
+matrices this is reciprocal positive eye-space depth; orthographic W remains
+1. X3-generated near-plane vertices interpolate clip W before X5 takes its
+reciprocal, avoiding the incorrect interpolation of already-reciprocal values.
+`test-pipeline` verifies exact W at eye depths 2/4/5, MODELVIEW-translated
+depth, constant orthographic W, textured dispatch, and near-plane
+intersections. The raw screen-space API, the existing demos' explicit W
+values, and all backend code are unchanged. X6 demo ports are now the next
+Phase 2 task.
 
 ## Push workflow (non-negotiable — David has corrected agents on this repeatedly)
 
