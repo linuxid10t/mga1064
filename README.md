@@ -22,13 +22,12 @@ of VRAM. The following paths are verified on silicon:
 - native RGB555 scanout takeover when no fbdev driver owns the card
 - double-buffered, vsync-synchronized page flips
 
-The former screen-space `cube` and `textured_cube` implementations were
-verified correct and tear-free on that machine. Their X6 model-space pipeline
-ports produce byte-identical first frames under swrast and await ViRGE
-reconfirmation. The Matrox MGA-1064SG backend builds and remains structurally
-supported, but has not yet been validated on hardware. The software backend
-provides deterministic offscreen rendering and pixel-level tests on machines
-without either card.
+The X6 model-space `cube` and `textured_cube` ports render correctly and
+tear-free on that machine, and produce byte-identical first frames to their
+former screen-space implementations under swrast. The Matrox MGA-1064SG
+backend builds and remains structurally supported, but has not yet been
+validated on hardware. The software backend provides deterministic offscreen
+rendering and pixel-level tests on machines without either card.
 
 The frontend now also has OpenGL-convention MODELVIEW and PROJECTION matrix
 stacks plus an immediate-mode model-space geometry path. It captures current

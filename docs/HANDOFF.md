@@ -140,7 +140,7 @@ depth, constant orthographic W, textured dispatch, and near-plane
 intersections. The raw screen-space API and all backend code remain unchanged;
 X6 now uses this generated W in `textured_cube`.
 
-Phase 2 X6 is implemented as of 2026-07-18 and awaits ViRGE confirmation.
+Phase 2 X6 is complete and ViRGE-verified as of 2026-07-18.
 `cube` (`0886adf`) now uses matrix state, model-space immediate triangles,
 pipeline culling, and X4 material lighting. `textured_cube` (`15e337d`) uses
 the same matrix/immediate path and receives all perspective texture W from X5.
@@ -150,6 +150,9 @@ preserves the old diffuse intensities. Both first-frame 640x480 RGB565 swrast
 dumps are byte-identical to their pre-port baselines, and eight-frame ASan/
 UBSan runs pass. `rawtri` (`8cb2e13`) preserves the direct screen-space
 bring-up path, with `triangle` retained as a compatibility executable.
+David ran the hardware acceptance set and reported that it looks good: the
+pipeline `cube`, `textured_cube`, and raw `rawtri` paths all render correctly
+on the real ViRGE/DX. Phase 2 is closed.
 
 Hardware acceptance:
 

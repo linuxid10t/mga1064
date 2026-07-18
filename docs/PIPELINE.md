@@ -167,8 +167,8 @@ faces under the OpenGL eye convention.
 At 640x480 RGB565, each port's first swrast PPM is byte-identical to its legacy
 screen-space baseline. `rawtri` preserves the direct screen-space Gouraud
 triangle path for backend bring-up, and `triangle` remains a compatibility
-executable built from that source. ViRGE confirmation of the new demo paths is
-pending.
+executable built from that source. David confirmed all three paths look correct
+on the real ViRGE/DX on 2026-07-18.
 
 ## Validation
 

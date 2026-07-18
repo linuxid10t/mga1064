@@ -556,8 +556,7 @@ other vintage cards).
 
 ## Phase 2 — Frontend geometry pipeline
 
-**Status (2026-07-18): X1 through X5 complete; X6 is implemented and passes
-swrast equivalence, with ViRGE confirmation pending.** Matrix
+**Status (2026-07-18): Phase 2 complete; X1 through X6 are verified.** Matrix
 stacks and viewport math live in `src/l10gl_xform.c`; current-attribute
 capture, model-space transformation, streaming primitive assembly,
 eye-space directional lighting, homogeneous near clipping, texture dispatch,
@@ -665,7 +664,7 @@ of the demo's hand-rolled ones.
 
 ### X6. Port the demos
 
-**Implemented 2026-07-18; ViRGE confirmation pending.** `cube` now describes
+**Complete and ViRGE-verified 2026-07-18.** `cube` now describes
 only its mesh, materials, light, camera, and animation while X1-X4 perform all
 transform, culling, clipping, and lighting work. `textured_cube` likewise uses
 immediate-mode model-space vertices and UVs, with X5 generating the reciprocal
@@ -675,7 +674,8 @@ geometry. Both demos' first 640x480 RGB565 swrast PPMs are byte-for-byte
 identical to their pre-port baselines, and both pass eight-frame ASan/UBSan
 smoke runs. Together the source files shrink by 160 lines. `rawtri` is now the
 canonical unchanged screen-space hardware bring-up demo; `triangle` remains a
-compatibility build of the same source.
+compatibility build of the same source. David confirmed the pipeline `cube`,
+`textured_cube`, and `rawtri` outputs look correct on the real ViRGE/DX.
 
 Rewrite `demos/cube.c` and `demos/textured_cube.c` on the pipeline
 (begin/end, matrices, one directional light). Demos shrink dramatically;
