@@ -25,6 +25,7 @@
 #include <stdint.h>
 #include <linux/fb.h>
 
+#include "../../pci_scan.h"
 #include "virge.h"
 
 /* ========================================================================
@@ -535,110 +536,6 @@ static void virge_scanout_takeover(struct virge_ctx *ctx)
 }
 
 /* ========================================================================
- * PCI Discovery — find the S3 ViRGE via /sys/bus/pci/devices
- *
- * Same approach as the MGA-1064 driver: enumerate /sys/bus/pci/devices/,
- * read vendor/device hex files, parse BDF, read BARs from resource file.
- * ======================================================================== */
-
-struct pci_bdf {
-    int domain;
-    int bus;
-    int dev;
-    int func;
-    uint32_t bar[6];
-    uint32_t bar_size[6];
-    int irq;
-    uint16_t device_id;
-};
-
-static int pci_read_hex(const char *path)
-{
-    FILE *f = fopen(path, "r");
-    if (!f)
-        return -1;
-    unsigned int val = 0;
-    if (fscanf(f, "%x", &val) != 1) {
-        fclose(f);
-        return -1;
-    }
-    fclose(f);
-    return (int)val;
-}
-
-static int pci_find_device(struct pci_bdf *dev, uint16_t vendor,
-                            const uint16_t *devices, int num_devices)
-{
-    FILE *f = popen("ls /sys/bus/pci/devices/", "r");
-    if (!f)
-        return -errno;
-
-    char line[256];
-    int found = 0;
-    while (fgets(line, sizeof(line), f)) {
-        char *nl = strchr(line, '\n');
-        if (nl) *nl = '\0';
-
-        char path[512];
-
-        snprintf(path, sizeof(path),
-                 "/sys/bus/pci/devices/%s/vendor", line);
-        if (pci_read_hex(path) != vendor)
-            continue;
-
-        snprintf(path, sizeof(path),
-                 "/sys/bus/pci/devices/%s/device", line);
-        int dev_id = pci_read_hex(path);
-        int matched = 0;
-        for (int k = 0; k < num_devices; k++) {
-            if (dev_id == devices[k]) {
-                matched = 1;
-                break;
-            }
-        }
-        if (!matched)
-            continue;
-
-        /* Found it — parse BDF */
-        unsigned int domain, bus, devnum, func;
-        if (sscanf(line, "%x:%x:%x.%x", &domain, &bus, &devnum, &func) != 4)
-            continue;
-
-        dev->domain = domain;
-        dev->bus = bus;
-        dev->dev = devnum;
-        dev->func = func;
-        dev->device_id = (uint16_t)dev_id;
-
-        /* Read all BARs from the resource file */
-        snprintf(path, sizeof(path),
-                 "/sys/bus/pci/devices/%s/resource", line);
-        FILE *rf = fopen(path, "r");
-        if (rf) {
-            for (int j = 0; j < 6; j++) {
-                unsigned long start, end, flags;
-                if (fscanf(rf, "%lx %lx %lx", &start, &end, &flags) == 3 &&
-                    end > start) {
-                    dev->bar[j] = (uint32_t)start;
-                    dev->bar_size[j] = (uint32_t)(end - start + 1);
-                }
-            }
-            fclose(rf);
-        }
-
-        snprintf(path, sizeof(path),
-                 "/sys/bus/pci/devices/%s/irq", line);
-        dev->irq = pci_read_hex(path);
-
-        found = 1;
-        break;
-    }
-
-    pclose(f);
-    return found ? 0 : -ENODEV;
-}
-
-/* ========================================================================
  * Memory Mapping
  * ======================================================================== */
 
@@ -649,7 +546,7 @@ static int pci_find_device(struct pci_bdf *dev, uint16_t vendor,
  * linear framebuffer (first 4MB) and the MMIO registers (at 0x1000000).
  * Mapping the full 64MB is simplest.
  */
-static void *map_bar0(struct pci_bdf *dev, size_t *size_out)
+static void *map_bar0(struct l10gl_pci_device *dev, size_t *size_out)
 {
     char path[256];
     snprintf(path, sizeof(path),
@@ -1860,10 +1757,10 @@ int virge_init(struct virge_ctx *ctx, int width, int height, int bpp)
            ctx->stride, (unsigned)((uint32_t)width * bpp));
 
     /* Find the S3 ViRGE on the PCI bus */
-    struct pci_bdf pci = {0};
+    struct l10gl_pci_device pci = {0};
     static const uint16_t virge_devices[] = S3_PCI_DEVICE_VIRGE_ALL;
-    int ret = pci_find_device(&pci, S3_PCI_VENDOR_ID, virge_devices,
-                              sizeof(virge_devices) / sizeof(virge_devices[0]));
+    int ret = l10gl_pci_find(&pci, S3_PCI_VENDOR_ID, virge_devices,
+                             sizeof(virge_devices) / sizeof(virge_devices[0]));
     if (ret < 0) {
         fprintf(stderr, "S3 ViRGE: PCI device not found\n");
         return ret;

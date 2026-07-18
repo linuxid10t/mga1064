@@ -24,7 +24,7 @@ BACKEND_SRCS = src/backends/$(BACKEND)/$(BACKEND).c \
                src/backends/$(BACKEND)/l10gl_$(BACKEND).c
 
 # Core sources (frontend + selected backend)
-CORE_SRCS = src/l10gl.c $(BACKEND_SRCS)
+CORE_SRCS = src/l10gl.c src/pci_scan.c $(BACKEND_SRCS)
 
 # Backend selection define for demos
 ifeq ($(BACKEND),virge)
@@ -76,56 +76,56 @@ fbtest: demos/fbtest.c
 # Always builds against the virge backend (it is virge-specific), needs no
 # frontend — just the chip driver.
 scantest: demos/scantest.c src/backends/virge/virge.c src/backends/virge/virge.h
-	$(CC) $(CFLAGS) -o $@ demos/scantest.c src/backends/virge/virge.c $(LDFLAGS)
+	$(CC) $(CFLAGS) -o $@ demos/scantest.c src/backends/virge/virge.c src/pci_scan.c $(LDFLAGS)
 
 # Diagnostic: 2D engine fill readback test (symptom 2). Virge-specific,
 # links only the chip driver (no frontend); CPU-reads VRAM after fills.
 filltest: demos/filltest.c src/backends/virge/virge.c src/backends/virge/virge.h
-	$(CC) $(CFLAGS) -o $@ demos/filltest.c src/backends/virge/virge.c $(LDFLAGS)
+	$(CC) $(CFLAGS) -o $@ demos/filltest.c src/backends/virge/virge.c src/pci_scan.c $(LDFLAGS)
 
 # Diagnostic: 3D triangle readback test (symptom 2, 3D cutoff). Virge-specific,
 # links only the chip driver (no frontend); CPU-reads VRAM after a 3D draw.
 tritest: demos/tritest.c src/backends/virge/virge.c src/backends/virge/virge.h
-	$(CC) $(CFLAGS) -o $@ demos/tritest.c src/backends/virge/virge.c $(LDFLAGS)
+	$(CC) $(CFLAGS) -o $@ demos/tritest.c src/backends/virge/virge.c src/pci_scan.c $(LDFLAGS)
 
 # Diagnostic: 3D triangle readback through the DEMO engine sequence (symptom 2,
 # 3D cutoff). Reproduces clear_z->draw (tritest) vs clear_z->fill->draw (demo)
 # and tests sleep / FIFO-wait / re-arm interventions. Virge-specific, links
 # only the chip driver (no frontend); CPU-reads VRAM after each draw.
 gltritest: demos/gltritest.c src/backends/virge/virge.c src/backends/virge/virge.h
-	$(CC) $(CFLAGS) -o $@ demos/gltritest.c src/backends/virge/virge.c $(LDFLAGS)
+	$(CC) $(CFLAGS) -o $@ demos/gltritest.c src/backends/virge/virge.c src/pci_scan.c $(LDFLAGS)
 
 # Diagnostic: CRTC page-flip probe (double-buffering groundwork). CPU-draws
 # two patterns and cycles the display-start address through candidate byte
 # divisors to settle the register unit on silicon, plus reports a working
 # vsync detector. Virge-specific, links only the chip driver (no frontend).
 fliptest: demos/fliptest.c src/backends/virge/virge.c src/backends/virge/virge.h
-	$(CC) $(CFLAGS) -o $@ demos/fliptest.c src/backends/virge/virge.c $(LDFLAGS)
+	$(CC) $(CFLAGS) -o $@ demos/fliptest.c src/backends/virge/virge.c src/pci_scan.c $(LDFLAGS)
 
 # Diagnostic: measure the 3D engine's per-pixel X Z-gradient (TdZdX) on silicon
 # (back-face bleedthrough). Draws a z=f(X) ramp triangle, Z-update ON, and
 # CPU-reads the Z buffer to compute the rendered slope vs intended. Virge-
 # specific, links only the chip driver (no frontend).
 dztest: demos/dztest.c src/backends/virge/virge.c src/backends/virge/virge.h
-	$(CC) $(CFLAGS) -o $@ demos/dztest.c src/backends/virge/virge.c $(LDFLAGS)
+	$(CC) $(CFLAGS) -o $@ demos/dztest.c src/backends/virge/virge.c src/pci_scan.c $(LDFLAGS)
 
 # Diagnostic: measure the S3d triangle span-END fill rule (inclusive vs
 # exclusive, ceil vs floor, both L/R directions) -- settles whether shared
 # edges double-draw, the cause of the cube's bleedthrough band.
 seamtest: demos/seamtest.c src/backends/virge/virge.c src/backends/virge/virge.h
-	$(CC) $(CFLAGS) -o $@ demos/seamtest.c src/backends/virge/virge.c $(LDFLAGS)
+	$(CC) $(CFLAGS) -o $@ demos/seamtest.c src/backends/virge/virge.c src/pci_scan.c $(LDFLAGS)
 
 # Diagnostic: render the cube to VRAM and CPU-read it back (bypassing the
 # monitor) to test whether the bleedthrough is in the framebuffer or monitor-side.
 cubefb: demos/cubefb.c src/backends/virge/virge.c src/backends/virge/virge.h
-	$(CC) $(CFLAGS) -o $@ demos/cubefb.c src/backends/virge/virge.c $(LDFLAGS)
+	$(CC) $(CFLAGS) -o $@ demos/cubefb.c src/backends/virge/virge.c src/pci_scan.c $(LDFLAGS)
 
 # Diagnostic: reproduce the cube's Left-face shared-diagonal notch in
 # isolation (A-alone / B-alone / both Z=LESS x2 orders / both Z=ALWAYS) to
 # split coverage-regime vs Z/draw-order. Virge-specific, links only the
 # chip driver (no frontend); CPU-reads VRAM after each pass.
 diagap: demos/diagap.c src/backends/virge/virge.c src/backends/virge/virge.h
-	$(CC) $(CFLAGS) -o $@ demos/diagap.c src/backends/virge/virge.c $(LDFLAGS)
+	$(CC) $(CFLAGS) -o $@ demos/diagap.c src/backends/virge/virge.c src/pci_scan.c $(LDFLAGS)
 
 clean:
 	rm -f $(DEMOS) $(TESTS) *.o src/*.o src/backends/*/*.o

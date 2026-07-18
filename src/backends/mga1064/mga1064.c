@@ -21,101 +21,15 @@
 #include <stdint.h>
 #include <linux/fb.h>
 
+#include "../../pci_scan.h"
 #include "mga1064.h"
-
-/* ========================================================================
- * PCI Discovery — find the MGA-1064SG via /sys/bus/pci/devices
- * ========================================================================
- */
-
-struct pci_bdf {
-    int domain;
-    int bus;
-    int dev;
-    int func;
-    uint32_t bar[6];
-    int irq;
-};
-
-static int pci_read_hex(const char *path)
-{
-    FILE *f = fopen(path, "r");
-    if (!f)
-        return -1;
-    unsigned int val = 0;
-    if (fscanf(f, "%x", &val) != 1) {
-        fclose(f);
-        return -1;
-    }
-    fclose(f);
-    return (int)val;
-}
-
-static int pci_find_device(struct pci_bdf *dev, uint16_t vendor, uint16_t device)
-{
-    FILE *f = popen("ls /sys/bus/pci/devices/", "r");
-    if (!f)
-        return -errno;
-
-    char line[256];
-    int found = 0;
-    while (fgets(line, sizeof(line), f)) {
-        char *nl = strchr(line, '\n');
-        if (nl) *nl = '\0';
-
-        char path[512];
-
-        snprintf(path, sizeof(path),
-                 "/sys/bus/pci/devices/%s/vendor", line);
-        if (pci_read_hex(path) != vendor)
-            continue;
-
-        snprintf(path, sizeof(path),
-                 "/sys/bus/pci/devices/%s/device", line);
-        if (pci_read_hex(path) != device)
-            continue;
-
-        /* Found it — parse BDF */
-        unsigned int domain, bus, devnum, func;
-        if (sscanf(line, "%x:%x:%x.%x", &domain, &bus, &devnum, &func) != 4)
-            continue;
-
-        dev->domain = domain;
-        dev->bus = bus;
-        dev->dev = devnum;
-        dev->func = func;
-
-        /* Read all BARs from the resource file */
-        snprintf(path, sizeof(path),
-                 "/sys/bus/pci/devices/%s/resource", line);
-        FILE *rf = fopen(path, "r");
-        if (rf) {
-            for (int j = 0; j < 6; j++) {
-                unsigned long start, end, flags;
-                if (fscanf(rf, "%lx %lx %lx", &start, &end, &flags) == 3)
-                    dev->bar[j] = (uint32_t)start;
-            }
-            fclose(rf);
-        }
-
-        snprintf(path, sizeof(path),
-                 "/sys/bus/pci/devices/%s/irq", line);
-        dev->irq = pci_read_hex(path);
-
-        found = 1;
-        break;
-    }
-
-    pclose(f);
-    return found ? 0 : -ENODEV;
-}
 
 /* ========================================================================
  * Memory Mapping
  * ========================================================================
  */
 
-static void *map_mmio(struct pci_bdf *dev, size_t *size_out)
+static void *map_mmio(struct l10gl_pci_device *dev, size_t *size_out)
 {
     char path[256];
     snprintf(path, sizeof(path),
@@ -545,15 +459,14 @@ int mga1064_init(struct mga1064_ctx *ctx, int width, int height, int bpp)
      *   0x051E - Mystique AGP
      *   0x0100 - Mystique (alternate ID on some boards)
      */
-    struct pci_bdf pci;
-    int ret = pci_find_device(&pci, MGA_PCI_VENDOR_ID,
-                              MGA_PCI_DEVICE_1064SG_PCI);
-    if (ret < 0)
-        ret = pci_find_device(&pci, MGA_PCI_VENDOR_ID,
-                              MGA_PCI_DEVICE_1064SG_AGP);
-    if (ret < 0)
-        ret = pci_find_device(&pci, MGA_PCI_VENDOR_ID,
-                              MGA_PCI_DEVICE_1064SG_ALT);
+    static const uint16_t mga_devices[] = {
+        MGA_PCI_DEVICE_1064SG_PCI,
+        MGA_PCI_DEVICE_1064SG_AGP,
+        MGA_PCI_DEVICE_1064SG_ALT,
+    };
+    struct l10gl_pci_device pci;
+    int ret = l10gl_pci_find(&pci, MGA_PCI_VENDOR_ID, mga_devices,
+                             sizeof(mga_devices) / sizeof(mga_devices[0]));
     if (ret < 0) {
         fprintf(stderr, "MGA-1064SG: PCI device not found\n");
         return ret;
