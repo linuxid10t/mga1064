@@ -8,6 +8,7 @@ textured_cube
 *.bin
 mga1064_datasheet.txt
 triangle
+rawtri
 cubediag
 cubefb
 dztest

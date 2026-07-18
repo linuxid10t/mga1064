@@ -22,7 +22,7 @@ LIB_SRCS = \
 	src/backends/mga1064/l10gl_mga1064.c
 LIB_OBJS = $(LIB_SRCS:.c=.o)
 
-FRONTEND_DEMOS = cube textured_cube triangle cubediag
+FRONTEND_DEMOS = cube textured_cube rawtri triangle cubediag
 DEMOS = $(FRONTEND_DEMOS) fbtest
 
 # All diagnostics except fbtest are ViRGE-specific. They still link against
