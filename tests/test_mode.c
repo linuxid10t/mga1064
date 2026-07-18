@@ -106,6 +106,38 @@ static void test_mode_publication(void)
     EXPECT(ctx.pixel_format.green.length == 6, "linear default format");
 }
 
+static void test_pan_pages(void)
+{
+    struct l10gl_fbdev_mode mode;
+    uint32_t front = UINT32_MAX;
+    uint32_t back = UINT32_MAX;
+
+    memset(&mode, 0, sizeof(mode));
+    mode.var.xres = mode.var.xres_virtual = 800;
+    mode.var.yres = 600;
+    mode.var.yres_virtual = 1200;
+    mode.var.bits_per_pixel = 32;
+    mode.fix.line_length = 3200;
+    mode.fix.smem_len = 3200 * 1200;
+    EXPECT(l10gl_fbdev_find_pan_pages(&mode, &front, &back) &&
+           front == 0 && back == 600,
+           "find second vertical fbdev page");
+
+    mode.var.yoffset = 600;
+    EXPECT(l10gl_fbdev_find_pan_pages(&mode, &front, &back) &&
+           front == 600 && back == 0,
+           "find first page behind nonzero scanout");
+
+    mode.var.yoffset = 0;
+    mode.fix.smem_len = 3200 * 600;
+    EXPECT(!l10gl_fbdev_find_pan_pages(&mode, &front, &back),
+           "reject virtual page outside mapped memory");
+    mode.fix.smem_len = 3200 * 1200;
+    mode.var.yres_virtual = 600;
+    EXPECT(!l10gl_fbdev_find_pan_pages(&mode, &front, &back),
+           "reject single-height virtual raster");
+}
+
 static int valid_backend_init(struct l10gl_ctx *ctx, int width, int height,
                               int bpp)
 {
@@ -161,9 +193,11 @@ int main(void)
 {
     test_formats_and_matching();
     test_mode_publication();
+    test_pan_pages();
     test_frontend_contract();
     if (failed)
         return 1;
-    printf("test-mode: PASS (formats, matching, actual mode, validation)\n");
+    printf("test-mode: PASS (formats, matching, actual mode, panning, "
+           "validation)\n");
     return 0;
 }

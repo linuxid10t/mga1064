@@ -48,7 +48,11 @@ struct swrast_private {
     void *fb_map;
     size_t fb_map_len;
     int fb_fd;
+    int fb_pan;
     int vsync_state;        /* 0 unknown, 1 supported, -1 unavailable */
+    uint32_t front_yoffset;
+    uint32_t back_yoffset;
+    struct fb_var_screeninfo pan_var;
 
     struct fb_bitfield red;
     struct fb_bitfield green;
@@ -599,13 +603,43 @@ static int init_offscreen(struct l10gl_ctx *ctx, struct swrast_private *priv,
     return 0;
 }
 
+static int prepare_fbdev_pan(struct swrast_private *priv,
+                             struct l10gl_fbdev_mode *mode,
+                             uint32_t *front_yoffset,
+                             uint32_t *back_yoffset)
+{
+    struct fb_var_screeninfo requested;
+    uint64_t virtual_height;
+    int ret;
+
+    if (l10gl_fbdev_find_pan_pages(mode, front_yoffset, back_yoffset))
+        return 1;
+
+    virtual_height = (uint64_t)mode->var.yres * 2u;
+    if (virtual_height > UINT32_MAX)
+        return 0;
+    requested = mode->var;
+    requested.yres_virtual = (uint32_t)virtual_height;
+    requested.yoffset = 0;
+    requested.activate = FB_ACTIVATE_NOW;
+    if (ioctl(priv->fb_fd, FBIOPUT_VSCREENINFO, &requested) < 0)
+        return 0;
+
+    ret = l10gl_fbdev_read_mode(priv->fb_fd, "swrast", mode);
+    if (ret)
+        return ret;
+    return l10gl_fbdev_find_pan_pages(mode, front_yoffset, back_yoffset);
+}
+
 static int init_fbdev(struct l10gl_ctx *ctx, struct swrast_private *priv,
                       const char *path, int width, int height, int bpp)
 {
     struct l10gl_fbdev_mode mode;
     const struct fb_fix_screeninfo *fix = &mode.fix;
     const struct fb_var_screeninfo *var = &mode.var;
-    size_t offset;
+    uint32_t front_yoffset = 0, back_yoffset = 0;
+    size_t front_offset, back_offset = 0;
+    int pan;
     int ret;
 
     priv->fb_fd = open(path, O_RDWR);
@@ -622,6 +656,16 @@ static int init_fbdev(struct l10gl_ctx *ctx, struct swrast_private *priv,
         return -ENOTSUP;
     }
 
+    pan = prepare_fbdev_pan(priv, &mode, &front_yoffset, &back_yoffset);
+    if (pan < 0)
+        return pan;
+    if (var->bits_per_pixel != 16 && var->bits_per_pixel != 24 &&
+        var->bits_per_pixel != 32) {
+        fprintf(stderr, "swrast: fbdev virtual-page request changed to an "
+                        "unsupported %ubpp mode\n", var->bits_per_pixel);
+        return -ENOTSUP;
+    }
+
     priv->fb_map_len = fix->smem_len;
     priv->fb_map = mmap(NULL, priv->fb_map_len, PROT_READ | PROT_WRITE,
                         MAP_SHARED, priv->fb_fd, 0);
@@ -629,15 +673,23 @@ static int init_fbdev(struct l10gl_ctx *ctx, struct swrast_private *priv,
         priv->fb_map = NULL;
         return -errno;
     }
-    offset = (size_t)var->yoffset * fix->line_length
-           + (size_t)var->xoffset * ((var->bits_per_pixel + 7u) / 8u);
-    if (offset >= priv->fb_map_len ||
-        (size_t)var->yres > (priv->fb_map_len - offset) / fix->line_length) {
+    front_offset = (size_t)front_yoffset * fix->line_length
+                 + (size_t)var->xoffset
+                 * ((var->bits_per_pixel + 7u) / 8u);
+    if (pan)
+        back_offset = (size_t)back_yoffset * fix->line_length
+                    + (size_t)var->xoffset
+                    * ((var->bits_per_pixel + 7u) / 8u);
+    if (front_offset >= priv->fb_map_len ||
+        (size_t)var->yres >
+            (priv->fb_map_len - front_offset) / fix->line_length ||
+        (pan && (back_offset >= priv->fb_map_len ||
+         (size_t)var->yres >
+            (priv->fb_map_len - back_offset) / fix->line_length))) {
         fprintf(stderr, "swrast: visible fbdev raster exceeds its mapping\n");
         return -EOVERFLOW;
     }
 
-    priv->color = (uint8_t *)priv->fb_map + offset;
     priv->stride = fix->line_length;
     priv->red = var->red;
     priv->green = var->green;
@@ -645,15 +697,23 @@ static int init_fbdev(struct l10gl_ctx *ctx, struct swrast_private *priv,
     priv->transp = var->transp;
     l10gl_mode_from_fbdev(ctx, &mode);
     priv->color_size = priv->stride * (size_t)ctx->height;
-    priv->front = priv->color;
-    priv->owned_color[0] = malloc(priv->color_size);
-    if (!priv->owned_color[0])
-        return -ENOMEM;
-    memcpy(priv->owned_color[0], priv->front, priv->color_size);
-    priv->color = priv->owned_color[0];
-    printf("swrast: using %s current mode %dx%d %dbpp, stride %zu "
-           "(private back buffer)\n",
-           path, ctx->width, ctx->height, ctx->bpp * 8, priv->stride);
+    priv->front = (uint8_t *)priv->fb_map + front_offset;
+    if (pan) {
+        priv->color = (uint8_t *)priv->fb_map + back_offset;
+        priv->fb_pan = 1;
+        priv->front_yoffset = front_yoffset;
+        priv->back_yoffset = back_yoffset;
+        priv->pan_var = *var;
+        printf("swrast: using %s current mode %dx%d %dbpp, stride %zu "
+               "(fbdev page flip y=%u/%u)\n",
+               path, ctx->width, ctx->height, ctx->bpp * 8, priv->stride,
+               front_yoffset, back_yoffset);
+    } else {
+        priv->color = priv->front;
+        printf("swrast: using %s current mode %dx%d %dbpp, stride %zu "
+               "(direct single buffer; fbdev panning unavailable)\n",
+               path, ctx->width, ctx->height, ctx->bpp * 8, priv->stride);
+    }
     return 0;
 }
 
@@ -941,14 +1001,27 @@ static void swrast_swap_buffers(struct l10gl_ctx *ctx)
     struct swrast_private *priv = SWRAST_PRIV(ctx);
     const uint8_t *completed = priv->color;
 
-    if (priv->fb_map) {
-        size_t row_bytes = (size_t)ctx->width * (size_t)ctx->bpp;
+    if (priv->fb_pan) {
+        struct fb_var_screeninfo pan = priv->pan_var;
+        uint8_t *old_front = priv->front;
+        uint32_t old_front_yoffset = priv->front_yoffset;
 
-        swrast_wait(ctx);
-        for (int y = 0; y < ctx->height; y++)
-            memcpy(priv->front + (size_t)y * priv->stride,
-                   completed + (size_t)y * priv->stride, row_bytes);
-    } else {
+        pan.yoffset = priv->back_yoffset;
+        pan.activate = FB_ACTIVATE_VBL;
+        if (ioctl(priv->fb_fd, FBIOPAN_DISPLAY, &pan) == 0) {
+            priv->front = priv->color;
+            priv->color = old_front;
+            priv->front_yoffset = priv->back_yoffset;
+            priv->back_yoffset = old_front_yoffset;
+            priv->pan_var.yoffset = priv->front_yoffset;
+        } else {
+            fprintf(stderr, "swrast: FBIOPAN_DISPLAY failed: %s; "
+                            "falling back to direct single buffering\n",
+                    strerror(errno));
+            priv->fb_pan = 0;
+            priv->color = priv->front;
+        }
+    } else if (!priv->fb_map) {
         priv->front = priv->color;
         priv->color = priv->color == priv->owned_color[0]
                     ? priv->owned_color[1] : priv->owned_color[0];

@@ -82,13 +82,22 @@ P2 correctly inactive, restored native scanout, then rebound the framebuffer
 driver and fbcon. No regressions were observed.
 
 **Phase 3 P5 implemented 2026-07-18; swrast fbdev and MGA hardware sign-off
-pending.** swrast no longer draws directly into mapped scanout. Its
-fbdev path renders into a private stride-matched back buffer, optionally waits
-for `FBIO_WAITFORVSYNC`, and copies only completed visible rows during
-`l10gl_swap_buffers`. Offscreen mode rotates two owned color buffers, and PPM
+pending.** swrast offscreen mode rotates two owned color buffers, and PPM
 dumps explicitly read the just-completed buffer. `test-swrast` verifies that
 presentation does not occur before swap and that successive red/green frames
 remain distinct.
+
+The first fbdev implementation rendered privately and copied completed rows
+into the visible mapping. David's hardware run showed the same horizontal black
+bands as the earlier broken live path: scanout can observe a CPU copy in
+progress, so this is not true double buffering. The corrected implementation
+requests `yres_virtual = 2 * yres` and uses `FBIOPAN_DISPLAY` with
+`FB_ACTIVATE_VBL` only when a second non-overlapping page lies inside both
+`yres_virtual` and `smem_len`. Fixed drivers such as the target's
+`simple-framebuffer` fall back to the previously clean direct single-buffer
+path. `test-mode` covers page selection, a nonzero current page, insufficient
+mapped memory, and a single-height virtual raster. Hardware confirmation of
+the corrected fallback is pending.
 
 The MGA-1064 driver now reads the live 20-bit CRTC start, plans non-overlapping
 front/back/Z regions using `line_length * height`, and enables flipping only

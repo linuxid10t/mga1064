@@ -26,6 +26,12 @@ int l10gl_fbdev_mode_matches(const struct l10gl_fbdev_mode *mode,
                              int width, int height, int bits_per_pixel,
                              const struct l10gl_pixel_format *required_format);
 
+/* Find a second non-overlapping, fully mapped vertical page for fbdev
+ * panning. Returns one when both offsets are usable, zero otherwise. */
+int l10gl_fbdev_find_pan_pages(const struct l10gl_fbdev_mode *mode,
+                               uint32_t *front_yoffset,
+                               uint32_t *back_yoffset);
+
 /* Publish authoritative mode facts in the frontend context. */
 void l10gl_mode_from_fbdev(struct l10gl_ctx *ctx,
                            const struct l10gl_fbdev_mode *mode);

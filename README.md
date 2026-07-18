@@ -30,8 +30,9 @@ backend now includes VRAM-capacity-aware, vsync-synchronized page flipping and
 clean scanout/console restoration, but has not yet been validated on hardware.
 The software backend provides deterministic,
 double-buffered offscreen rendering and pixel-level tests on machines without
-either card. Its fbdev path renders privately and publishes completed frames
-only from `l10gl_swap_buffers`, using the fbdev vsync ioctl when available.
+either card. Its fbdev path performs real vblank-activated page flips when the
+driver exposes two mapped virtual pages, and otherwise uses direct
+single-buffered rendering rather than a visibly torn CPU copy.
 
 P2 console ownership is also verified on the target system: direct swrast
 through the 800x600x32 `simple-framebuffer` moved VT1 to `KD_GRAPHICS`, kept the
@@ -51,7 +52,7 @@ unchanged.
 |---|---|---|
 | `virge` | S3 ViRGE family | Primary; ViRGE/DX verified on silicon |
 | `mga1064` | Matrox Mystique/MGA-1064SG | Double-buffering complete; hardware-unverified |
-| `swrast` | No graphics hardware required | Double-buffered reference; offscreen verified, fbdev sign-off pending |
+| `swrast` | No graphics hardware required | Double-buffered offscreen; fbdev pan or direct fallback |
 
 The detailed hardware history and test evidence live in
 [`docs/HANDOFF.md`](docs/HANDOFF.md). The implementation roadmap is

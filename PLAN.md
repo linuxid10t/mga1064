@@ -808,13 +808,16 @@ existing `virge_wait_vsync`.
 **Implemented 2026-07-18; swrast fbdev and MGA hardware sign-off pending.**
 Offscreen swrast
 now rotates two private color buffers, and PPM output reads the completed
-buffer only after `l10gl_swap_buffers`. The fbdev path also renders into a
-private back buffer instead of the mapped scanout, waits through
-`FBIO_WAITFORVSYNC` when supported, then publishes the completed rows to the
-visible raster. Unsupported vsync ioctls fall back once without affecting
-rendering. `test-swrast` proves that no frame is dumped before swap and that
-two consecutive swaps preserve distinct completed frames. The direct fbdev
-copy path still needs a target-system visual check.
+buffer only after `l10gl_swap_buffers`. The fbdev path requests a second
+virtual page and uses `FBIOPAN_DISPLAY` with `FB_ACTIVATE_VBL` when the driver
+and mapped VRAM support it. Otherwise it remains direct single-buffered; a CPU
+copy is not a page flip and lets scanout observe horizontal bands while the
+copy is in progress. David observed exactly that regression on the fixed
+`simple-framebuffer`, so the CPU-copy path was removed. `test-swrast` proves
+that no offscreen frame is dumped before swap and that consecutive swaps
+preserve distinct completed frames; `test-mode` checks virtual-page selection
+and rejects pages beyond `smem_len`. The corrected simple-framebuffer fallback
+still needs hardware confirmation.
 
 MGA-1064 now plans front/back/Z surfaces around the live CRTC scanout without
 overlap, uses the real padded stride for each allocation, and falls back to a

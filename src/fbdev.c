@@ -92,6 +92,44 @@ int l10gl_fbdev_mode_matches(const struct l10gl_fbdev_mode *mode,
            channel_matches(var->transp, required_format->alpha);
 }
 
+int l10gl_fbdev_find_pan_pages(const struct l10gl_fbdev_mode *mode,
+                               uint32_t *front_yoffset,
+                               uint32_t *back_yoffset)
+{
+    const struct fb_var_screeninfo *var;
+    const struct fb_fix_screeninfo *fix;
+    uint32_t candidates[2];
+    uint64_t visible_end;
+    uint64_t x_bytes;
+
+    if (!mode || !front_yoffset || !back_yoffset)
+        return 0;
+    var = &mode->var;
+    fix = &mode->fix;
+    candidates[0] = 0;
+    candidates[1] = var->yres;
+    visible_end = (uint64_t)var->yoffset + var->yres;
+    x_bytes = (uint64_t)var->xoffset
+            * ((var->bits_per_pixel + 7u) / 8u);
+
+    if (!var->yres || !fix->line_length || visible_end > var->yres_virtual)
+        return 0;
+    for (size_t i = 0; i < 2; i++) {
+        uint64_t candidate_end = (uint64_t)candidates[i] + var->yres;
+        uint64_t candidate_bytes = candidate_end * fix->line_length + x_bytes;
+
+        if (candidate_end <= var->yres_virtual &&
+            candidate_bytes <= fix->smem_len &&
+            (candidate_end <= var->yoffset ||
+             candidates[i] >= visible_end)) {
+            *front_yoffset = var->yoffset;
+            *back_yoffset = candidates[i];
+            return 1;
+        }
+    }
+    return 0;
+}
+
 static int validate_mode(const char *name, const struct l10gl_fbdev_mode *mode)
 {
     const struct fb_fix_screeninfo *fix = &mode->fix;
