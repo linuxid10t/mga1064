@@ -341,6 +341,123 @@ static void test_culling_and_clip_rejection(struct l10gl_ctx *ctx)
     expect_int("valid triangle after rejection", capture.triangle_count, 1);
 }
 
+static void test_near_plane_clipping(struct l10gl_ctx *ctx)
+{
+    const struct captured_triangle *first;
+
+    l10gl_matrix_mode(ctx, L10GL_MATRIX_MODELVIEW);
+    l10gl_load_identity(ctx);
+    l10gl_matrix_mode(ctx, L10GL_MATRIX_PROJECTION);
+    l10gl_load_identity(ctx);
+    expect_int("clipping perspective setup",
+               l10gl_perspective(ctx, 90, 1, 1, 10), 0);
+    l10gl_viewport(ctx, 0, 0, 100, 80);
+    l10gl_depth_range(ctx, 0, 1);
+    l10gl_cull_face(ctx, L10GL_CULL_BACK);
+
+    /* One vertex is between the eye and near plane. The clipped quad is
+     * emitted as two CCW triangles. Perspective makes clip W vary, so the
+     * expected intersections also verify homogeneous W interpolation. */
+    reset_capture();
+    l10gl_begin(ctx, L10GL_TRIANGLES);
+    submit_colored_vertex(ctx,  0,  .5f, -.5f, .1f);
+    submit_colored_vertex(ctx, -1, -1.0f, -2.0f, .3f);
+    submit_colored_vertex(ctx,  1, -1.0f, -2.0f, .5f);
+    l10gl_end(ctx);
+    expect_int("one-outside clips to two triangles", capture.triangle_count, 2);
+    first = &capture.triangles[0];
+    expect_float("near intersection right X", first->v[0].x, 66.6666667f);
+    expect_float("near intersection right Y", first->v[0].y, 40);
+    expect_float("near intersection left X", first->v[1].x, 33.3333333f);
+    expect_float("near intersection left Y", first->v[1].y, 40);
+    expect_float("near intersection depth 0", first->v[0].z, 0);
+    expect_float("right intersection color", first->v[0].r, .233333333f);
+    expect_float("left intersection color", first->v[1].r, .166666667f);
+    expect_float("right intersection U", first->v[0].u, .273333333f);
+    expect_float("left intersection U", first->v[1].u, .206666667f);
+    expect_float("quad fan shared vertex X",
+                 capture.triangles[1].v[0].x, first->v[0].x);
+    expect_float("quad fan shared source X",
+                 capture.triangles[1].v[1].x, first->v[2].x);
+
+    /* Two outside vertices leave one triangle; three leave none. */
+    reset_capture();
+    l10gl_cull_face(ctx, L10GL_CULL_NONE);
+    l10gl_begin(ctx, L10GL_TRIANGLES);
+    submit_colored_vertex(ctx, 0, -1, -2, .1f);
+    submit_colored_vertex(ctx, -1, 1, -.5f, .3f);
+    submit_colored_vertex(ctx, 1, 1, -.5f, .5f);
+    l10gl_end(ctx);
+    expect_int("two-outside clips to one triangle", capture.triangle_count, 1);
+
+    reset_capture();
+    l10gl_begin(ctx, L10GL_TRIANGLES);
+    l10gl_vertex3f(ctx, -.5f, -.5f, -.5f);
+    l10gl_vertex3f(ctx,  .5f, -.5f, -.5f);
+    l10gl_vertex3f(ctx,  0.0f, .5f, -.5f);
+    l10gl_end(ctx);
+    expect_int("all outside clips to zero triangles", capture.triangle_count, 0);
+
+    /* A vertex exactly on the near plane is inside and remains at depth 0. */
+    reset_capture();
+    l10gl_begin(ctx, L10GL_TRIANGLES);
+    l10gl_vertex3f(ctx, 0, .5f, -1);
+    l10gl_vertex3f(ctx, -1, -1, -2);
+    l10gl_vertex3f(ctx, 1, -1, -2);
+    l10gl_end(ctx);
+    expect_int("near-boundary triangle retained", capture.triangle_count, 1);
+    expect_float("near-boundary depth", capture.triangles[0].v[0].z, 0);
+
+    /* Far clipping is intentionally conservative and line clipping has not
+     * landed: either crossing is rejected whole rather than producing bad Z. */
+    reset_capture();
+    l10gl_begin(ctx, L10GL_TRIANGLES);
+    l10gl_vertex3f(ctx, 0, .5f, -20);
+    l10gl_vertex3f(ctx, -1, -1, -2);
+    l10gl_vertex3f(ctx, 1, -1, -2);
+    l10gl_end(ctx);
+    expect_int("far crossing rejected", capture.triangle_count, 0);
+
+    reset_capture();
+    l10gl_begin(ctx, L10GL_LINES);
+    l10gl_vertex3f(ctx, 0, 0, -.5f);
+    l10gl_vertex3f(ctx, 0, 0, -2);
+    l10gl_end(ctx);
+    expect_int("near-crossing line conservatively rejected", capture.line_count, 0);
+
+    l10gl_matrix_mode(ctx, L10GL_MATRIX_PROJECTION);
+    l10gl_load_identity(ctx);
+}
+
+static void test_triangle_scan_guard(struct l10gl_ctx *ctx)
+{
+    l10gl_matrix_mode(ctx, L10GL_MATRIX_MODELVIEW);
+    l10gl_load_identity(ctx);
+    l10gl_matrix_mode(ctx, L10GL_MATRIX_PROJECTION);
+    l10gl_load_identity(ctx);
+    l10gl_cull_face(ctx, L10GL_CULL_NONE);
+
+    reset_capture();
+    l10gl_viewport(ctx, 0, 0, 100, 2047);
+    l10gl_begin(ctx, L10GL_TRIANGLES);
+    l10gl_vertex3f(ctx, -.5f, -1, 0);
+    l10gl_vertex3f(ctx,  .5f, -1, 0);
+    l10gl_vertex3f(ctx,  0.0f,  1, 0);
+    l10gl_end(ctx);
+    expect_int("2047-line triangle retained", capture.triangle_count, 1);
+
+    reset_capture();
+    l10gl_viewport(ctx, 0, 0, 100, 2048);
+    l10gl_begin(ctx, L10GL_TRIANGLES);
+    l10gl_vertex3f(ctx, -.5f, -1, 0);
+    l10gl_vertex3f(ctx,  .5f, -1, 0);
+    l10gl_vertex3f(ctx,  0.0f,  1, 0);
+    l10gl_end(ctx);
+    expect_int("oversized triangle rejected", capture.triangle_count, 0);
+
+    l10gl_viewport(ctx, 0, 0, 100, 80);
+}
+
 int main(void)
 {
     struct l10gl_ctx ctx;
@@ -358,13 +475,15 @@ int main(void)
     test_strip_and_fan_assembly(&ctx);
     test_line_assembly(&ctx);
     test_culling_and_clip_rejection(&ctx);
+    test_near_plane_clipping(&ctx);
+    test_triangle_scan_guard(&ctx);
     l10gl_destroy(&ctx);
 
     if (failures) {
         fprintf(stderr, "test-pipeline: FAILED (%d checks)\n", failures);
         return 1;
     }
-    printf("test-pipeline: PASS (attributes, transforms, triangles, strips, "
-           "fans, lines, textures, culling, clip rejection)\n");
+    printf("test-pipeline: PASS (attributes, assembly, transforms, culling, "
+           "near clipping, interpolation, scan guard)\n");
     return 0;
 }

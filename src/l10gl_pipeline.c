@@ -19,6 +19,15 @@ struct projected_vertex {
     float ndc_y;
 };
 
+struct clip_vertex {
+    float clip[4];
+    float r, g, b, a;
+    float nx, ny, nz;
+    float u, v;
+};
+
+#define L10GL_MAX_TRIANGLE_SCANLINES 2047.0f
+
 void l10gl_pipeline_init(struct l10gl_ctx *ctx)
 {
     ctx->current_r = 1.0f;
@@ -44,34 +53,126 @@ static int primitive_supported(enum l10gl_primitive primitive)
            primitive == L10GL_LINE_STRIP;
 }
 
-static int project_vertex(const struct l10gl_ctx *ctx,
-                          const struct l10gl_immediate_vertex *input,
-                          struct projected_vertex *output)
+static int capture_clip_vertex(const struct l10gl_ctx *ctx,
+                               const struct l10gl_immediate_vertex *input,
+                               struct clip_vertex *output)
 {
     const float object[4] = { input->x, input->y, input->z, 1.0f };
-    float clip[4];
+
+    l10gl_object_to_clip(ctx, object, output->clip);
+    if (!isfinite(output->clip[0]) || !isfinite(output->clip[1]) ||
+        !isfinite(output->clip[2]) || !isfinite(output->clip[3]))
+        return 0;
+    output->r = input->r;
+    output->g = input->g;
+    output->b = input->b;
+    output->a = input->a;
+    output->nx = input->nx;
+    output->ny = input->ny;
+    output->nz = input->nz;
+    output->u = input->u;
+    output->v = input->v;
+    return 1;
+}
+
+static void interpolate_clip_vertex(struct clip_vertex *output,
+                                    const struct clip_vertex *a,
+                                    const struct clip_vertex *b, float t)
+{
+#define INTERPOLATE(member) output->member = a->member + (b->member - a->member) * t
+    for (int i = 0; i < 4; i++)
+        output->clip[i] = a->clip[i] + (b->clip[i] - a->clip[i]) * t;
+    INTERPOLATE(r);
+    INTERPOLATE(g);
+    INTERPOLATE(b);
+    INTERPOLATE(a);
+    INTERPOLATE(nx);
+    INTERPOLATE(ny);
+    INTERPOLATE(nz);
+    INTERPOLATE(u);
+    INTERPOLATE(v);
+#undef INTERPOLATE
+}
+
+static double near_distance(const struct clip_vertex *vertex)
+{
+    return (double)vertex->clip[2] + vertex->clip[3];
+}
+
+static void snap_near_plane(struct clip_vertex *vertex)
+{
+    double distance = near_distance(vertex);
+    double scale = fmax(1.0, fabs((double)vertex->clip[3]));
+
+    if (fabs(distance) <= scale * 1.0e-6)
+        vertex->clip[2] = -vertex->clip[3];
+}
+
+/* Sutherland-Hodgman clipping against the OpenGL near plane Z + W >= 0.
+ * A triangle produces zero, three, or four vertices. */
+static int clip_triangle_near(const struct clip_vertex input[3],
+                              struct clip_vertex output[4])
+{
+    const struct clip_vertex *previous = &input[2];
+    double previous_distance = near_distance(previous);
+    int previous_inside = previous_distance >= 0.0;
+    int count = 0;
+
+    for (int i = 0; i < 3; i++) {
+        const struct clip_vertex *current = &input[i];
+        double current_distance = near_distance(current);
+        int current_inside = current_distance >= 0.0;
+
+        if (previous_inside != current_inside) {
+            double denominator = previous_distance - current_distance;
+            float t = (float)(previous_distance / denominator);
+
+            if (t < 0.0f) t = 0.0f;
+            if (t > 1.0f) t = 1.0f;
+            interpolate_clip_vertex(&output[count], previous, current, t);
+            /* Make the generated vertex exactly satisfy the plane despite
+             * floating-point interpolation error, so near depth maps to the
+             * configured depth-range endpoint rather than slightly outside. */
+            output[count].clip[2] = -output[count].clip[3];
+            count++;
+        }
+        if (current_inside)
+            output[count++] = *current;
+
+        previous = current;
+        previous_distance = current_distance;
+        previous_inside = current_inside;
+    }
+    return count;
+}
+
+static int project_clip_vertex(const struct l10gl_ctx *ctx,
+                               const struct clip_vertex *input,
+                               struct projected_vertex *output)
+{
     float ndc[3];
     float window[3];
     float z_slop;
 
-    l10gl_object_to_clip(ctx, object, clip);
-    if (!isfinite(clip[0]) || !isfinite(clip[1]) ||
-        !isfinite(clip[2]) || !isfinite(clip[3]) ||
-        !(clip[3] > 1.0e-20f))
+    if (!(input->clip[3] > 1.0e-20f))
         return 0;
 
-    /* X3 will clip primitives crossing the near plane. Until then, reject a
-     * primitive with any vertex outside clip-depth bounds so negative or
-     * wrapped Z values never reach vintage hardware. X/Y remain available to
-     * the backend's existing clip rectangle. */
-    z_slop = clip[3] * 1.0e-6f;
-    if (clip[2] < -clip[3] - z_slop || clip[2] > clip[3] + z_slop)
+    /* Near crossings have already been clipped. Far-plane clipping is not in
+     * X3's one-plane scope, so retain conservative whole-primitive rejection
+     * rather than sending out-of-range Z to vintage hardware. */
+    z_slop = input->clip[3] * 1.0e-6f;
+    if (input->clip[2] < -input->clip[3] - z_slop ||
+        input->clip[2] > input->clip[3] + z_slop)
         return 0;
 
-    ndc[0] = clip[0] / clip[3];
-    ndc[1] = clip[1] / clip[3];
-    ndc[2] = clip[2] / clip[3];
+    ndc[0] = input->clip[0] / input->clip[3];
+    ndc[1] = input->clip[1] / input->clip[3];
+    ndc[2] = input->clip[2] / input->clip[3];
+    if (!isfinite(ndc[0]) || !isfinite(ndc[1]) || !isfinite(ndc[2]))
+        return 0;
     l10gl_ndc_to_window(ctx, ndc, window);
+    if (!isfinite(window[0]) || !isfinite(window[1]) || !isfinite(window[2]))
+        return 0;
 
     output->screen.x = window[0];
     output->screen.y = window[1];
@@ -89,13 +190,30 @@ static int project_vertex(const struct l10gl_ctx *ctx,
     return 1;
 }
 
+static int triangle_exceeds_scan_limit(const struct projected_vertex *v0,
+                                       const struct projected_vertex *v1,
+                                       const struct projected_vertex *v2)
+{
+    float min_y = fminf(v0->screen.y, fminf(v1->screen.y, v2->screen.y));
+    float max_y = fmaxf(v0->screen.y, fmaxf(v1->screen.y, v2->screen.y));
+    float scanlines = ceilf(max_y) - floorf(min_y);
+
+    /* ViRGE triangle scan counts are 11-bit fields (virge.h:296). Rejecting
+     * an oversized projected primitive is conservative and backend-neutral;
+     * X/Y clipping itself remains in the hardware clip rectangle. */
+    return !isfinite(scanlines) ||
+           scanlines > L10GL_MAX_TRIANGLE_SCANLINES;
+}
+
 static int triangle_is_culled(const struct l10gl_ctx *ctx,
                               const struct projected_vertex *v0,
                               const struct projected_vertex *v1,
                               const struct projected_vertex *v2)
 {
-    float area = (v1->ndc_x - v0->ndc_x) * (v2->ndc_y - v0->ndc_y)
-               - (v1->ndc_y - v0->ndc_y) * (v2->ndc_x - v0->ndc_x);
+    double area = ((double)v1->ndc_x - v0->ndc_x)
+                * ((double)v2->ndc_y - v0->ndc_y)
+                - ((double)v1->ndc_y - v0->ndc_y)
+                * ((double)v2->ndc_x - v0->ndc_x);
 
     if (area == 0.0f)
         return 1;
@@ -111,24 +229,44 @@ static void emit_triangle(struct l10gl_ctx *ctx,
                           const struct l10gl_immediate_vertex *b,
                           const struct l10gl_immediate_vertex *c)
 {
-    struct projected_vertex projected[3];
+    struct clip_vertex input[3];
+    struct clip_vertex clipped[4];
+    struct projected_vertex projected[4];
+    int count;
 
-    if (!project_vertex(ctx, a, &projected[0]) ||
-        !project_vertex(ctx, b, &projected[1]) ||
-        !project_vertex(ctx, c, &projected[2]) ||
-        triangle_is_culled(ctx, &projected[0], &projected[1], &projected[2]))
+    if (!capture_clip_vertex(ctx, a, &input[0]) ||
+        !capture_clip_vertex(ctx, b, &input[1]) ||
+        !capture_clip_vertex(ctx, c, &input[2]))
         return;
+    for (int i = 0; i < 3; i++)
+        snap_near_plane(&input[i]);
+    count = clip_triangle_near(input, clipped);
+    if (count < 3)
+        return;
+    for (int i = 0; i < count; i++)
+        if (!project_clip_vertex(ctx, &clipped[i], &projected[i]))
+            return;
 
-    /* Binding NULL selects untextured emission. Backends without a textured
-     * hook still receive the frontend's established Gouraud fallback. */
-    if (ctx->current_texture) {
-        l10gl_draw_textured_triangle(ctx, projected[0].screen,
-                                     projected[1].screen,
-                                     projected[2].screen);
-    } else {
-        l10gl_draw_triangle(ctx, projected[0].screen,
-                            projected[1].screen,
-                            projected[2].screen);
+    /* A clipped quad is triangulated as a fan, preserving polygon winding and
+     * shared-edge attribute identity. */
+    for (int i = 1; i + 1 < count; i++) {
+        if (triangle_is_culled(ctx, &projected[0], &projected[i],
+                              &projected[i + 1]) ||
+            triangle_exceeds_scan_limit(&projected[0], &projected[i],
+                                        &projected[i + 1]))
+            continue;
+
+        /* Binding NULL selects untextured emission. Backends without a
+         * textured hook still receive the established Gouraud fallback. */
+        if (ctx->current_texture) {
+            l10gl_draw_textured_triangle(ctx, projected[0].screen,
+                                         projected[i].screen,
+                                         projected[i + 1].screen);
+        } else {
+            l10gl_draw_triangle(ctx, projected[0].screen,
+                                projected[i].screen,
+                                projected[i + 1].screen);
+        }
     }
 }
 
@@ -136,10 +274,15 @@ static void emit_line(struct l10gl_ctx *ctx,
                       const struct l10gl_immediate_vertex *a,
                       const struct l10gl_immediate_vertex *b)
 {
+    struct clip_vertex clipped[2];
     struct projected_vertex projected[2];
 
-    if (!project_vertex(ctx, a, &projected[0]) ||
-        !project_vertex(ctx, b, &projected[1]))
+    /* X3 clips triangles. Lines retain X2's conservative whole-segment depth
+     * rejection until a dedicated line-clipping pass is added. */
+    if (!capture_clip_vertex(ctx, a, &clipped[0]) ||
+        !capture_clip_vertex(ctx, b, &clipped[1]) ||
+        !project_clip_vertex(ctx, &clipped[0], &projected[0]) ||
+        !project_clip_vertex(ctx, &clipped[1], &projected[1]))
         return;
     l10gl_draw_line(ctx, projected[0].screen, projected[1].screen);
 }
