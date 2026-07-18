@@ -29,9 +29,11 @@ provides deterministic offscreen rendering and pixel-level tests on machines
 without either card.
 
 The frontend now also has OpenGL-convention MODELVIEW and PROJECTION matrix
-stacks, transform constructors, viewport mapping, and depth range. These are
-the completed X1 foundation for the forthcoming immediate-mode geometry path;
-the existing `l10gl_draw_triangle` API intentionally remains screen-space.
+stacks plus an immediate-mode model-space geometry path. It captures current
+color/normal/texture attributes, assembles triangles, strips, fans, and lines,
+transforms them, performs CCW face culling, and emits the established
+screen-space backend primitives. The direct `l10gl_draw_triangle` API remains
+available and unchanged.
 
 | Backend | Hardware | Status |
 |---|---|---|
@@ -49,7 +51,7 @@ The detailed hardware history and test evidence live in
 Application / demo
         │
         ▼
-Transform layer (matrix stacks + viewport; primitive pipeline in progress)
+Transform layer (matrix stacks + immediate primitive pipeline)
         │
         ▼
 L10GL frontend (render-state cache + runtime backend registry)
@@ -130,7 +132,8 @@ make check
 `make check` exercises the launcher fixture and checks swrast output pixels for
 top-left coverage, blending, depth ordering, perspective correction, bilinear
 filtering, RGB565 conversion, and PPM serialization. It also validates matrix
-ordering, stack bounds, projections, viewport conversion, and depth range.
+ordering, stack bounds, projections, viewport conversion, depth range,
+attribute capture, primitive assembly, texture dispatch, and face culling.
 
 ### Software rendering and frame dumps
 
@@ -227,6 +230,8 @@ PLAN.md                          phased implementation roadmap
 See [`docs/BACKEND.md`](docs/BACKEND.md) before adding another card.
 Transform conventions and the X1 API are documented in
 [`docs/XFORM.md`](docs/XFORM.md).
+Immediate submission and X2's current clipping limitations are documented in
+[`docs/PIPELINE.md`](docs/PIPELINE.md).
 
 ## License
 

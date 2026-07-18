@@ -96,8 +96,18 @@ post-multiply operations, translate/rotate/scale, frustum/perspective/ortho,
 viewport and depth range, object-to-clip transformation, and GL-lower-left to
 backend-top-left window conversion. `test-xform` covers the math and stack
 bounds. It is deliberately above the existing screen-space draw API, so no
-hardware backend or proven demo path changed. X2 immediate-mode assembly is
-the next core task.
+hardware backend or proven demo path changed.
+
+Phase 2 X2 is complete as of 2026-07-17. `src/l10gl_pipeline.c` captures
+current color/normal/UV state and streams TRIANGLES, TRIANGLE_STRIP,
+TRIANGLE_FAN, LINES, and LINE_STRIP through X1 into the existing screen-space
+backend calls. Strip winding alternates correctly; fan origin is fixed;
+texture binding selects textured dispatch; CCW culling happens in NDC before
+the top-left framebuffer Y conversion. `test-pipeline` uses a capture backend
+to verify exact calls and vertices. Existing demos are not ported yet (X6),
+normals are reserved for X4, texture W stays 1 until X5, and pre-X3 primitives
+with any vertex outside clip-depth bounds are rejected whole. X3 near-plane
+clipping is now the next core task.
 
 ## Push workflow (non-negotiable — David has corrected agents on this repeatedly)
 
