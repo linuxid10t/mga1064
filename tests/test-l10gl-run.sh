@@ -2,6 +2,11 @@
 
 set -eu
 
+# This fixture verifies the launcher's automatic PCI selection.  Do not let a
+# caller's preferred runtime backend (for example an exported `swrast`) change
+# the scenario under test.
+unset L10GL_BACKEND
+
 repo_root=$(cd "$(dirname "$0")/.." && pwd)
 fixture=$(mktemp -d)
 trap 'rm -rf -- "$fixture"' EXIT
