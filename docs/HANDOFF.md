@@ -358,7 +358,13 @@ page-flip presentation, and cleanup together. G3 is closed.
 now pass on swrast and ViRGE: `gears` verifies immediate quads, matrices,
 lighting/material, flat/smooth shading, culling, depth, and swap; `gltexture`
 verifies texture objects and sampling. `make check` is clean and the shim's
-object lifetime paths pass ASan/UBSan. Proceed to Phase 5 Matrox parity.
+object lifetime paths pass ASan/UBSan.
+
+**Phase 5 deferred by David on 2026-07-18.** Do not begin M1-M4 without a new
+request and access to Mystique hardware. Preserve the existing MGA-1064 code
+and `test-mga1064` coverage, but proceed directly to Phase 6 performance work.
+The first task is an FPS counter for stable before/after measurements, then
+FIFO-aware ViRGE submission using MM8504 bits 12-8 as documented.
 
 ```
 sudo env L10GL_BACKEND=virge L10GL_MODESET=native \

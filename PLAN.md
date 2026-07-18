@@ -1176,6 +1176,11 @@ exists, and worthless before.
 
 ## Phase 5 — Matrox parity and second-card validation
 
+**Deferred by project decision 2026-07-18.** The current MGA-1064 code and
+tests remain supported and must not regress, but no Mystique hardware session
+is planned now. Skip M1-M4 and proceed directly to Phase 6. Reopen this phase
+only when a Matrox card is installed and available for validation.
+
 Keep the promise that the architecture is multi-card. All tasks here must
 not disturb ViRGE code.
 

@@ -66,6 +66,9 @@ RGBA8888 checker proof renders correctly on the target ViRGE/DX.
 
 Phase 4 is complete: both `gears` and `gltexture` run correctly through the
 OpenGL compatibility surface on swrast and the ViRGE hardware backend.
+Matrox parity is deferred until a Mystique is installed for testing; the
+existing MGA-1064 code and regression tests remain in the tree. Performance
+work on the verified ViRGE path is next.
 
 | Backend | Hardware | Status |
 |---|---|---|
