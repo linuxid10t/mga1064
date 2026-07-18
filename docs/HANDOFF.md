@@ -139,8 +139,8 @@ sizes the linear window from detected VRAM. The CR3B policy holds the verified
 800x600 BIOS refill time at 3 us rather than applying the databook's inadequate
 "typically CR00-5" suggestion. That checkpoint was also hardware-inert.
 
-**Phase 3 P6c first hardware gate implemented 2026-07-18; corrective hardware
-re-test pending.** `L10GL_MODESET=native` now selects a complete native save/apply/
+**Phase 3 P6c first 800x600 hardware gate implemented and silicon-verified
+2026-07-18.** `L10GL_MODESET=native` now selects a complete native save/apply/
 restore transaction, but only for 800x600@60. The restriction is intentional:
 the target already displays that raster correctly, so the first run isolates
 the new programmable DCLK load (40 MHz target, computed 40.025 MHz,
@@ -167,13 +167,15 @@ display-start bytes needed to distinguish register state from expected VRAM
 content damage (native rendering overwrites the old simplefb pixels).
 
 **Corrective silicon result:** the live cube now fills the raster correctly;
-the black top band is gone. The exit-only shifted/white-bottom picture did not
-change, which matches the known console-pixel overwrite: the restored 32-bit
-simplefb scans L10GL's two 16-bit color buffers followed by its all-ones Z
-surface. `tools/l10gl-run` now follows fbcon reattachment with a temporary
-switch away from and back to the active VT, forcing fbcon to repaint the
-kernel-retained text buffer without clearing it. Fixture coverage verifies the
-switch order; real-console sign-off is pending.
+the black top band is gone. The initially unchanged exit displacement was a
+misleading baseline: an earlier failed modeset had already left the console in
+that state, so exact save/restore and fbcon repaint faithfully returned to the
+same bad start. After reboot restored the firmware/simplefb baseline, the same
+corrected P6 run exited to a correct framebuffer console. `tools/l10gl-run`
+still follows fbcon reattachment with a temporary switch away from and back to
+the active VT so the kernel-retained text overwrites L10GL's stale color/Z
+pixels. The 800x600 PLL and restore gate is closed; enable 640x480@60 next as
+the first real resolution-change test.
 
 ```
 sudo env L10GL_BACKEND=virge L10GL_MODESET=native \
@@ -182,7 +184,7 @@ sudo env L10GL_BACKEND=virge L10GL_MODESET=native \
 
 Expected: the normal cube at 800x600 with no monitor resync/out-of-range event,
 the P6 PLL/readback lines in the log, and a working console after Ctrl-C and
-launcher rebind. Do not enable 640x480 until this exact gate is confirmed.
+launcher rebind. This gate is confirmed; 640x480@60 is next.
 
 ## Test setup (fixed, do not re-derive)
 

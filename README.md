@@ -132,9 +132,9 @@ until L10GL takes over. Normal exits and signals restore ownership, but
 the launcher on a GPU serving an active graphical desktop.
 
 The first opt-in P6 native-modeset hardware gate is restricted to the already
-proven 800x600@60 raster. Its corrective re-test preserves the live vertical
-timing and changes only the proven scanout subset plus the programmable DCLK.
-Run it over SSH:
+proven 800x600@60 raster. Its hardware-verified path preserves the live
+vertical timing and changes only the proven scanout subset plus the
+programmable DCLK. Run it over SSH:
 
 ```sh
 sudo env L10GL_BACKEND=virge L10GL_MODESET=native \
@@ -142,8 +142,8 @@ sudo env L10GL_BACKEND=virge L10GL_MODESET=native \
 ```
 
 This test programs and verifies the ViRGE DCLK/CRTC image and restores the
-complete saved register state on exit. Other native resolutions remain locked
-out until this clock-isolation gate is confirmed on the target hardware.
+complete saved register state on exit. Other native resolutions remain locked;
+640x480@60 is the next deliberate hardware gate.
 
 The detach/reattach sequence follows the Linux kernel's
 [`fbcon` documentation](https://docs.kernel.org/fb/fbcon.html) and the PCI

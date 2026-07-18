@@ -782,13 +782,19 @@ L10GL against the released card, then rebinds the exact drivers and fbcon. This
 flow is hardware-verified end to end. When that flow removes `/dev/fb0` before
 the child starts, the in-process P2 layer correctly remains inactive.
 
-**Console-pixel redraw follow-up (2026-07-18; hardware re-test pending):** a
+**Console-pixel redraw follow-up (2026-07-18; hardware verified after a clean
+boot):** a
 P6 native run restored the correct raster but left the released 16-bit color
 buffers and all-ones Z buffer visible through the rebound 32-bit simplefb,
 appearing shifted upward with a white bottom. This is the already-diagnosed
 incoherent-BAR console-pixel problem, not a CRTC shift. After rebind/reattach,
 `l10gl-run` now switches from the active VT to a spare VT and immediately back;
 fbcon redraws the retained text cells without clearing the user's console.
+The initially reported post-exit displacement survived repaint because the
+pre-run console itself had already been left in that displaced state by an
+earlier failed modeset. A reboot restored the firmware/simplefb baseline; from
+that clean baseline the P6 run and launcher hand-back returned a correct
+console. Save/restore therefore returns the exact inherited state as designed.
 
 ### P3. Frontend swap-buffers API
 `l10gl_swap_buffers(ctx)` + vtable `swap_buffers`. Semantics: finish
@@ -866,10 +872,9 @@ are the exact register snapshot set the eventual writer must restore. The
 round-trips through the encoded overflow fields to its requested geometry and
 pitch. The FIFO-fetch policy preserves the target BIOS mode's verified 3 us
 refill interval at each dot clock. P6c is the opt-in save/apply/restore writer;
-its first 800x600@60 clock-isolation step requires hardware sign-off.
+its first 800x600@60 clock-isolation step is hardware-verified.
 
-**P6c first silicon gate implemented 2026-07-18; first hardware run exposed
-a vertical-displacement regression, corrective gate pending re-test.**
+**P6c first silicon gate implemented and hardware-verified 2026-07-18.**
 `L10GL_MODESET=native` is now an explicit opt-in on the ViRGE no-fbdev path,
 but is deliberately restricted to 800x600@60 for its first run. That is the
 target machine's already-proven raster and reproduces P6b's verified takeover
@@ -880,7 +885,8 @@ plus Misc Output and DAC mask, blanks the screen, loads the PLL and CRTC,
 requires masked readback to match, then restores the exact saved register
 bytes at cleanup. Default operation remains the hardware-verified live-raster
 takeover. After the 800x600 run and restore are confirmed, enable 640x480@60
-as the first actual resolution change; keep 75 Hz and 1024x768 gated (the
+as the first actual resolution change. That confirmation is now complete;
+keep 75 Hz and 1024x768 gated (the
 latter also exceeds a 4MB card's double-buffer+Z budget).
 
 The first P6c run stayed synchronized but showed roughly 100-115 black lines
@@ -893,10 +899,12 @@ horizontal/depth/pitch/start subset already proven by `virge_scanout_takeover`,
 plus SR12/SR13/SR15 and the programmable-DCLK select. Cleanup repeats the saved
 display-start bytes after restoring the old PLL and waits one retrace before
 unblanking, ensuring the console start is latched in its own clock domain.
-The corrective run removed the black band completely. The exit image remained
-unchanged (shifted upward, white bottom), confirming stale overwritten console
-pixels as a separate launcher hand-back issue; the P2 follow-up above now
-forces a retained-VT repaint after fbcon is rebound.
+The corrective run removed the black band completely. The apparent remaining
+exit displacement was inherited from an already-corrupted pre-run console,
+not introduced by the corrected restore. After reboot re-established the
+firmware/simplefb baseline, the same P6 run rendered correctly and returned to
+a correct framebuffer console. The 800x600 PLL/save/restore gate is closed;
+640x480@60 is now the next P6 resolution-change gate.
 
 The end-state for the primary card: set the mode by programming the chip
 directly, so L10GL runs even on a `vesafb`/fixed-mode console — the same
