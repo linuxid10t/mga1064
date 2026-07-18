@@ -1112,8 +1112,8 @@ The L10GL-specific `l10glCreateContext`/`l10glDestroyContext`/
 existing context. `test-gl` drives the real transform/primitive frontend
 through a capture backend, and the full `make check` suite passes.
 
-**G2 implemented 2026-07-18; swrast gears proof complete, ViRGE sign-off
-pending.** The streaming primitive assembler now accepts `GL_QUADS` and
+**G2 implemented and hardware-verified 2026-07-18.** The streaming primitive
+assembler now accepts `GL_QUADS` and
 `GL_QUAD_STRIP`, splitting them with preserved winding and attributes without
 allocating. Flat shading preserves each triangle's final submitted vertex as
 the provoking color, including after near clipping; smooth shading retains
@@ -1122,8 +1122,10 @@ MODELVIEW-transformed directional position (`w=0`) to Phase 2, while
 `glMaterialfv` covers front/front-and-back ambient/diffuse material. The new
 `gears` demo keeps its geometry/rendering body on GL calls and changes only
 fullscreen setup, swap, and process lifecycle to L10GL. Its 320x240 RGB565
-swrast frame was rendered and visually inspected successfully. G3 is the
-texture-object API. The remaining gears acceptance item is a ViRGE run.
+swrast frame was rendered and visually inspected successfully. David then ran
+the same demo through `tools/l10gl-run` on the 4MB ViRGE/DX and reported that
+it renders correctly; the G2 silicon gate is closed. G3 is the texture-object
+API.
 
 A thin `include/GL/gl.h`-subset (`src/l10gl_gl.c`) mapping real GL 1.1
 entry points onto the Phase 2 pipeline: `glBegin/glEnd/glVertex*/glColor*/

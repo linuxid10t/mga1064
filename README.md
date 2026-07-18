@@ -53,9 +53,9 @@ checkpoint maps immediate triangles/strips/fans/lines/quads/quad strips, current
 attributes, matrix stacks and projection calls, viewport/depth range, masked
 clears, depth/blend/cull/lighting state, synchronization, and GL error
 reporting onto that frontend. Directional LIGHT0, ambient/diffuse material,
-and flat/smooth shading are sufficient for the new `gears` demo, whose first
-frame is verified under swrast. L10GL still owns fullscreen context creation
-and buffer swapping; texture objects and the ViRGE gears sign-off remain.
+and flat/smooth shading are sufficient for the new `gears` demo, now verified
+under both swrast and the target ViRGE/DX. L10GL still owns fullscreen context
+creation and buffer swapping; texture objects remain the next Phase 4 slice.
 
 | Backend | Hardware | Status |
 |---|---|---|
