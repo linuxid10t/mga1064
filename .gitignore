@@ -21,3 +21,4 @@ tritest
 diagap
 texprobe
 test-swrast
+test-xform

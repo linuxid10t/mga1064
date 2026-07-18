@@ -38,6 +38,16 @@ enum l10gl_primitive {
     L10GL_POINTS,
 };
 
+/* Matrix targets. Matrices use OpenGL-compatible column-major storage and
+ * post-multiplication: current = current * supplied_transform. */
+enum l10gl_matrix_mode {
+    L10GL_MATRIX_MODELVIEW,
+    L10GL_MATRIX_PROJECTION,
+};
+
+#define L10GL_MODELVIEW_STACK_DEPTH 32
+#define L10GL_PROJECTION_STACK_DEPTH 4
+
 /* Depth comparison functions (match OpenGL ordering) */
 enum l10gl_depth_func {
     L10GL_NEVER,
@@ -236,6 +246,17 @@ struct l10gl_ctx {
 
     /* Current texture (NULL = no texture bound) */
     struct l10gl_texture *current_texture;
+
+    /* Frontend transform state. Viewport Y follows OpenGL's lower-left
+     * convention; l10gl_ndc_to_window converts it to the backends' top-left
+     * framebuffer coordinates. */
+    float modelview_stack[L10GL_MODELVIEW_STACK_DEPTH][16];
+    float projection_stack[L10GL_PROJECTION_STACK_DEPTH][16];
+    int modelview_top;
+    int projection_top;
+    enum l10gl_matrix_mode matrix_mode_val;
+    int viewport_x, viewport_y, viewport_width, viewport_height;
+    float depth_range_near, depth_range_far;
 };
 
 /* ========================================================================
@@ -274,6 +295,41 @@ void l10gl_enable_blend(struct l10gl_ctx *ctx, int enable);
 void l10gl_blend_func(struct l10gl_ctx *ctx,
                       enum l10gl_blend_func sfactor,
                       enum l10gl_blend_func dfactor);
+
+/* Transform state. Stack operations and projection constructors return zero
+ * on success or a negative errno-style value for invalid input/stack bounds. */
+int l10gl_matrix_mode(struct l10gl_ctx *ctx, enum l10gl_matrix_mode mode);
+void l10gl_load_identity(struct l10gl_ctx *ctx);
+void l10gl_load_matrixf(struct l10gl_ctx *ctx, const float matrix[16]);
+void l10gl_mult_matrixf(struct l10gl_ctx *ctx, const float matrix[16]);
+int l10gl_get_matrix(const struct l10gl_ctx *ctx,
+                     enum l10gl_matrix_mode mode, float matrix[16]);
+int l10gl_push_matrix(struct l10gl_ctx *ctx);
+int l10gl_pop_matrix(struct l10gl_ctx *ctx);
+void l10gl_translatef(struct l10gl_ctx *ctx, float x, float y, float z);
+int l10gl_rotatef(struct l10gl_ctx *ctx, float angle_degrees,
+                  float x, float y, float z);
+void l10gl_scalef(struct l10gl_ctx *ctx, float x, float y, float z);
+int l10gl_frustum(struct l10gl_ctx *ctx,
+                  float left, float right, float bottom, float top,
+                  float z_near, float z_far);
+int l10gl_perspective(struct l10gl_ctx *ctx, float fovy_degrees,
+                      float aspect, float z_near, float z_far);
+int l10gl_ortho(struct l10gl_ctx *ctx,
+                float left, float right, float bottom, float top,
+                float z_near, float z_far);
+int l10gl_viewport(struct l10gl_ctx *ctx, int x, int y,
+                   int width, int height);
+void l10gl_depth_range(struct l10gl_ctx *ctx, float z_near, float z_far);
+
+/* Reusable X1 math helpers for the Phase 2 primitive pipeline. Inputs and
+ * outputs may alias. object_to_clip applies PROJECTION * MODELVIEW. */
+void l10gl_transform_vec4(const float matrix[16],
+                          const float input[4], float output[4]);
+void l10gl_object_to_clip(const struct l10gl_ctx *ctx,
+                          const float object[4], float clip[4]);
+void l10gl_ndc_to_window(const struct l10gl_ctx *ctx,
+                         const float ndc[3], float window[3]);
 
 /* Drawing primitives */
 void l10gl_draw_triangle(struct l10gl_ctx *ctx,
