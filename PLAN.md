@@ -976,8 +976,8 @@ programmable DCLK and 75Hz timing image. DB019-B section 9.1's M/N/R and
 135-270MHz VCO limits produce `SR12=63`, `SR13=56`, 31.500MHz at 13ppm error;
 section 9.2's immediate-load sequence is the same SR12/SR13 plus SR15.5 pulse
 already proven by P6c. Unit tests pin all 25 standard CRTC bytes, `CR5D=00`,
-the 3us FIFO-fetch value, sync polarity, and PLL bytes. The gate still rejects
-800x600@75 and both 1024x768 entries.
+the 3us FIFO-fetch value, sync polarity, and PLL bytes. At the P6e checkpoint,
+800x600@75 and both 1024x768 entries remained rejected.
 
 The first P6e silicon run synchronized and restored the console correctly, but
 the top half of the active image was black and only the lower half of the cube
@@ -994,8 +994,8 @@ upper half, closing P6e. The 60Hz regression also displayed correctly with
 the corrected CR16 byte, so both 640x480 refreshes are signed off. The next
 isolated gate is 800x600@75; keep 1024x768 locked.
 
-**P6f 800x600@75 full-timing gate implemented 2026-07-18; awaiting silicon
-validation.** The 800x600@60 transaction remains the byte-for-byte signed-off
+**P6f 800x600@75 full-timing gate implemented and silicon-verified
+2026-07-18.** The 800x600@60 transaction remains the byte-for-byte signed-off
 clock-only limiter, while `L10GL_REFRESH=75` now applies the complete fixed
 800x600@75 CRTC image. DB019-B's PLL constraints produce 49.516MHz from the
 49.500MHz target (`SR12=44`, `SR13=51`, 332ppm, 198.066MHz VCO), using the
@@ -1025,8 +1025,8 @@ sudo env L10GL_BACKEND=virge L10GL_MODESET=native L10GL_REFRESH=75 \
 The corrected gate is hardware-verified: the complete cube is visible at
 640x480@75 without the former black upper half, and the first run already
 proved cleanup recovery of the original 800x600 simplefb console. The target
-readback is `CR15=df CR16=f2`. Keep 800x600@75 and all 1024x768 modes locked
-until their own staged gates.
+readback is `CR15=df CR16=f2`. P6f subsequently opened 800x600@75; both
+1024x768 modes remain locked for their own staged gates.
 
 P6f hardware test over SSH:
 
@@ -1035,10 +1035,10 @@ sudo env L10GL_BACKEND=virge L10GL_MODESET=native L10GL_REFRESH=75 \
   tools/l10gl-run -- ./cube 800 600 16
 ```
 
-Expected diagnostics are approximately 46.89kHz / 75.02Hz with
-`SR12=44 SR13=51`, `CR15=57 CR16=6f`, `CR3B=e2`, and `CR5D=01`. Acceptance
-requires the complete stable cube with no black band and recovery of the
-original 800x600 simplefb console after Ctrl-C.
+Hardware result: measured sync was 46.893kHz / 75.032Hz; PLL and CRTC readback
+matched exactly (`SR12=44 SR13=51`, `CR15=57 CR16=6f`, `CR3B=e2`,
+`CR5D=01`). The complete cube was stable with no black band, and Ctrl-C
+restored the original 800x600 simplefb console. P6f is closed.
 
 The end-state for the primary card: set the mode by programming the chip
 directly, so L10GL runs even on a `vesafb`/fixed-mode console — the same

@@ -162,8 +162,8 @@ sudo env L10GL_BACKEND=virge L10GL_MODESET=native L10GL_REFRESH=75 \
 
 Its initial top-half blanking exposed an off-by-one CR16 vertical-blank wrap;
 the corrected image displays the complete cube. Omitting `L10GL_REFRESH`
-selects the 60Hz default. The next hardware gate applies the complete
-800x600@75 timing image:
+selects the 60Hz default. The hardware-verified 800x600@75 gate applies the
+complete timing image:
 
 ```sh
 sudo env L10GL_BACKEND=virge L10GL_MODESET=native L10GL_REFRESH=75 \

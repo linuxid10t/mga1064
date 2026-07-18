@@ -238,8 +238,8 @@ are unchanged from P6d, while the fixed table supplies 75Hz timings and a
 31.5MHz programmable DCLK. DB019-B sections 9.1-9.2 give `SR12=63`, `SR13=56`
 (31.500MHz, 13ppm) and the SR15.5 immediate-load pulse already exercised at
 40MHz by P6c. Tests pin the complete standard CRTC image, FIFO fetch,
-`CR5D=00`, negative sync polarity, and PLL bytes. 800x600@75 and both
-1024x768 modes remain rejected.
+`CR5D=00`, negative sync polarity, and PLL bytes. At that checkpoint,
+800x600@75 and both 1024x768 modes remained rejected.
 
 The first run accepted the signal and cleanup restored the console, but the
 top half of the screen was black and only the lower half of the cube appeared.
@@ -254,8 +254,8 @@ complete cube with no black upper half. The same general correction changes
 Both 640x480 refreshes are signed off. Open 800x600@75 next and keep both
 1024x768 modes locked.
 
-**P6f 800x600@75 gate implemented 2026-07-18; hardware validation pending.**
-The existing 800x600@60 gate still uses `virge_mode_limit_first_gate` and
+**P6f 800x600@75 gate implemented and hardware-verified 2026-07-18.** The
+existing 800x600@60 gate still uses `virge_mode_limit_first_gate` and
 preserves the live vertical raster exactly. Only the new 75Hz selection writes
 the complete CRTC image. Its 49.5MHz target synthesizes to 49.516MHz with
 `SR12=44`, `SR13=51` (332ppm, 198.066MHz VCO), inside DB019-B's documented
@@ -272,8 +272,8 @@ sudo env L10GL_BACKEND=virge L10GL_MODESET=native \
 ```
 
 Verified: visible 640x480 cube, no out-of-range event, and recovery of the
-original 800x600 simplefb signal after Ctrl-C. P6e opens only 640x480@75;
-800x600@75 and 1024x768 remain locked until their own staged gates.
+original 800x600 simplefb signal after Ctrl-C. P6e opened only 640x480@75;
+P6f subsequently opened 800x600@75. The 1024x768 modes remain locked.
 
 Hardware-verified P6e command:
 
@@ -287,16 +287,16 @@ run also proved recovery of the original console. Target readback is
 `CR15=df CR16=f2`. The 60Hz command above also passed its corrected
 `CR16=0b` regression.
 
-Next hardware command:
+Hardware-verified P6f command:
 
 ```
 sudo env L10GL_BACKEND=virge L10GL_MODESET=native L10GL_REFRESH=75 \
   tools/l10gl-run -- ./cube 800 600 16
 ```
 
-Expect about 46.89kHz / 75.02Hz, `SR12=44 SR13=51`, and readback
-`CR15=57 CR16=6f CR3B=e2 CR5D=01`. Confirm the full stable cube and correct
-console recovery after Ctrl-C.
+Verified result: measured sync was 46.893kHz / 75.032Hz; readback matched
+`SR12=44 SR13=51`, `CR15=57 CR16=6f CR3B=e2 CR5D=01`; the full cube was
+stable and the console recovered correctly after Ctrl-C. P6f is closed.
 
 ```
 sudo env L10GL_BACKEND=virge L10GL_MODESET=native \
