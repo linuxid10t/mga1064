@@ -28,6 +28,11 @@ supported, but has not yet been validated on hardware. The software backend
 provides deterministic offscreen rendering and pixel-level tests on machines
 without either card.
 
+The frontend now also has OpenGL-convention MODELVIEW and PROJECTION matrix
+stacks, transform constructors, viewport mapping, and depth range. These are
+the completed X1 foundation for the forthcoming immediate-mode geometry path;
+the existing `l10gl_draw_triangle` API intentionally remains screen-space.
+
 | Backend | Hardware | Status |
 |---|---|---|
 | `virge` | S3 ViRGE family | Primary; ViRGE/DX verified on silicon |
@@ -44,7 +49,10 @@ The detailed hardware history and test evidence live in
 Application / demo
         │
         ▼
-L10GL frontend (state cache + runtime backend registry)
+Transform layer (matrix stacks + viewport; primitive pipeline in progress)
+        │
+        ▼
+L10GL frontend (render-state cache + runtime backend registry)
         │
         ├── S3 ViRGE glue ────── ViRGE register driver
         ├── MGA-1064 glue ────── MGA-1064 register driver
@@ -121,7 +129,8 @@ make check
 
 `make check` exercises the launcher fixture and checks swrast output pixels for
 top-left coverage, blending, depth ordering, perspective correction, bilinear
-filtering, RGB565 conversion, and PPM serialization.
+filtering, RGB565 conversion, and PPM serialization. It also validates matrix
+ordering, stack bounds, projections, viewport conversion, and depth range.
 
 ### Software rendering and frame dumps
 
@@ -216,6 +225,8 @@ PLAN.md                          phased implementation roadmap
 ```
 
 See [`docs/BACKEND.md`](docs/BACKEND.md) before adding another card.
+Transform conventions and the X1 API are documented in
+[`docs/XFORM.md`](docs/XFORM.md).
 
 ## License
 

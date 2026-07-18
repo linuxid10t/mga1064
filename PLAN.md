@@ -556,6 +556,11 @@ other vintage cards).
 
 ## Phase 2 — Frontend geometry pipeline
 
+**Status (2026-07-17): X1 complete; X2 is next.** Matrix stacks, transform
+constructors, viewport/depth-range state, object-to-clip math, and framebuffer
+coordinate conversion live in `src/l10gl_xform.c` and are covered by
+`test-xform`. Existing screen-space drawing remains unchanged.
+
 Move the 3D math out of the demos and into the library, so applications
 supply model-space geometry and the library handles transform → light →
 clip → project → rasterize. This is the biggest step toward "an OpenGL
@@ -569,6 +574,15 @@ keeps taking screen-space vertices; the pipeline emits into it. Backends
 are untouched by this phase.
 
 ### X1. Matrix stacks and viewport
+
+**Complete 2026-07-17.** MODELVIEW/PROJECTION stacks have the specified 32/4
+depths and return bounded overflow/underflow errors. All matrices are
+column-major and post-multiplied. Initialization uses the backend's actual
+raster for the default viewport; the NDC helper converts GL lower-left
+viewport coordinates into backend top-left scanout coordinates. Perspective,
+frustum, ortho, arbitrary load/multiply, transform, viewport, and depth-range
+behavior are deterministic under `make check`.
+
 4x4 float matrices, MODELVIEW and PROJECTION stacks (depth 32/4),
 `load_identity`, `mult`, `translate/rotate/scale`, `frustum/perspective/
 ortho`, `push/pop`, plus `l10gl_viewport(x, y, w, h)` and depth range.

@@ -90,6 +90,15 @@ fbdev mode with `L10GL_SWRAST_FB=/dev/fb0`. `make check` now verifies top-left
 coverage, blending, depth, perspective texturing, bilinear filtering, RGB565,
 and PPM output at the pixel level. No vintage GPU is needed for this gate.
 
+Phase 2 X1 is complete as of 2026-07-17. `src/l10gl_xform.c` provides
+OpenGL-compatible column-major MODELVIEW/PROJECTION stacks (32/4), load and
+post-multiply operations, translate/rotate/scale, frustum/perspective/ortho,
+viewport and depth range, object-to-clip transformation, and GL-lower-left to
+backend-top-left window conversion. `test-xform` covers the math and stack
+bounds. It is deliberately above the existing screen-space draw API, so no
+hardware backend or proven demo path changed. X2 immediate-mode assembly is
+the next core task.
+
 ## Push workflow (non-negotiable — David has corrected agents on this repeatedly)
 
 The workspace machine has **no ViRGE card**; David tests on a separate box
