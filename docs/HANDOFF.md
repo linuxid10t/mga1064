@@ -254,6 +254,16 @@ complete cube with no black upper half. The same general correction changes
 Both 640x480 refreshes are signed off. Open 800x600@75 next and keep both
 1024x768 modes locked.
 
+**P6f 800x600@75 gate implemented 2026-07-18; hardware validation pending.**
+The existing 800x600@60 gate still uses `virge_mode_limit_first_gate` and
+preserves the live vertical raster exactly. Only the new 75Hz selection writes
+the complete CRTC image. Its 49.5MHz target synthesizes to 49.516MHz with
+`SR12=44`, `SR13=51` (332ppm, 198.066MHz VCO), inside DB019-B's documented
+limits and through the already-proven SR15.5 immediate-load sequence. Tests
+pin the full standard image and decisive extended bytes, including the fixed
+vertical blank `CR15=57 CR16=6f`, FIFO fetch `CR3B=e2`, and `CR5D=01`.
+1024x768 remains locked pending an explicit 4MB buffer/Z policy.
+
 Run over SSH from a clean console baseline:
 
 ```
@@ -276,6 +286,17 @@ Verified: the complete cube is visible with no black upper half; the first
 run also proved recovery of the original console. Target readback is
 `CR15=df CR16=f2`. The 60Hz command above also passed its corrected
 `CR16=0b` regression.
+
+Next hardware command:
+
+```
+sudo env L10GL_BACKEND=virge L10GL_MODESET=native L10GL_REFRESH=75 \
+  tools/l10gl-run -- ./cube 800 600 16
+```
+
+Expect about 46.89kHz / 75.02Hz, `SR12=44 SR13=51`, and readback
+`CR15=57 CR16=6f CR3B=e2 CR5D=01`. Confirm the full stable cube and correct
+console recovery after Ctrl-C.
 
 ```
 sudo env L10GL_BACKEND=virge L10GL_MODESET=native \

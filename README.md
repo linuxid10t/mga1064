@@ -162,8 +162,16 @@ sudo env L10GL_BACKEND=virge L10GL_MODESET=native L10GL_REFRESH=75 \
 
 Its initial top-half blanking exposed an off-by-one CR16 vertical-blank wrap;
 the corrected image displays the complete cube. Omitting `L10GL_REFRESH`
-selects the 60Hz default. The 800x600@75 and 1024x768 entries remain locked
-pending staged validation.
+selects the 60Hz default. The next hardware gate applies the complete
+800x600@75 timing image:
+
+```sh
+sudo env L10GL_BACKEND=virge L10GL_MODESET=native L10GL_REFRESH=75 \
+    tools/l10gl-run -- ./cube 800 600 16
+```
+
+The 1024x768 entries remain locked pending staged validation and a 4MB
+buffer/Z policy.
 
 The detach/reattach sequence follows the Linux kernel's
 [`fbcon` documentation](https://docs.kernel.org/fb/fbcon.html) and the PCI

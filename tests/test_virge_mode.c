@@ -148,6 +148,7 @@ static void test_pll(void)
     expect_pll(25175, 0x67, 0x7d, 25255, "25.175 MHz");
     expect_pll(31500, 0x63, 0x56, 31500, "31.500 MHz");
     expect_pll(40000, 0x49, 0x79, 40025, "40.000 MHz");
+    expect_pll(49500, 0x44, 0x51, 49516, "49.500 MHz");
     expect_pll(65000, 0x44, 0x6b, 65028, "65.000 MHz");
 
     EXPECT(virge_pll_compute(0, &pll) == -EINVAL, "reject zero clock");
@@ -219,6 +220,32 @@ static void test_crtc_image(void)
     for (i = 0; i < sizeof(extended) / sizeof(extended[0]); i++)
         EXPECT(image.mask[extended[i]] != 0,
                "extended CRTC register snapshotted");
+
+    mode = virge_mode_find(800, 600, 75);
+    EXPECT(virge_mode_encode_16bpp(mode, 1600, 4u * 1024u * 1024u,
+                                   &image) == 0,
+           "encode 800x600@75 CRTC image");
+    {
+        static const uint8_t expected_standard[25] = {
+            0x03, 0xc7, 0xc8, 0x04, 0xcc, 0x00, 0x6f, 0xf0,
+            0x00, 0x60, 0x20, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x59, 0xac, 0x57, 0xc8, 0x00, 0x57, 0x6f, 0xe3,
+            0xff,
+        };
+
+        for (i = 0; i < sizeof(expected_standard); i++)
+            EXPECT(image.value[i] == expected_standard[i],
+                   "800x600@75 standard CRTC byte matches DB019-B encoding");
+    }
+    EXPECT(image.value[0x3b] == 0xe2 && image.fifo_fetch == 226 &&
+           image.value[0x5d] == 0x01 && image.value[0x5e] == 0x00,
+           "800x600@75 FIFO and extended overflow bytes");
+    EXPECT(image.value[0x15] == 0x57 && image.value[0x16] == 0x6f,
+           "800x600@75 vertical blank ends before the 625-line wrap");
+    EXPECT(image.value[0x13] == 0xc8 && image.misc_value == 0x0f &&
+           image.pll.sr12 == 0x44 && image.pll.sr13 == 0x51 &&
+           image.pll.actual_khz == 49516 && image.pll.error_ppm == 332,
+           "800x600@75 pitch, polarity, and programmable 49.5MHz clock");
 
     mode = virge_mode_find(640, 480, 60);
     EXPECT(virge_mode_encode_16bpp(mode, 1280, 2u * 1024u * 1024u,

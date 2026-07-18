@@ -994,6 +994,17 @@ upper half, closing P6e. The 60Hz regression also displayed correctly with
 the corrected CR16 byte, so both 640x480 refreshes are signed off. The next
 isolated gate is 800x600@75; keep 1024x768 locked.
 
+**P6f 800x600@75 full-timing gate implemented 2026-07-18; awaiting silicon
+validation.** The 800x600@60 transaction remains the byte-for-byte signed-off
+clock-only limiter, while `L10GL_REFRESH=75` now applies the complete fixed
+800x600@75 CRTC image. DB019-B's PLL constraints produce 49.516MHz from the
+49.500MHz target (`SR12=44`, `SR13=51`, 332ppm, 198.066MHz VCO), using the
+same immediate SR15.5 load already proven at 40 and 31.5MHz. Tests pin all 25
+standard CRTC bytes, positive sync polarity, `CR3B=e2`, `CR5D=01`, and the
+corrected `CR15=57 CR16=6f` vertical blank. The full gate retains pre/native
+sync measurement and complete state restoration. Both 1024x768 entries remain
+locked because their 4MB buffer/Z layout needs a separate policy.
+
 P6d's signed-off 60Hz hardware test over SSH:
 
 ```
@@ -1016,6 +1027,18 @@ The corrected gate is hardware-verified: the complete cube is visible at
 proved cleanup recovery of the original 800x600 simplefb console. The target
 readback is `CR15=df CR16=f2`. Keep 800x600@75 and all 1024x768 modes locked
 until their own staged gates.
+
+P6f hardware test over SSH:
+
+```
+sudo env L10GL_BACKEND=virge L10GL_MODESET=native L10GL_REFRESH=75 \
+  tools/l10gl-run -- ./cube 800 600 16
+```
+
+Expected diagnostics are approximately 46.89kHz / 75.02Hz with
+`SR12=44 SR13=51`, `CR15=57 CR16=6f`, `CR3B=e2`, and `CR5D=01`. Acceptance
+requires the complete stable cube with no black band and recovery of the
+original 800x600 simplefb console after Ctrl-C.
 
 The end-state for the primary card: set the mode by programming the chip
 directly, so L10GL runs even on a `vesafb`/fixed-mode console — the same
