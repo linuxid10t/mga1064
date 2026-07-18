@@ -61,8 +61,11 @@ The texture-object slice now supports GL texture names, level-zero RGB/RGBA
 unsigned-byte uploads, unpack alignment, nearest/linear filtering, and
 repeat/clamp selection. For a safe common hardware contract, images must be
 square powers of two no larger than 512x512. The new `gltexture` proof and
-pixel-level `test-gl` integration are verified under swrast; ViRGE validation
-is pending.
+pixel-level `test-gl` integration are verified under swrast, and the repeated
+RGBA8888 checker proof renders correctly on the target ViRGE/DX.
+
+Phase 4 is complete: both `gears` and `gltexture` run correctly through the
+OpenGL compatibility surface on swrast and the ViRGE hardware backend.
 
 | Backend | Hardware | Status |
 |---|---|---|

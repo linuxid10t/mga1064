@@ -1126,7 +1126,7 @@ swrast frame was rendered and visually inspected successfully. David then ran
 the same demo through `tools/l10gl-run` on the 4MB ViRGE/DX and reported that
 it renders correctly; the G2 silicon gate is closed.
 
-**G3 implemented 2026-07-18; swrast verified, ViRGE sign-off pending.**
+**G3 implemented and hardware-verified 2026-07-18.**
 The shim now owns GL texture names and implements `glGenTextures`,
 `glDeleteTextures`, `glIsTexture`, `glBindTexture`, `glTexImage2D`,
 `glTexParameteri`, and `glPixelStorei(GL_UNPACK_ALIGNMENT)`. RGB/RGBA
@@ -1142,8 +1142,16 @@ storage remain owned by the context and are reclaimed at teardown.
 enable/disable dispatch, and invalid inputs, then renders a 2x2 GL texture
 through real swrast and verifies all four framebuffer quadrants from its PPM.
 The `gltexture` proof renders a repeated 64x64 RGBA8888 pattern; its 320x240
-RGB565 swrast frame was visually inspected successfully. Run that demo on the
-ViRGE to close G3. G4 is the final Phase 4 documentation/acceptance closure.
+RGB565 swrast frame was visually inspected successfully. David then ran the
+same proof on the 4MB ViRGE/DX and confirmed that the repeated colored checker
+rendered correctly. G3 is closed.
+
+**G4 complete 2026-07-18; Phase 4 accepted.** `gears` compiles against
+L10GL's `<GL/gl.h>` with its rendering body expressed entirely in GL calls and
+runs correctly on both swrast and ViRGE. The separate `gltexture` proof closes
+the GL texture-object path on those same two backends. Clean `make check`,
+ASan/UBSan coverage of the shim, correct swrast reference frames, and both
+ViRGE visual runs satisfy the Phase 4 acceptance criteria. Phase 5 is next.
 
 A thin `include/GL/gl.h`-subset (`src/l10gl_gl.c`) mapping real GL 1.1
 entry points onto the Phase 2 pipeline: `glBegin/glEnd/glVertex*/glColor*/

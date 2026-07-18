@@ -331,7 +331,7 @@ and center holes render correctly. David then ran `sudo tools/l10gl-run --
 This closes the gears silicon gate. Texture objects are still G3 and are not
 required by gears.
 
-**Phase 4 G3 implemented 2026-07-18; swrast verified, ViRGE run pending.**
+**Phase 4 G3 implemented and ViRGE-verified 2026-07-18.**
 The shim owns texture names and supplies gen/delete/is/bind, level-zero
 `glTexImage2D`, `glTexParameteri`, and unpack alignment. It converts tightly
 or padded RGB/RGBA unsigned-byte input to ARGB8888. DB019-B section 19.4 (PDF
@@ -348,6 +348,17 @@ RGB565 swrast frame was visually inspected and is correct. The remaining
 hardware command is `sudo tools/l10gl-run -- ./gltexture 800 600 16`; expect a
 black border around a rectangle containing a 2x2 repeat of the
 colored/checkered texture, followed by normal console recovery on Ctrl-C.
+
+David ran that exact `gltexture` command on the 4MB ViRGE/DX and reported that
+the output looks correct. This verifies the GL name/bind/upload/parameter path,
+ARGB8888 ViRGE sampling, linear filtering, repeat wrapping, quad dispatch,
+page-flip presentation, and cleanup together. G3 is closed.
+
+**Phase 4 G4 complete 2026-07-18; phase accepted.** Both proof applications
+now pass on swrast and ViRGE: `gears` verifies immediate quads, matrices,
+lighting/material, flat/smooth shading, culling, depth, and swap; `gltexture`
+verifies texture objects and sampling. `make check` is clean and the shim's
+object lifetime paths pass ASan/UBSan. Proceed to Phase 5 Matrox parity.
 
 ```
 sudo env L10GL_BACKEND=virge L10GL_MODESET=native \
