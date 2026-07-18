@@ -1,107 +1,137 @@
 # L10GL — Lightweight Legacy OpenGL Driver Framework
 
-A framework for writing userspace OpenGL-style drivers for vintage
-fixed-function graphics hardware. Each card gets a backend that implements
-a common interface; applications link against L10GL and are hardware-agnostic.
+L10GL is a userspace OpenGL-style driver framework for vintage fixed-function
+graphics hardware. Applications call a small hardware-independent API; L10GL
+detects a supported PCI card and dispatches directly to its MMIO drawing
+engine.
 
-No DRM, no DRI, no Mesa, no kernel module. Just direct PCI MMIO register
-programming, the way graphics worked before programmable shaders.
+There is no DRM, DRI, Mesa, kernel module, X11, or GLX. The current target is a
+full-screen Linux console, programmed much like graphics hardware was in the
+1990s.
+
+## Current status
+
+The S3 ViRGE is the primary backend and is tested on a real ViRGE/DX with 4 MB
+of VRAM. The following paths are verified on silicon:
+
+- Gouraud-shaded, depth-tested triangles
+- perspective-correct texture mapping with repeat wrapping
+- nearest and bilinear texture filtering
+- depth-test, depth-mask, and depth-function state plumbing
+- 2D rectangle fills
+- native RGB555 scanout takeover when no fbdev driver owns the card
+- double-buffered, vsync-synchronized page flips
+
+The spinning `cube` and `textured_cube` demos render correctly and tear-free on
+that machine. The Matrox MGA-1064SG backend builds and remains structurally
+supported, but has not yet been validated on hardware.
+
+| Backend | Hardware | Status |
+|---|---|---|
+| `virge` | S3 ViRGE family | Primary; ViRGE/DX verified on silicon |
+| `mga1064` | Matrox Mystique/MGA-1064SG | Builds; hardware-unverified |
+
+The detailed hardware history and test evidence live in
+[`docs/HANDOFF.md`](docs/HANDOFF.md). The implementation roadmap is
+[`PLAN.md`](PLAN.md).
 
 ## Architecture
 
-```
-┌─────────────────────────────────────────┐
-│           Application / Demo             │
-│                 (cube.c)                 │
-├─────────────────────────────────────────┤
-│            L10GL Frontend                │
-│  (l10gl.c — state cache, dispatch)      │
-│  clear / draw_triangle / depth_func ...  │
-├─────────────┬───────────────────────────┤
-│  mga1064    │   (future backends)       │
-│  backend    │   virge, rage, voodoo ... │
-│  Matrox     │                           │
-│  Mystique   │                           │
-└─────────────┴───────────────────────────┘
+```text
+Application / demo
+        │
+        ▼
+L10GL frontend (state cache + runtime backend registry)
+        │
+        ├── S3 ViRGE glue ────── ViRGE register driver
+        └── MGA-1064 glue ────── MGA-1064 register driver
 ```
 
-### Frontend (`src/l10gl.c`, `src/l10gl.h`)
+Each backend implements `struct l10gl_backend` from `src/l10gl.h`. The frontend
+owns common render state and dispatches through that vtable. Backend glue
+converts generic vertices and state into the low-level chip driver's formats.
 
-The frontend provides a GL-like API: `l10gl_clear`, `l10gl_draw_triangle`,
-`l10gl_depth_func`, `l10gl_clear`, etc. It caches render state (depth func,
-blend mode, clear values) and dispatches to the active backend through a
-function-pointer vtable (`struct l10gl_backend`). This mirrors the classic
-Mesa `dd_function_table` pattern.
-
-### Backends (`src/backends/<chip>/`)
-
-Each backend implements the `l10gl_backend` vtable for a specific GPU:
-
-- **`mga1064`** — Matrox Mystique (MGA-1064SG, 1996)
-  - Gouraud-shaded, Z-tested triangle rasterization in hardware
-  - Bresenham line drawing in hardware
-  - Rectangle fill / Z clear
-  - PCI discovery, MMIO mapping, framebuffer access
-
-## What it does (today)
-
-The Mystique backend can draw **Gouraud-shaded, Z-buffered triangles**
-entirely in hardware. The cube demo renders a spinning cube with per-face
-directional diffuse lighting, hardware depth testing, and per-vertex color
-interpolation — no CPU rasterization.
-
-## Supported Hardware
-
-| Backend | Chip | Capabilities | Status |
-|---------|------|-------------|--------|
-| `mga1064` | Matrox MGA-1064SG (Mystique) | Gouraud, Z-buffer, Lines | Compiles, untested on HW |
-
-Future backends: 3Dfx Voodoo, S3 ViRGE, ATi Rage, Riva 128, etc.
+PCI discovery is shared in `src/pci_scan.c`. Detection is read-only: ViRGE is
+tried first, followed by MGA-1064. Initialization and hardware access only
+begin after a backend has been selected.
 
 ## Requirements
 
-- A supported vintage GPU installed in a Linux machine
-- Working fbdev console (`matroxfb` or `vesafb` must have set the video mode)
-- Root access (for `/dev/fb0` mmap and PCI resource access)
-- 32-bit x86 (i686+)
+- Linux on x86 hardware with permission to use legacy VGA I/O ports
+- a supported PCI graphics card
+- root privileges for PCI resource mappings and I/O-port access
+- GCC, GNU Make, and standard Linux development headers
 
-## Build & Run
+The ViRGE test machine intentionally has no `/dev/fb0`. In that configuration,
+the backend adopts the live CRTC raster and changes scanout to the RGB555 format
+required by the ViRGE 3D engine. A conventional fbdev console is still expected
+by parts of the MGA path.
 
-```bash
+## Build and run
+
+Build the static library, all backends, demos, and retained diagnostics:
+
+```sh
 make
-sudo ./cube              # 640x480 @ 16bpp (default)
-sudo ./cube 800 600 16   # custom resolution
 ```
 
-Ctrl-C to exit.
+Run a demo as root:
 
-## Project Structure
-
+```sh
+sudo ./cube
+sudo ./textured_cube
+sudo ./cube 800 600 16
 ```
+
+Frontend demos select hardware at runtime. Force a particular backend when
+testing discovery or a multi-card machine:
+
+```sh
+sudo env L10GL_BACKEND=virge ./cube
+sudo env L10GL_BACKEND=mga1064 ./cube
+```
+
+An unknown override is rejected and prints the available backend names. If no
+supported card is present, demos fail without attempting MMIO access.
+
+`make` produces `libl10gl.a`. An application can include `src/l10gl.h`, link
+the archive and `libm`, then create a context with `l10gl_create_auto()`.
+
+## Diagnostics
+
+The repository retains the small ViRGE probes used to settle hardware behavior:
+`scantest`, `filltest`, `tritest`, `gltritest`, `fliptest`, `dztest`, `seamtest`,
+`cubefb`, `diagap`, and `texprobe`. They build with the normal `make` invocation
+and intentionally bypass some frontend abstractions.
+
+Use them only for the investigation described in their source comments and in
+`docs/HANDOFF.md`; several directly manipulate scanout or inspect VRAM.
+
+## Important limitation on exit
+
+On the no-fbdev ViRGE/DX test machine, Ctrl-C restores the original CRTC mode
+and scanout address, but it does not restore the original console pixels. The
+BAR0 CPU mapping is write-combined and reads as zero, so the existing CPU
+snapshot cannot capture the console. The parked fix is an engine-assisted
+BitBLT to temporary VRAM (or a system-memory transfer path). Until then, the
+last rendered frame remains visible in the restored console mode.
+
+## Project layout
+
+```text
 src/
-├── l10gl.h                    # Public API + backend interface
-├── l10gl.c                    # Frontend dispatch + state cache
+├── l10gl.c, l10gl.h             frontend API and backend registry
+├── pci_scan.c, pci_scan.h       shared PCI sysfs discovery
 └── backends/
-    └── mga1064/
-        ├── mga1064.h           # Hardware register definitions (from datasheet)
-        ├── mga1064.c           # PCI discovery, MMIO, engine init, drawing
-        └── l10gl_mga1064.c     # Backend vtable glue (l10gl → mga1064)
-demos/
-└── cube.c                      # Spinning Gouraud cube
+    ├── virge/                   S3 ViRGE glue and register driver
+    └── mga1064/                 Matrox Mystique glue and register driver
+demos/                           demos and hardware diagnostics
+docs/datasheets/                 primary hardware documentation
+docs/HANDOFF.md                  silicon results and active handoff
+PLAN.md                          phased implementation roadmap
 ```
 
-## Adding a New Backend
-
-1. Create `src/backends/<yourchip>/`
-2. Implement the `l10gl_backend` vtable (see `l10gl.h` for the struct)
-3. Provide hardware init, triangle/line/rect drawing, buffer clearing
-4. Register your backend: `extern const struct l10gl_backend mychip_backend;`
-5. Compile by setting `BACKEND=mychip` in the Makefile
-
-The minimum implementation needs: `init`, `cleanup`, `clear_color`,
-`draw_triangle`, `wait_engine`. Everything else is optional — if the
-hardware can't do it, set the function pointer to NULL and the frontend
-will skip it or provide a software fallback.
+See [`docs/BACKEND.md`](docs/BACKEND.md) before adding another card.
 
 ## License
 

@@ -446,6 +446,13 @@ range instead of rendering black.
 These unblock everything else (especially agent-side testing) and touch no
 proven hardware paths.
 
+**Status (2026-07-17): F1, F2, and F5 complete.** Both hardware backends use
+shared sysfs discovery and read-only probes; frontend demos autodetect at
+runtime with `L10GL_BACKEND` overrides; `make` builds both backends into
+`libl10gl.a` with dependency-tracked objects. README and `docs/BACKEND.md` now
+describe that architecture. F3 (software rasterizer) is the next core task;
+F4 remains optional.
+
 ### F1. Runtime backend registry and probe
 Add to the vtable:
 
