@@ -49,12 +49,13 @@ primitives. The direct `l10gl_draw_triangle` API remains available and
 unchanged.
 
 Phase 4 has started with a real `<GL/gl.h>` compatibility surface. Its first
-checkpoint maps immediate triangles/strips/fans/lines, current vertex
+checkpoint maps immediate triangles/strips/fans/lines/quads/quad strips, current vertex
 attributes, matrix stacks and projection calls, viewport/depth range, masked
 clears, depth/blend/cull/lighting state, synchronization, and GL error
-reporting onto that frontend. L10GL still owns fullscreen context creation and
-buffer swapping; quad assembly, light/material entry points, texture objects,
-and the gears proof are the next Phase 4 slices.
+reporting onto that frontend. Directional LIGHT0, ambient/diffuse material,
+and flat/smooth shading are sufficient for the new `gears` demo, whose first
+frame is verified under swrast. L10GL still owns fullscreen context creation
+and buffer swapping; texture objects and the ViRGE gears sign-off remain.
 
 | Backend | Hardware | Status |
 |---|---|---|
@@ -250,6 +251,7 @@ Run a demo as root:
 ```sh
 sudo ./cube
 sudo ./textured_cube
+sudo ./gears
 sudo ./cube 800 600 16
 ```
 
@@ -260,6 +262,7 @@ testing discovery or a multi-card machine:
 sudo env L10GL_BACKEND=virge ./cube
 sudo env L10GL_BACKEND=mga1064 ./cube
 env L10GL_BACKEND=swrast L10GL_FRAMES=1 ./cube
+env L10GL_BACKEND=swrast L10GL_FRAMES=1 ./gears
 ```
 
 An unknown override is rejected and prints the available backend names. If no

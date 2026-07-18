@@ -40,6 +40,7 @@ void l10gl_pipeline_init(struct l10gl_ctx *ctx)
     ctx->current_u = 0.0f;
     ctx->current_v = 0.0f;
     ctx->cull_mode_val = L10GL_CULL_NONE;
+    ctx->flat_shading = 0;
 
     ctx->lighting_enabled = 0;
     ctx->light_dir_x = 0.0f;
@@ -65,6 +66,8 @@ static int primitive_supported(enum l10gl_primitive primitive)
     return primitive == L10GL_TRIANGLES ||
            primitive == L10GL_TRIANGLE_STRIP ||
            primitive == L10GL_TRIANGLE_FAN ||
+           primitive == L10GL_QUADS ||
+           primitive == L10GL_QUAD_STRIP ||
            primitive == L10GL_LINES ||
            primitive == L10GL_LINE_STRIP;
 }
@@ -265,6 +268,17 @@ static void emit_triangle(struct l10gl_ctx *ctx,
         if (!project_clip_vertex(ctx, &clipped[i], &projected[i]))
             return;
 
+    if (ctx->flat_shading) {
+        /* Preserve the final submitted vertex as the provoking color even
+         * when near-plane clipping creates replacement vertices. */
+        for (int i = 0; i < count; i++) {
+            projected[i].screen.r = c->r;
+            projected[i].screen.g = c->g;
+            projected[i].screen.b = c->b;
+            projected[i].screen.a = c->a;
+        }
+    }
+
     /* A clipped quad is triangulated as a fan, preserving polygon winding and
      * shared-edge attribute identity. */
     for (int i = 1; i + 1 < count; i++) {
@@ -302,7 +316,34 @@ static void emit_line(struct l10gl_ctx *ctx,
         !project_clip_vertex(ctx, &clipped[0], &projected[0]) ||
         !project_clip_vertex(ctx, &clipped[1], &projected[1]))
         return;
+    if (ctx->flat_shading) {
+        projected[0].screen.r = projected[1].screen.r = b->r;
+        projected[0].screen.g = projected[1].screen.g = b->g;
+        projected[0].screen.b = projected[1].screen.b = b->b;
+        projected[0].screen.a = projected[1].screen.a = b->a;
+    }
     l10gl_draw_line(ctx, projected[0].screen, projected[1].screen);
+}
+
+static void emit_quad(struct l10gl_ctx *ctx,
+                      const struct l10gl_immediate_vertex *a,
+                      const struct l10gl_immediate_vertex *b,
+                      const struct l10gl_immediate_vertex *c,
+                      const struct l10gl_immediate_vertex *d,
+                      const struct l10gl_immediate_vertex *provoking)
+{
+    struct l10gl_immediate_vertex vertices[4] = { *a, *b, *c, *d };
+
+    if (ctx->flat_shading) {
+        for (int i = 0; i < 4; i++) {
+            vertices[i].r = provoking->r;
+            vertices[i].g = provoking->g;
+            vertices[i].b = provoking->b;
+            vertices[i].a = provoking->a;
+        }
+    }
+    emit_triangle(ctx, &vertices[0], &vertices[1], &vertices[2]);
+    emit_triangle(ctx, &vertices[0], &vertices[2], &vertices[3]);
 }
 
 static void assemble_vertex(struct l10gl_ctx *ctx,
@@ -343,6 +384,31 @@ static void assemble_vertex(struct l10gl_ctx *ctx,
         else {
             emit_triangle(ctx, &slots[0], &slots[1], &vertex);
             slots[1] = vertex;
+        }
+        count++;
+        break;
+
+    case L10GL_QUADS:
+        slots[count % 4] = vertex;
+        count++;
+        if (count % 4 == 0)
+            emit_quad(ctx, &slots[0], &slots[1], &slots[2], &slots[3],
+                      &slots[3]);
+        break;
+
+    case L10GL_QUAD_STRIP:
+        if (count < 2) {
+            slots[count] = vertex;
+        } else {
+            slots[2 + (count & 1)] = vertex;
+            if (count & 1) {
+                /* GL quad-strip perimeter order for each pair is
+                 * 0,1,3,2. Split on diagonal 0-3. */
+                emit_quad(ctx, &slots[0], &slots[1], &slots[3], &slots[2],
+                          &slots[3]);
+                slots[0] = slots[2];
+                slots[1] = slots[3];
+            }
         }
         count++;
         break;
@@ -533,6 +599,11 @@ int l10gl_cull_face(struct l10gl_ctx *ctx, enum l10gl_cull_mode mode)
         return -EINVAL;
     ctx->cull_mode_val = mode;
     return 0;
+}
+
+void l10gl_shade_flat(struct l10gl_ctx *ctx, int enable)
+{
+    ctx->flat_shading = !!enable;
 }
 
 void l10gl_enable_lighting(struct l10gl_ctx *ctx, int enable)

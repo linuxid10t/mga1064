@@ -135,8 +135,29 @@ static void test_immediate_and_matrices(struct l10gl_ctx *ctx)
     expect_float("captured U", capture.triangle[2].u, 0.6f);
     expect_int("immediate-mode error", glGetError(), GL_NO_ERROR);
 
+    memset(&capture, 0, sizeof(capture));
+    glLoadIdentity();
     glBegin(GL_QUADS);
-    expect_int("unsupported primitive", glGetError(), GL_INVALID_ENUM);
+    glColor3f(0.1f, 0, 0); glVertex2f(-.5f, -.5f);
+    glColor3f(0.2f, 0, 0); glVertex2f( .5f, -.5f);
+    glColor3f(0.3f, 0, 0); glVertex2f( .5f,  .5f);
+    glColor3f(0.4f, 0, 0); glVertex2f(-.5f,  .5f);
+    glEnd();
+    expect_int("GL quad triangle count", capture.triangles, 2);
+    expect_float("GL quad second triangle v0", capture.triangle[0].r, .1f);
+    expect_float("GL quad second triangle v1", capture.triangle[1].r, .3f);
+    expect_float("GL quad second triangle v2", capture.triangle[2].r, .4f);
+
+    memset(&capture, 0, sizeof(capture));
+    glBegin(GL_QUAD_STRIP);
+    glVertex2f(-.5f, -.5f); glVertex2f(-.5f, .5f);
+    glVertex2f(0, -.5f);    glVertex2f(0, .5f);
+    glVertex2f(.5f, -.5f); glVertex2f(.5f, .5f);
+    glEnd();
+    expect_int("GL quad strip triangle count", capture.triangles, 4);
+
+    glBegin(GL_POINTS);
+    expect_int("unsupported points", glGetError(), GL_INVALID_ENUM);
     glEnd();
     expect_int("end after rejected begin", glGetError(), GL_INVALID_OPERATION);
 
@@ -184,6 +205,68 @@ static void test_state(struct l10gl_ctx *ctx)
     glBlendFunc(GL_SRC_ALPHA, 0xbeef);
     expect_int("first error remains latched", glGetError(), GL_INVALID_ENUM);
     expect_int("second error consumed with latch", glGetError(), GL_NO_ERROR);
+}
+
+static void test_lighting_material(struct l10gl_ctx *ctx)
+{
+    const GLfloat position[4] = { 0, 0, 2, 0 };
+    const GLfloat ambient[4] = { .1f, .1f, .1f, 1 };
+    const GLfloat diffuse[4] = { .6f, .6f, .6f, 1 };
+    const GLfloat material[4] = { .5f, .25f, 1, .75f };
+    const GLfloat positional[4] = { 0, 0, 2, 1 };
+
+    glMatrixMode(GL_MODELVIEW);
+    glLoadIdentity();
+    glLightfv(GL_LIGHT0, GL_POSITION, position);
+    expect_float("GL light ray direction Z", ctx->light_dir_z, -1);
+    glLightfv(GL_LIGHT0, GL_AMBIENT, ambient);
+    glLightfv(GL_LIGHT0, GL_DIFFUSE, diffuse);
+    glMaterialfv(GL_FRONT, GL_AMBIENT_AND_DIFFUSE, material);
+    expect_float("GL light ambient", ctx->ambient_r, .1f);
+    expect_float("GL light diffuse", ctx->light_r, .6f);
+    expect_float("GL material red", ctx->material_r, .5f);
+    expect_float("GL material alpha", ctx->material_a, .75f);
+
+    glEnable(GL_LIGHT0);
+    glEnable(GL_LIGHTING);
+    glNormal3f(0, 0, 1);
+    memset(&capture, 0, sizeof(capture));
+    glBegin(GL_TRIANGLES);
+    glVertex2f(-.25f, -.25f);
+    glVertex2f(.25f, -.25f);
+    glVertex2f(0, .25f);
+    glEnd();
+    expect_int("GL lit triangle", capture.triangles, 1);
+    expect_float("GL lit material red", capture.triangle[0].r, .35f);
+    expect_float("GL lit material green", capture.triangle[0].g, .175f);
+    expect_float("GL lit material blue", capture.triangle[0].b, .7f);
+    expect_float("GL lit material alpha", capture.triangle[0].a, .75f);
+
+    glLightfv(GL_LIGHT0, GL_POSITION, positional);
+    expect_int("positional light rejected", glGetError(), GL_INVALID_VALUE);
+    glMaterialfv(GL_BACK, GL_AMBIENT_AND_DIFFUSE, material);
+    expect_int("back-only material rejected", glGetError(), GL_INVALID_ENUM);
+    glDisable(GL_LIGHTING);
+}
+
+static void test_shade_model(struct l10gl_ctx *ctx)
+{
+    glShadeModel(GL_FLAT);
+    expect_int("flat shading enabled", ctx->flat_shading, 1);
+    memset(&capture, 0, sizeof(capture));
+    glBegin(GL_TRIANGLES);
+    glColor3f(.1f, 0, 0); glVertex2f(-.25f, -.25f);
+    glColor3f(.2f, 0, 0); glVertex2f( .25f, -.25f);
+    glColor3f(.3f, 0, 0); glVertex2f(0, .25f);
+    glEnd();
+    expect_float("flat provoking color v0", capture.triangle[0].r, .3f);
+    expect_float("flat provoking color v1", capture.triangle[1].r, .3f);
+    expect_float("flat provoking color v2", capture.triangle[2].r, .3f);
+
+    glShadeModel(GL_SMOOTH);
+    expect_int("smooth shading restored", ctx->flat_shading, 0);
+    glShadeModel(0xbeef);
+    expect_int("bad shade model", glGetError(), GL_INVALID_ENUM);
 }
 
 static void test_clear_and_sync(struct l10gl_ctx *ctx)
@@ -235,6 +318,8 @@ int main(void)
 
     test_immediate_and_matrices(&ctx);
     test_state(&ctx);
+    test_lighting_material(&ctx);
+    test_shade_model(&ctx);
     test_clear_and_sync(&ctx);
     test_stack_errors();
 

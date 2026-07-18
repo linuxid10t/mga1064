@@ -51,6 +51,8 @@ enum l10gl_primitive {
     L10GL_TRIANGLES,     /* Every 3 vertices = 1 triangle */
     L10GL_TRIANGLE_STRIP,/* Strip of triangles sharing edges */
     L10GL_TRIANGLE_FAN,  /* Fan of triangles sharing first vertex */
+    L10GL_QUADS,         /* Every 4 vertices = 2 triangles */
+    L10GL_QUAD_STRIP,    /* Paired vertices form connected quads */
     L10GL_LINES,         /* Independent line segments */
     L10GL_LINE_STRIP,    /* Connected line segments */
     L10GL_POINTS,
@@ -306,6 +308,7 @@ struct l10gl_ctx {
     float current_nx, current_ny, current_nz;
     float current_u, current_v;
     enum l10gl_cull_mode cull_mode_val;
+    int flat_shading;
 
     /* X4 frontend lighting. The directional vector is the eye-space
      * direction in which light rays travel; normals point toward the light
@@ -319,7 +322,7 @@ struct l10gl_ctx {
     int immediate_active;
     enum l10gl_primitive immediate_primitive;
     unsigned long immediate_vertex_count;
-    struct l10gl_immediate_vertex immediate_vertices[3];
+    struct l10gl_immediate_vertex immediate_vertices[4];
 };
 
 /* ========================================================================
@@ -406,6 +409,7 @@ void l10gl_color4f(struct l10gl_ctx *ctx,
 void l10gl_normal3f(struct l10gl_ctx *ctx, float x, float y, float z);
 void l10gl_texcoord2f(struct l10gl_ctx *ctx, float u, float v);
 int l10gl_cull_face(struct l10gl_ctx *ctx, enum l10gl_cull_mode mode);
+void l10gl_shade_flat(struct l10gl_ctx *ctx, int enable);
 
 /* X4 directional diffuse + ambient lighting. Lighting is disabled by
  * default. light_dir is an eye-space light-ray direction and normalizes its

@@ -316,6 +316,20 @@ passes. Do not call Phase 4 complete yet: next implement GL_QUADS and
 GL_QUAD_STRIP assembly plus `glLightfv`/`glMaterialfv` for classic gears,
 then texture objects and the swrast/ViRGE gears acceptance run.
 
+**Phase 4 G2 implemented 2026-07-18; swrast verified, ViRGE run pending.**
+The core streaming assembler now splits quads and quad strips into triangles
+with the OpenGL perimeter order and no allocation. Flat shading uses the final
+submitted vertex as provoking color and survives near clipping; smooth remains
+Gouraud. `glLightfv` supports LIGHT0 ambient/diffuse plus a directional
+`GL_POSITION` (`w=0`) transformed by MODELVIEW at call time, and
+`glMaterialfv` covers the ambient/diffuse material used by gears. The new
+`demos/gears.c` rendering body uses only the GL compatibility calls; context
+setup and swap are L10GL-specific. A 320x240 RGB565 offscreen swrast frame was
+generated and visually inspected: all three colored, lit gears, their teeth,
+and center holes render correctly. Run `sudo tools/l10gl-run -- ./gears 800
+600 16` over SSH for the remaining G2 silicon sign-off. Texture objects are
+still G3 and are not required by gears.
+
 ```
 sudo env L10GL_BACKEND=virge L10GL_MODESET=native \
   tools/l10gl-run -- ./cube 800 600 16

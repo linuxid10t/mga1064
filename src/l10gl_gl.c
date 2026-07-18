@@ -120,6 +120,8 @@ static int gl_primitive(GLenum mode, enum l10gl_primitive *primitive)
     case GL_TRIANGLES:      *primitive = L10GL_TRIANGLES; return 0;
     case GL_TRIANGLE_STRIP: *primitive = L10GL_TRIANGLE_STRIP; return 0;
     case GL_TRIANGLE_FAN:   *primitive = L10GL_TRIANGLE_FAN; return 0;
+    case GL_QUADS:          *primitive = L10GL_QUADS; return 0;
+    case GL_QUAD_STRIP:     *primitive = L10GL_QUAD_STRIP; return 0;
     case GL_LINES:          *primitive = L10GL_LINES; return 0;
     case GL_LINE_STRIP:     *primitive = L10GL_LINE_STRIP; return 0;
     default: return -1;
@@ -575,9 +577,86 @@ void glShadeModel(GLenum mode)
         gl_record_error(GL_INVALID_ENUM);
         return;
     }
-    /* Hardware always receives per-vertex color; flat shading is completed
-     * with quad support in the gears slice. */
     gl_state.shade_model = mode;
+    l10gl_shade_flat(gl_state.current, mode == GL_FLAT);
+}
+
+void glLightfv(GLenum light, GLenum pname, const GLfloat *params)
+{
+    struct l10gl_ctx *ctx = gl_current();
+
+    if (!params) {
+        gl_record_error(GL_INVALID_VALUE);
+        return;
+    }
+    if (!ctx)
+        return;
+    if (light != GL_LIGHT0) {
+        gl_record_error(GL_INVALID_ENUM);
+        return;
+    }
+
+    switch (pname) {
+    case GL_AMBIENT:
+        l10gl_light_ambient(ctx, params[0], params[1], params[2]);
+        break;
+    case GL_DIFFUSE:
+        l10gl_light_color(ctx, params[0], params[1], params[2]);
+        break;
+    case GL_POSITION: {
+        float modelview[16];
+        float position[4] = { params[0], params[1], params[2], params[3] };
+        float eye_direction[4];
+
+        /* Phase 2 implements one directional light. A w=0 GL position is a
+         * direction toward the light and is transformed by the current
+         * MODELVIEW at call time. l10gl_light_dir stores the opposite ray
+         * travel direction. */
+        if (params[3] != 0.0f) {
+            gl_record_error(GL_INVALID_VALUE);
+            return;
+        }
+        if (l10gl_get_matrix(ctx, L10GL_MATRIX_MODELVIEW, modelview)) {
+            gl_record_error(GL_INVALID_OPERATION);
+            return;
+        }
+        l10gl_transform_vec4(modelview, position, eye_direction);
+        if (l10gl_light_dir(ctx, -eye_direction[0], -eye_direction[1],
+                           -eye_direction[2]))
+            gl_record_error(GL_INVALID_VALUE);
+        break;
+    }
+    default:
+        gl_record_error(GL_INVALID_ENUM);
+        break;
+    }
+}
+
+void glMaterialfv(GLenum face, GLenum pname, const GLfloat *params)
+{
+    struct l10gl_ctx *ctx = gl_current();
+
+    if (!params) {
+        gl_record_error(GL_INVALID_VALUE);
+        return;
+    }
+    if (!ctx)
+        return;
+    if (face != GL_FRONT && face != GL_FRONT_AND_BACK) {
+        gl_record_error(GL_INVALID_ENUM);
+        return;
+    }
+    if (pname != GL_AMBIENT && pname != GL_DIFFUSE &&
+        pname != GL_AMBIENT_AND_DIFFUSE) {
+        gl_record_error(GL_INVALID_ENUM);
+        return;
+    }
+
+    /* L10GL's deliberately small lighting model has one RGB reflectance,
+     * shared by ambient and diffuse. This exactly covers gears' use of
+     * GL_AMBIENT_AND_DIFFUSE and is the documented fallback for either
+     * component alone. */
+    l10gl_material(ctx, params[0], params[1], params[2], params[3]);
 }
 
 void glFlush(void)

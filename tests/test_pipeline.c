@@ -282,6 +282,58 @@ static void test_strip_and_fan_assembly(struct l10gl_ctx *ctx)
     l10gl_cull_face(ctx, L10GL_CULL_NONE);
 }
 
+static void test_quad_assembly(struct l10gl_ctx *ctx)
+{
+    l10gl_cull_face(ctx, L10GL_CULL_NONE);
+    reset_capture();
+    l10gl_begin(ctx, L10GL_QUADS);
+    submit_colored_vertex(ctx, -.5f, -.5f, 0, .1f);
+    submit_colored_vertex(ctx,  .5f, -.5f, 0, .2f);
+    submit_colored_vertex(ctx,  .5f,  .5f, 0, .3f);
+    submit_colored_vertex(ctx, -.5f,  .5f, 0, .4f);
+    /* An incomplete second quad is ignored at end. */
+    submit_colored_vertex(ctx, -.2f, -.2f, 0, .5f);
+    l10gl_end(ctx);
+    expect_int("quad triangle count", capture.triangle_count, 2);
+    expect_float("quad t0 v0", capture.triangles[0].v[0].r, .1f);
+    expect_float("quad t0 v1", capture.triangles[0].v[1].r, .2f);
+    expect_float("quad t0 v2", capture.triangles[0].v[2].r, .3f);
+    expect_float("quad t1 v0", capture.triangles[1].v[0].r, .1f);
+    expect_float("quad t1 v1", capture.triangles[1].v[1].r, .3f);
+    expect_float("quad t1 v2", capture.triangles[1].v[2].r, .4f);
+
+    reset_capture();
+    l10gl_shade_flat(ctx, 1);
+    l10gl_begin(ctx, L10GL_QUADS);
+    submit_colored_vertex(ctx, -.5f, -.5f, 0, .1f);
+    submit_colored_vertex(ctx,  .5f, -.5f, 0, .2f);
+    submit_colored_vertex(ctx,  .5f,  .5f, 0, .3f);
+    submit_colored_vertex(ctx, -.5f,  .5f, 0, .4f);
+    l10gl_end(ctx);
+    expect_float("flat quad t0 provoking color",
+                 capture.triangles[0].v[0].r, .4f);
+    expect_float("flat quad t1 provoking color",
+                 capture.triangles[1].v[2].r, .4f);
+    l10gl_shade_flat(ctx, 0);
+
+    reset_capture();
+    l10gl_begin(ctx, L10GL_QUAD_STRIP);
+    submit_colored_vertex(ctx, -.8f, -.5f, 0, .1f);
+    submit_colored_vertex(ctx, -.8f,  .5f, 0, .2f);
+    submit_colored_vertex(ctx,  0.0f, -.5f, 0, .3f);
+    submit_colored_vertex(ctx,  0.0f,  .5f, 0, .4f);
+    submit_colored_vertex(ctx,  .8f, -.5f, 0, .5f);
+    submit_colored_vertex(ctx,  .8f,  .5f, 0, .6f);
+    l10gl_end(ctx);
+    expect_int("quad strip triangle count", capture.triangle_count, 4);
+    expect_float("quad strip t0 order 0", capture.triangles[0].v[0].r, .1f);
+    expect_float("quad strip t0 order 1", capture.triangles[0].v[1].r, .2f);
+    expect_float("quad strip t0 order 2", capture.triangles[0].v[2].r, .4f);
+    expect_float("quad strip t1 diagonal", capture.triangles[1].v[1].r, .4f);
+    expect_float("quad strip next pair 0", capture.triangles[2].v[0].r, .3f);
+    expect_float("quad strip next pair 2", capture.triangles[2].v[2].r, .6f);
+}
+
 static void test_line_assembly(struct l10gl_ctx *ctx)
 {
     reset_capture();
@@ -689,6 +741,7 @@ int main(void)
     test_textured_dispatch(&ctx);
     test_modelview_connection(&ctx);
     test_strip_and_fan_assembly(&ctx);
+    test_quad_assembly(&ctx);
     test_line_assembly(&ctx);
     test_culling_and_clip_rejection(&ctx);
     test_near_plane_clipping(&ctx);
@@ -701,7 +754,7 @@ int main(void)
         fprintf(stderr, "test-pipeline: FAILED (%d checks)\n", failures);
         return 1;
     }
-    printf("test-pipeline: PASS (attributes, assembly, transforms, culling, "
+    printf("test-pipeline: PASS (attributes, triangle/quad assembly, transforms, culling, "
            "near clipping, interpolation, scan guard, lighting, perspective W)\n");
     return 0;
 }

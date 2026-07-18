@@ -75,6 +75,7 @@ typedef void GLvoid;
 #define GL_COLOR_BUFFER_BIT              0x00004000u
 
 #define GL_CULL_FACE                     0x0B44
+#define GL_COLOR_MATERIAL                0x0B57
 #define GL_LIGHTING                      0x0B50
 #define GL_LIGHT0                        0x4000
 #define GL_DEPTH_TEST                    0x0B71
@@ -87,6 +88,11 @@ typedef void GLvoid;
 
 #define GL_MODELVIEW                     0x1700
 #define GL_PROJECTION                    0x1701
+
+#define GL_AMBIENT                       0x1200
+#define GL_DIFFUSE                       0x1201
+#define GL_POSITION                      0x1203
+#define GL_AMBIENT_AND_DIFFUSE           0x1602
 
 struct l10gl_ctx;
 
@@ -140,6 +146,8 @@ void glDepthFunc(GLenum func);
 void glDepthMask(GLboolean flag);
 void glBlendFunc(GLenum sfactor, GLenum dfactor);
 void glShadeModel(GLenum mode);
+void glLightfv(GLenum light, GLenum pname, const GLfloat *params);
+void glMaterialfv(GLenum face, GLenum pname, const GLfloat *params);
 void glFlush(void);
 void glFinish(void);
 

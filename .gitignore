@@ -2,6 +2,7 @@
 *.d
 cube
 textured_cube
+gears
 *.a
 *.so
 *.elf
