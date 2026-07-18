@@ -14,7 +14,6 @@
 
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
 #include <math.h>
 #include <unistd.h>
 #include <signal.h>
@@ -22,52 +21,9 @@
 
 #include "l10gl.h"
 
-/* -----------------------------------------------------------------------
- * Minimal 3D Math
- * ----------------------------------------------------------------------- */
-
-#define PI 3.14159265358979323846f
-
-static void build_rotation(float m[3][3], float angle_x, float angle_y)
-{
-    float sx = sinf(angle_x), cx = cosf(angle_x);
-    float sy = sinf(angle_y), cy = cosf(angle_y);
-
-    m[0][0] = cy;     m[0][1] = 0;      m[0][2] = sy;
-    m[1][0] = sx*sy;  m[1][1] = cx;     m[1][2] = -sx*cy;
-    m[2][0] = -cx*sy; m[2][1] = sx;     m[2][2] = cx*cy;
-}
-
-static void mat3_transform(float out[3], const float m[3][3], const float in[3])
-{
-    out[0] = m[0][0]*in[0] + m[0][1]*in[1] + m[0][2]*in[2];
-    out[1] = m[1][0]*in[0] + m[1][1]*in[1] + m[1][2]*in[2];
-    out[2] = m[2][0]*in[0] + m[2][1]*in[1] + m[2][2]*in[2];
-}
-
-struct screen_vertex {
-    float sx, sy, sz, sw;
-};
-
-static void project(struct screen_vertex *out, const float in[3],
-                     int screen_w, int screen_h, float camera_dist)
-{
-    float z = in[2] + camera_dist;
-    if (z < 0.1f) z = 0.1f;
-
-    float scale = (float)screen_h / z;
-
-    out->sx = (float)screen_w * 0.5f + in[0] * scale;
-    out->sy = (float)screen_h * 0.5f - in[1] * scale;
-    /* Map eye-z to a wide [0,1] slice (~32k of 65536 Z levels separate
-     * front/back), not the old /1000 collapse (~130 levels -> back faces
-     * Z-fight through front at grazing angles). */
-    out->sz = (in[2] + camera_dist - 3.0f) / 4.0f;
-    out->sw = 1.0f / z;  /* 1/Z_eye for perspective-correct texturing */
-
-    if (out->sz < 0.0f) out->sz = 0.0f;
-    if (out->sz > 1.0f) out->sz = 1.0f;
-}
+#define CAMERA_DIST 5.0f
+#define FOV_Y_DEGREES 53.130102f
+#define ANGLE_STEP_DEGREES 1.14591559f
 
 /* -----------------------------------------------------------------------
  * Cube Geometry
@@ -112,6 +68,11 @@ static const float face_uvs[12][3][2] = {
     /* Top face */
     {{0,0}, {1,0}, {1,1}},
     {{0,0}, {1,1}, {0,1}},
+};
+
+static const float face_colors[6][3] = {
+    {1, 0, 0}, {0, 1, 0}, {0, 0, 1},
+    {1, 1, 0}, {1, 0, 1}, {0, 1, 1},
 };
 
 /* -----------------------------------------------------------------------
@@ -291,6 +252,16 @@ int main(int argc, char **argv)
     l10gl_clear_color(&ctx, 0.0f, 0.0f, 0.0f);
     l10gl_clear_depth(&ctx, 1.0f);
     l10gl_depth_func(&ctx, L10GL_LESS);
+    l10gl_cull_face(&ctx, L10GL_CULL_BACK);
+
+    l10gl_matrix_mode(&ctx, L10GL_MATRIX_PROJECTION);
+    l10gl_load_identity(&ctx);
+    if (l10gl_perspective(&ctx, FOV_Y_DEGREES,
+                          (float)width / (float)height, 3.0f, 7.0f) < 0) {
+        fprintf(stderr, "Failed to configure projection.\n");
+        l10gl_destroy(&ctx);
+        return 1;
+    }
 
     float angle = 0.0f;
     int frame = 0;
@@ -302,73 +273,41 @@ int main(int argc, char **argv)
     putchar('\n');
 
     while (running) {
-        float rot[3][3];
-        build_rotation(rot, angle, angle * 0.7f);
-
         l10gl_clear(&ctx);
 
-        /* Transform all 8 cube vertices */
-        struct screen_vertex projected[8];
-        float transformed[8][3];
+        l10gl_matrix_mode(&ctx, L10GL_MATRIX_MODELVIEW);
+        l10gl_load_identity(&ctx);
+        l10gl_translatef(&ctx, 0, 0, -CAMERA_DIST);
+        l10gl_scalef(&ctx, 1, 1, -1);
+        l10gl_rotatef(&ctx, angle, 1, 0, 0);
+        l10gl_rotatef(&ctx, angle * 0.7f, 0, 1, 0);
 
-        for (int i = 0; i < 8; i++) {
-            mat3_transform(transformed[i], rot, cube_verts[i]);
-            project(&projected[i], transformed[i],
-                    width, height, 5.0f);
-        }
-
-        /* Draw all 12 triangles */
-        for (int face = 0; face < 12; face++) {
-            int i0 = cube_faces[face][0];
-            int i1 = cube_faces[face][1];
-            int i2 = cube_faces[face][2];
-
-            int color_idx = face / 2;
-
-            /* Full-bright white for textured (texel provides color),
-             * face color for Gouraud fallback */
-            float r, g, b;
+        for (int side = 0; side < 6; side++) {
             if (has_texture) {
-                r = g = b = 1.0f;
+                l10gl_bind_texture(&ctx, &textures[side]);
+                l10gl_color4f(&ctx, 1, 1, 1, 1);
             } else {
-                /* Use face-based colors for Gouraud fallback */
-                float cols[6][3] = {
-                    {1,0,0}, {0,1,0}, {0,0,1},
-                    {1,1,0}, {1,0,1}, {0,1,1}
-                };
-                r = cols[color_idx][0];
-                g = cols[color_idx][1];
-                b = cols[color_idx][2];
+                l10gl_bind_texture(&ctx, NULL);
+                l10gl_color4f(&ctx, face_colors[side][0],
+                              face_colors[side][1],
+                              face_colors[side][2], 1);
             }
 
-            struct l10gl_vertex v0 = {
-                .x = projected[i0].sx, .y = projected[i0].sy,
-                .z = projected[i0].sz, .w = projected[i0].sw,
-                .r = r, .g = g, .b = b, .a = 1.0f,
-                .u = face_uvs[face][0][0], .v = face_uvs[face][0][1]
-            };
-            struct l10gl_vertex v1 = {
-                .x = projected[i1].sx, .y = projected[i1].sy,
-                .z = projected[i1].sz, .w = projected[i1].sw,
-                .r = r, .g = g, .b = b, .a = 1.0f,
-                .u = face_uvs[face][1][0], .v = face_uvs[face][1][1]
-            };
-            struct l10gl_vertex v2 = {
-                .x = projected[i2].sx, .y = projected[i2].sy,
-                .z = projected[i2].sz, .w = projected[i2].sw,
-                .r = r, .g = g, .b = b, .a = 1.0f,
-                .u = face_uvs[face][2][0], .v = face_uvs[face][2][1]
-            };
+            l10gl_begin(&ctx, L10GL_TRIANGLES);
+            for (int triangle = 0; triangle < 2; triangle++) {
+                int face = side * 2 + triangle;
+                const int order[3] = {0, 2, 1};
 
-            if (has_texture) {
-                /* Bind the texture for this face pair */
-                if (face % 2 == 0)
-                    l10gl_bind_texture(&ctx, &textures[color_idx]);
+                for (int corner = 0; corner < 3; corner++) {
+                    int source = order[corner];
+                    const float *vertex = cube_verts[cube_faces[face][source]];
 
-                l10gl_draw_textured_triangle(&ctx, v0, v1, v2);
-            } else {
-                l10gl_draw_triangle(&ctx, v0, v1, v2);
+                    l10gl_texcoord2f(&ctx, face_uvs[face][source][0],
+                                     face_uvs[face][source][1]);
+                    l10gl_vertex3f(&ctx, vertex[0], vertex[1], vertex[2]);
+                }
             }
+            l10gl_end(&ctx);
         }
 
         l10gl_wait_engine(&ctx);
@@ -380,9 +319,9 @@ int main(int argc, char **argv)
             break;
         }
 
-        angle += 0.02f;
-        if (angle > 2.0f * PI)
-            angle -= 2.0f * PI;
+        angle += ANGLE_STEP_DEGREES;
+        if (angle > 360.0f)
+            angle -= 360.0f;
 
         if (frame % 60 == 0)
             printf("Frame %d\n", frame);
