@@ -74,6 +74,13 @@ See #5 for the full decode.
   CPU-drawn full-screen pattern displays correctly (border, corner
   markers, color bands, 555 discriminator green).
 
+For machines where a kernel framebuffer *is* bound, use
+`sudo tools/l10gl-run -- ./cube`. The launcher detaches fbcon, unbinds the
+owners of `/dev/fb0` and the selected PCI function, then restores the exact
+drivers and fbcon after the child exits. `--dry-run` prints the planned sysfs
+writes. The primary `david-ta970` setup needs no unbind because it has no
+`/dev/fb0` or bound ViRGE driver.
+
 ## Push workflow (non-negotiable — David has corrected agents on this repeatedly)
 
 The workspace machine has **no ViRGE card**; David tests on a separate box

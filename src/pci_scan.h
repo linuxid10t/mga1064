@@ -20,6 +20,7 @@ struct l10gl_pci_device {
 };
 
 /* Find the first PCI function matching vendor and any ID in device_ids.
+ * L10GL_PCI_DEVICE=<domain:bus:device.function> restricts the scan to one BDF.
  * Returns 0 on success or a negative errno value. */
 int l10gl_pci_find(struct l10gl_pci_device *device,
                    uint16_t vendor,

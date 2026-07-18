@@ -80,6 +80,7 @@ int l10gl_pci_find(struct l10gl_pci_device *device,
                    const uint16_t *device_ids,
                    size_t device_id_count)
 {
+    const char *forced_bdf = getenv("L10GL_PCI_DEVICE");
     struct dirent **entries;
     int entry_count;
     int result = -ENODEV;
@@ -102,6 +103,8 @@ int l10gl_pci_find(struct l10gl_pci_device *device,
         unsigned int irq;
 
         if (bdf[0] == '.')
+            continue;
+        if (forced_bdf && forced_bdf[0] && strcmp(bdf, forced_bdf) != 0)
             continue;
 
         snprintf(path, sizeof(path), PCI_SYSFS_DEVICES "/%s/vendor", bdf);

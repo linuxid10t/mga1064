@@ -32,9 +32,12 @@ PROGRAM_OBJS = $(addprefix demos/,$(addsuffix .o,$(PROGRAMS)))
 ALL_OBJS = $(LIB_OBJS) $(PROGRAM_OBJS)
 DEPS = $(ALL_OBJS:.o=.d)
 
-.PHONY: all clean
+.PHONY: all check clean
 
 all: $(LIBRARY) $(PROGRAMS)
+
+check: all
+	bash tests/test-l10gl-run.sh
 
 $(LIBRARY): $(LIB_OBJS)
 	$(AR) rcs $@ $^

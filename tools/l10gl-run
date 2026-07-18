@@ -1,0 +1,284 @@
+#!/usr/bin/env bash
+# Run an L10GL program with fbcon and kernel ownership temporarily detached.
+
+set -u
+
+sysfs_root=${L10GL_SYSFS_ROOT:-/sys}
+selected_bdf=${L10GL_PCI_DEVICE:-}
+dry_run=0
+restore_done=0
+
+declare -a detached_vtcon_bind=()
+declare -a driver_paths=()
+declare -a driver_device_ids=()
+declare -a driver_labels=()
+declare -a driver_unbound=()
+
+usage()
+{
+    cat <<'EOF'
+Usage: sudo tools/l10gl-run [options] -- PROGRAM [ARG...]
+
+Temporarily detach the kernel framebuffer console and unbind the drivers that
+own /dev/fb0 and the selected L10GL PCI card. The exact drivers are rebound and
+fbcon is reattached after PROGRAM exits.
+
+Options:
+  --device BDF   Use one supported PCI function (for example 0000:01:00.0)
+  --dry-run      Print the detach/run/restore plan without changing sysfs
+  -h, --help     Show this help
+
+L10GL_BACKEND=virge or mga1064 restricts automatic selection. The selected
+backend and BDF are exported to PROGRAM so it opens the same card.
+EOF
+}
+
+die()
+{
+    printf 'l10gl-run: %s\n' "$*" >&2
+    exit 1
+}
+
+backend_for_device()
+{
+    local device_path=$1
+    local vendor device
+
+    [[ -r "$device_path/vendor" && -r "$device_path/device" ]] || return 1
+    IFS= read -r vendor < "$device_path/vendor" || return 1
+    IFS= read -r device < "$device_path/device" || return 1
+    vendor=${vendor,,}
+    device=${device,,}
+
+    case "$vendor:$device" in
+        0x5333:0x5631|0x5333:0x883d|0x5333:0x8a01|0x5333:0x8a10|0x5333:0x8c00|0x5333:0x8c01)
+            printf 'virge\n'
+            ;;
+        0x102b:0x051a|0x102b:0x051e|0x102b:0x0100)
+            printf 'mga1064\n'
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+select_device()
+{
+    local requested_backend=${L10GL_BACKEND:-}
+    local device_path backend wanted
+    local -a wanted_backends
+
+    case "$requested_backend" in
+        '')      wanted_backends=(virge mga1064) ;;
+        virge)   wanted_backends=(virge) ;;
+        mga1064) wanted_backends=(mga1064) ;;
+        *) die "unknown L10GL_BACKEND '$requested_backend' (available: virge mga1064)" ;;
+    esac
+
+    if [[ -n "$selected_bdf" ]]; then
+        device_path="$sysfs_root/bus/pci/devices/$selected_bdf"
+        [[ -d "$device_path" ]] || die "PCI device '$selected_bdf' does not exist"
+        backend=$(backend_for_device "$device_path") ||
+            die "PCI device '$selected_bdf' is not supported by L10GL"
+        if [[ -n "$requested_backend" && "$backend" != "$requested_backend" ]]; then
+            die "PCI device '$selected_bdf' belongs to '$backend', not '$requested_backend'"
+        fi
+        selected_backend=$backend
+        return
+    fi
+
+    shopt -s nullglob
+    for wanted in "${wanted_backends[@]}"; do
+        for device_path in "$sysfs_root"/bus/pci/devices/*; do
+            backend=$(backend_for_device "$device_path") || continue
+            if [[ "$backend" == "$wanted" ]]; then
+                selected_bdf=${device_path##*/}
+                selected_backend=$backend
+                shopt -u nullglob
+                return
+            fi
+        done
+    done
+    shopt -u nullglob
+    die "no supported PCI graphics adapter detected"
+}
+
+add_driver()
+{
+    local device_path=$1
+    local label=$2
+    local driver_path device_id key existing i
+
+    [[ -L "$device_path/driver" ]] || return 0
+    driver_path=$(readlink -f "$device_path/driver") || return 0
+    device_path=$(readlink -f "$device_path") || return 0
+    device_id=${device_path##*/}
+    key=$driver_path/$device_id
+
+    for ((i = 0; i < ${#driver_paths[@]}; i++)); do
+        existing=${driver_paths[i]}/${driver_device_ids[i]}
+        [[ "$existing" == "$key" ]] && return 0
+    done
+
+    [[ (-w "$driver_path/unbind" && -w "$driver_path/bind") || $dry_run -eq 1 ]] ||
+        die "$label driver '${driver_path##*/}' lacks writable bind/unbind controls"
+    driver_paths+=("$driver_path")
+    driver_device_ids+=("$device_id")
+    driver_labels+=("$label")
+    driver_unbound+=(0)
+}
+
+discover_owners()
+{
+    local fb0_path="$sysfs_root/class/graphics/fb0"
+    local pci_path="$sysfs_root/bus/pci/devices/$selected_bdf"
+    local fb_device
+
+    # L10GL currently opens /dev/fb0 specifically. Its owner may be a PCI
+    # driver (s3fb/DRM fbdev emulation) or a platform driver (simple-framebuffer).
+    if [[ -e "$fb0_path/device" ]]; then
+        fb_device=$(readlink -f "$fb0_path/device") || true
+        [[ -n "${fb_device:-}" ]] && add_driver "$fb_device" "/dev/fb0"
+    fi
+
+    # Direct BAR/MMIO access also requires the selected PCI function itself to
+    # be free, even when /dev/fb0 belongs to a different boot framebuffer.
+    add_driver "$pci_path" "PCI $selected_bdf"
+}
+
+discover_fbcon()
+{
+    local vt name bind_value
+
+    shopt -s nullglob
+    for vt in "$sysfs_root"/class/vtconsole/vtcon*; do
+        [[ -r "$vt/name" && -r "$vt/bind" ]] || continue
+        IFS= read -r name < "$vt/name" || continue
+        [[ "${name,,}" == *"frame buffer"* ]] || continue
+        IFS= read -r bind_value < "$vt/bind" || continue
+        [[ "$bind_value" == 1 ]] && detached_vtcon_bind+=("$vt/bind")
+    done
+    shopt -u nullglob
+}
+
+restore_kernel_owners()
+{
+    local failed=0
+    local i bind_path
+
+    [[ $restore_done -eq 0 ]] || return 0
+    restore_done=1
+
+    # Reverse the unbind order: restore the PCI driver before a separate
+    # platform framebuffer owner, then let fbcon attach to the restored fbdev.
+    for ((i = ${#driver_paths[@]} - 1; i >= 0; i--)); do
+        [[ ${driver_unbound[i]} -eq 1 ]] || continue
+        printf 'l10gl-run: rebinding %s driver %s to %s\n' \
+            "${driver_labels[i]}" "${driver_paths[i]##*/}" "${driver_device_ids[i]}"
+        if ! printf '%s\n' "${driver_device_ids[i]}" > "${driver_paths[i]}/bind"; then
+            printf 'l10gl-run: WARNING: failed to rebind %s\n' \
+                "${driver_labels[i]}" >&2
+            failed=1
+        fi
+    done
+
+    for bind_path in "${detached_vtcon_bind[@]}"; do
+        printf 'l10gl-run: reattaching fbcon through %s\n' "${bind_path%/bind}"
+        if ! printf '1\n' > "$bind_path"; then
+            printf 'l10gl-run: WARNING: failed to reattach %s\n' \
+                "${bind_path%/bind}" >&2
+            failed=1
+        fi
+    done
+    return $failed
+}
+
+while (($#)); do
+    case "$1" in
+        --device)
+            (($# >= 2)) || die "--device requires a BDF"
+            selected_bdf=$2
+            shift 2
+            ;;
+        --dry-run)
+            dry_run=1
+            shift
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        --)
+            shift
+            break
+            ;;
+        -*)
+            die "unknown option '$1'"
+            ;;
+        *)
+            break
+            ;;
+    esac
+done
+
+(($# > 0)) || die "no program specified (try --help)"
+[[ -d "$sysfs_root/bus/pci/devices" ]] || die "PCI sysfs is unavailable"
+if [[ "$sysfs_root" == /sys && $EUID -ne 0 ]]; then
+    die "root is required; run with sudo"
+fi
+
+select_device
+discover_fbcon
+discover_owners
+
+printf 'l10gl-run: selected %s at %s\n' "$selected_backend" "$selected_bdf"
+if ((${#detached_vtcon_bind[@]} == 0)); then
+    printf 'l10gl-run: no bound framebuffer console found\n'
+else
+    for bind_path in "${detached_vtcon_bind[@]}"; do
+        printf 'l10gl-run: will detach fbcon through %s\n' "${bind_path%/bind}"
+    done
+fi
+if ((${#driver_paths[@]} == 0)); then
+    printf 'l10gl-run: selected card and /dev/fb0 have no bound kernel driver\n'
+else
+    for ((i = 0; i < ${#driver_paths[@]}; i++)); do
+        printf 'l10gl-run: will unbind %s driver %s from %s\n' \
+            "${driver_labels[i]}" "${driver_paths[i]##*/}" "${driver_device_ids[i]}"
+    done
+fi
+printf 'l10gl-run: command:'
+printf ' %q' "$@"
+printf '\n'
+
+if [[ $dry_run -eq 1 ]]; then
+    printf 'l10gl-run: dry run; no sysfs state changed and command not started\n'
+    exit 0
+fi
+
+trap 'restore_kernel_owners || true' EXIT
+
+for bind_path in "${detached_vtcon_bind[@]}"; do
+    printf 'l10gl-run: detaching fbcon through %s\n' "${bind_path%/bind}"
+    printf '0\n' > "$bind_path" || die "failed to detach ${bind_path%/bind}"
+done
+
+for ((i = 0; i < ${#driver_paths[@]}; i++)); do
+    printf 'l10gl-run: unbinding %s driver %s from %s\n' \
+        "${driver_labels[i]}" "${driver_paths[i]##*/}" "${driver_device_ids[i]}"
+    printf '%s\n' "${driver_device_ids[i]}" > "${driver_paths[i]}/unbind" ||
+        die "failed to unbind ${driver_labels[i]}"
+    driver_unbound[i]=1
+done
+
+export L10GL_BACKEND=$selected_backend
+export L10GL_PCI_DEVICE=$selected_bdf
+"$@"
+program_status=$?
+
+trap - EXIT
+if ! restore_kernel_owners && [[ $program_status -eq 0 ]]; then
+    program_status=1
+fi
+exit "$program_status"

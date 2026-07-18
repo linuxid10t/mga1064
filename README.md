@@ -67,6 +67,42 @@ the backend adopts the live CRTC raster and changes scanout to the RGB555 format
 required by the ViRGE 3D engine. A conventional fbdev console is still expected
 by parts of the MGA path.
 
+## Temporarily disable the kernel framebuffer
+
+Use the reversible launcher when a kernel framebuffer or DRM fbdev-emulation
+driver owns the card:
+
+```sh
+sudo tools/l10gl-run -- ./cube
+```
+
+The launcher selects the same card as L10GL, detaches every bound framebuffer
+console (`fbcon`), unbinds the driver that owns `/dev/fb0`, and unbinds the
+selected PCI function if it has a different driver. After the program exits it
+rebinds the exact drivers in reverse order and then reattaches `fbcon`.
+
+Inspect the complete plan without changing kernel state:
+
+```sh
+sudo tools/l10gl-run --dry-run -- ./cube
+```
+
+Backend and card overrides are supported:
+
+```sh
+sudo env L10GL_BACKEND=virge tools/l10gl-run \
+    --device 0000:01:00.0 -- ./cube
+```
+
+Run this from SSH when possible: detaching `fbcon` can blank the local console
+until L10GL takes over. Normal exits and signals restore ownership, but
+`SIGKILL`, a launcher crash, or a system crash cannot run cleanup. Do not use
+the launcher on a GPU serving an active graphical desktop.
+
+The detach/reattach sequence follows the Linux kernel's
+[`fbcon` documentation](https://docs.kernel.org/fb/fbcon.html) and the PCI
+driver [`bind`/`unbind` sysfs ABI](https://docs.kernel.org/admin-guide/abi-testing-files.html#abi-sys-bus-pci-drivers-unbind).
+
 ## Build and run
 
 Build the static library, all backends, demos, and retained diagnostics:
@@ -126,6 +162,7 @@ src/
     ├── virge/                   S3 ViRGE glue and register driver
     └── mga1064/                 Matrox Mystique glue and register driver
 demos/                           demos and hardware diagnostics
+tools/l10gl-run                  reversible fbcon/driver handoff launcher
 docs/datasheets/                 primary hardware documentation
 docs/HANDOFF.md                  silicon results and active handoff
 PLAN.md                          phased implementation roadmap

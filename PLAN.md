@@ -656,6 +656,13 @@ fbdev/VT ioctl work with no card-specific code.
 the original mode, every time; no blinking cursor artifacts during
 rendering.
 
+**Partial groundwork (2026-07-17):** `tools/l10gl-run` now provides an
+outside-the-process ownership handoff for machines with a kernel framebuffer:
+it detaches fbcon, unbinds the `/dev/fb0` owner and selected PCI driver, runs
+L10GL against the released card, then rebinds the exact drivers and fbcon. This
+does not complete P2's in-process VT `KD_GRAPHICS` handling or fbdev mode
+save/restore.
+
 ### P3. Frontend swap-buffers API
 `l10gl_swap_buffers(ctx)` + vtable `swap_buffers`. Semantics: finish
 pending engine work, make the back buffer visible (at next vsync if
