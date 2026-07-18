@@ -805,7 +805,8 @@ existing `virge_wait_vsync`.
 
 ### P5. swrast + mga1064 double buffering
 
-**Implemented 2026-07-18; swrast fbdev and MGA hardware sign-off pending.**
+**Implemented 2026-07-18; simple-framebuffer fallback verified, true swrast
+fbdev page-flip and MGA hardware sign-off pending.**
 Offscreen swrast
 now rotates two private color buffers, and PPM output reads the completed
 buffer only after `l10gl_swap_buffers`. The fbdev path requests a second
@@ -816,8 +817,11 @@ copy is in progress. David observed exactly that regression on the fixed
 `simple-framebuffer`, so the CPU-copy path was removed. `test-swrast` proves
 that no offscreen frame is dumped before swap and that consecutive swaps
 preserve distinct completed frames; `test-mode` checks virtual-page selection
-and rejects pages beyond `smem_len`. The corrected simple-framebuffer fallback
-still needs hardware confirmation.
+and rejects pages beyond `smem_len`. David confirmed the corrected
+simple-framebuffer fallback renders a clean static frame. Continuous animation
+still shows horizontal bands because that fixed driver exposes only one page,
+so scanout necessarily observes software rendering in progress; this is the
+expected single-buffer limitation, not a geometry/stride regression.
 
 MGA-1064 now plans front/back/Z surfaces around the live CRTC scanout without
 overlap, uses the real padded stride for each allocation, and falls back to a
