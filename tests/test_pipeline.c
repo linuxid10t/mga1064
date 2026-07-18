@@ -137,6 +137,14 @@ static void test_errors_and_defaults(struct l10gl_ctx *ctx)
     expect_float("default normal Y", ctx->current_ny, 0);
     expect_float("default normal Z", ctx->current_nz, 1);
     expect_int("default culling", ctx->cull_mode_val, L10GL_CULL_NONE);
+    expect_int("lighting disabled by default", ctx->lighting_enabled, 0);
+    expect_float("default light direction X", ctx->light_dir_x, 0);
+    expect_float("default light direction Y", ctx->light_dir_y, 0);
+    expect_float("default light direction Z", ctx->light_dir_z, -1);
+    expect_float("default diffuse light", ctx->light_r, .8f);
+    expect_float("default ambient light", ctx->ambient_r, .2f);
+    expect_float("default material red", ctx->material_r, 1);
+    expect_float("default material alpha", ctx->material_a, 1);
 
     expect_int("vertex outside begin", l10gl_vertex3f(ctx, 0, 0, 0), -EPERM);
     expect_int("end outside begin", l10gl_end(ctx), -EPERM);
@@ -458,6 +466,140 @@ static void test_triangle_scan_guard(struct l10gl_ctx *ctx)
     l10gl_viewport(ctx, 0, 0, 100, 80);
 }
 
+static void submit_lighting_triangle(struct l10gl_ctx *ctx)
+{
+    expect_int("lighting begin", l10gl_begin(ctx, L10GL_TRIANGLES), 0);
+    expect_int("lighting vertex 0", l10gl_vertex3f(ctx, -.25f, -.25f, 0), 0);
+    expect_int("lighting vertex 1", l10gl_vertex3f(ctx,  .25f, -.25f, 0), 0);
+    expect_int("lighting vertex 2", l10gl_vertex3f(ctx,  0.0f,  .25f, 0), 0);
+    expect_int("lighting end", l10gl_end(ctx), 0);
+}
+
+static void test_directional_lighting(struct l10gl_ctx *ctx)
+{
+    const struct captured_triangle *triangle;
+
+    l10gl_matrix_mode(ctx, L10GL_MATRIX_MODELVIEW);
+    l10gl_load_identity(ctx);
+    l10gl_matrix_mode(ctx, L10GL_MATRIX_PROJECTION);
+    l10gl_load_identity(ctx);
+    l10gl_viewport(ctx, 0, 0, 100, 80);
+    l10gl_cull_face(ctx, L10GL_CULL_NONE);
+    l10gl_bind_texture(ctx, NULL);
+
+    expect_int("normalize light direction",
+               l10gl_light_dir(ctx, 0, 0, -5), 0);
+    expect_float("normalized light direction Z", ctx->light_dir_z, -1);
+    expect_int("reject zero light direction",
+               l10gl_light_dir(ctx, 0, 0, 0), -EINVAL);
+    expect_float("invalid direction preserves state", ctx->light_dir_z, -1);
+    expect_int("reject non-finite light direction",
+               l10gl_light_dir(ctx, NAN, 0, -1), -EINVAL);
+
+    l10gl_enable_lighting(ctx, 1);
+    l10gl_light_ambient(ctx, .1f, .1f, .1f);
+    l10gl_light_color(ctx, .6f, .6f, .6f);
+    l10gl_material(ctx, .5f, .25f, 2.0f, .75f);
+    l10gl_color4f(ctx, 0, 0, 0, 0); /* Lighting uses material, not color. */
+    l10gl_normal3f(ctx, 0, 0, 7);   /* Normalization is automatic. */
+
+    reset_capture();
+    submit_lighting_triangle(ctx);
+    expect_int("lit triangle count", capture.triangle_count, 1);
+    triangle = &capture.triangles[0];
+    expect_float("lit material red", triangle->v[0].r, .35f);
+    expect_float("lit material green", triangle->v[0].g, .175f);
+    expect_float("lit blue clamps", triangle->v[0].b, 1);
+    expect_float("material alpha", triangle->v[0].a, .75f);
+
+    /* A normal facing away from the light receives ambient only. */
+    l10gl_normal3f(ctx, 0, 0, -1);
+    reset_capture();
+    submit_lighting_triangle(ctx);
+    expect_float("back-facing ambient red", capture.triangles[0].v[0].r,
+                 .05f);
+    expect_float("back-facing ambient green", capture.triangles[0].v[0].g,
+                 .025f);
+    expect_float("back-facing ambient blue", capture.triangles[0].v[0].b,
+                 .2f);
+
+    /* Inverse-transpose is required here: scale(2,1,1) maps normal (1,1,0)
+     * to normalized (.5,1,0), exactly opposite light ray (-1,-2,0). A plain
+     * MODELVIEW vector transform would produce only 0.8 diffuse. */
+    l10gl_matrix_mode(ctx, L10GL_MATRIX_MODELVIEW);
+    l10gl_load_identity(ctx);
+    l10gl_scalef(ctx, 2, 1, 1);
+    expect_int("scaled-normal light direction",
+               l10gl_light_dir(ctx, -1, -2, 0), 0);
+    l10gl_light_ambient(ctx, 0, 0, 0);
+    l10gl_light_color(ctx, 1, 1, 1);
+    l10gl_material(ctx, 1, 1, 1, 1);
+    l10gl_normal3f(ctx, 1, 1, 0);
+    reset_capture();
+    submit_lighting_triangle(ctx);
+    expect_float("inverse-transpose diffuse", capture.triangles[0].v[0].r,
+                 1);
+
+    /* A reflected MODELVIEW has a negative determinant; normal orientation
+     * must follow the reflection rather than merely using unsigned cofactors. */
+    l10gl_load_identity(ctx);
+    l10gl_scalef(ctx, -1, 1, 1);
+    expect_int("reflected-normal light direction",
+               l10gl_light_dir(ctx, 1, 0, 0), 0);
+    l10gl_normal3f(ctx, 1, 0, 0);
+    reset_capture();
+    submit_lighting_triangle(ctx);
+    expect_float("reflected normal diffuse", capture.triangles[0].v[0].r, 1);
+
+    /* A singular normal matrix is safe and deterministically yields ambient. */
+    l10gl_load_identity(ctx);
+    l10gl_scalef(ctx, 1, 1, 0);
+    l10gl_light_ambient(ctx, .2f, .3f, .4f);
+    l10gl_normal3f(ctx, 0, 0, 1);
+    reset_capture();
+    submit_lighting_triangle(ctx);
+    expect_int("singular normal triangle", capture.triangle_count, 1);
+    expect_float("singular normal ambient red", capture.triangles[0].v[0].r,
+                 .2f);
+    expect_float("singular normal ambient green", capture.triangles[0].v[0].g,
+                 .3f);
+    expect_float("singular normal ambient blue", capture.triangles[0].v[0].b,
+                 .4f);
+
+    /* Material changes are captured per vertex, just like other attributes. */
+    l10gl_load_identity(ctx);
+    expect_int("material capture light direction",
+               l10gl_light_dir(ctx, 0, 0, -1), 0);
+    l10gl_light_ambient(ctx, 0, 0, 0);
+    l10gl_light_color(ctx, 1, 1, 1);
+    l10gl_normal3f(ctx, 0, 0, 1);
+    reset_capture();
+    l10gl_begin(ctx, L10GL_TRIANGLES);
+    l10gl_material(ctx, 1, 0, 0, .25f);
+    l10gl_vertex3f(ctx, -.25f, -.25f, 0);
+    l10gl_material(ctx, 0, 1, 0, .5f);
+    l10gl_vertex3f(ctx, .25f, -.25f, 0);
+    l10gl_material(ctx, 0, 0, 1, .75f);
+    l10gl_vertex3f(ctx, 0, .25f, 0);
+    l10gl_end(ctx);
+    expect_float("captured red material", capture.triangles[0].v[0].r, 1);
+    expect_float("captured green material", capture.triangles[0].v[1].g, 1);
+    expect_float("captured blue material", capture.triangles[0].v[2].b, 1);
+    expect_float("captured material alpha", capture.triangles[0].v[1].a,
+                 .5f);
+
+    /* Disabling lighting restores the established current-color path. */
+    l10gl_enable_lighting(ctx, 0);
+    l10gl_color4f(ctx, .2f, .3f, .4f, .6f);
+    reset_capture();
+    submit_lighting_triangle(ctx);
+    expect_float("disabled lighting red", capture.triangles[0].v[0].r, .2f);
+    expect_float("disabled lighting alpha", capture.triangles[0].v[0].a, .6f);
+
+    l10gl_matrix_mode(ctx, L10GL_MATRIX_MODELVIEW);
+    l10gl_load_identity(ctx);
+}
+
 int main(void)
 {
     struct l10gl_ctx ctx;
@@ -477,6 +619,7 @@ int main(void)
     test_culling_and_clip_rejection(&ctx);
     test_near_plane_clipping(&ctx);
     test_triangle_scan_guard(&ctx);
+    test_directional_lighting(&ctx);
     l10gl_destroy(&ctx);
 
     if (failures) {
@@ -484,6 +627,6 @@ int main(void)
         return 1;
     }
     printf("test-pipeline: PASS (attributes, assembly, transforms, culling, "
-           "near clipping, interpolation, scan guard)\n");
+           "near clipping, interpolation, scan guard, lighting)\n");
     return 0;
 }

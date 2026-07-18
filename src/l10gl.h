@@ -278,6 +278,16 @@ struct l10gl_ctx {
     float current_nx, current_ny, current_nz;
     float current_u, current_v;
     enum l10gl_cull_mode cull_mode_val;
+
+    /* X4 frontend lighting. The directional vector is the eye-space
+     * direction in which light rays travel; normals point toward the light
+     * when their dot product with the negated direction is positive. */
+    int lighting_enabled;
+    float light_dir_x, light_dir_y, light_dir_z;
+    float light_r, light_g, light_b;
+    float ambient_r, ambient_g, ambient_b;
+    float material_r, material_g, material_b, material_a;
+
     int immediate_active;
     enum l10gl_primitive immediate_primitive;
     unsigned long immediate_vertex_count;
@@ -368,6 +378,18 @@ void l10gl_color4f(struct l10gl_ctx *ctx,
 void l10gl_normal3f(struct l10gl_ctx *ctx, float x, float y, float z);
 void l10gl_texcoord2f(struct l10gl_ctx *ctx, float u, float v);
 int l10gl_cull_face(struct l10gl_ctx *ctx, enum l10gl_cull_mode mode);
+
+/* X4 directional diffuse + ambient lighting. Lighting is disabled by
+ * default. light_dir is an eye-space light-ray direction and normalizes its
+ * input; a zero or non-finite direction returns -EINVAL without changing
+ * state. Normals are transformed by inverse-transpose MODELVIEW at vertex
+ * submission. Material supplies RGB reflectance and output alpha. */
+void l10gl_enable_lighting(struct l10gl_ctx *ctx, int enable);
+int l10gl_light_dir(struct l10gl_ctx *ctx, float x, float y, float z);
+void l10gl_light_color(struct l10gl_ctx *ctx, float r, float g, float b);
+void l10gl_light_ambient(struct l10gl_ctx *ctx, float r, float g, float b);
+void l10gl_material(struct l10gl_ctx *ctx,
+                    float r, float g, float b, float a);
 
 /* Drawing primitives */
 void l10gl_draw_triangle(struct l10gl_ctx *ctx,

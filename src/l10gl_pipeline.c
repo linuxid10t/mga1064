@@ -1,5 +1,5 @@
 /*
- * l10gl_pipeline.c - X2 immediate-mode capture and primitive assembly.
+ * l10gl_pipeline.c - Immediate-mode geometry and lighting pipeline.
  *
  * This layer accepts model-space vertices, applies the X1 MODELVIEW,
  * PROJECTION, viewport, and depth-range state, then emits the existing
@@ -40,6 +40,22 @@ void l10gl_pipeline_init(struct l10gl_ctx *ctx)
     ctx->current_u = 0.0f;
     ctx->current_v = 0.0f;
     ctx->cull_mode_val = L10GL_CULL_NONE;
+
+    ctx->lighting_enabled = 0;
+    ctx->light_dir_x = 0.0f;
+    ctx->light_dir_y = 0.0f;
+    ctx->light_dir_z = -1.0f;
+    ctx->light_r = 0.8f;
+    ctx->light_g = 0.8f;
+    ctx->light_b = 0.8f;
+    ctx->ambient_r = 0.2f;
+    ctx->ambient_g = 0.2f;
+    ctx->ambient_b = 0.2f;
+    ctx->material_r = 1.0f;
+    ctx->material_g = 1.0f;
+    ctx->material_b = 1.0f;
+    ctx->material_a = 1.0f;
+
     ctx->immediate_active = 0;
     ctx->immediate_vertex_count = 0;
 }
@@ -377,6 +393,93 @@ int l10gl_end(struct l10gl_ctx *ctx)
     return 0;
 }
 
+static float clamp_lit_channel(float value)
+{
+    if (!(value > 0.0f))
+        return 0.0f;
+    if (value > 1.0f)
+        return 1.0f;
+    return value;
+}
+
+/* Transform an object-space normal into eye space with inverse-transpose
+ * MODELVIEW, then normalize it. This is deliberately correct for non-uniform
+ * scale; a singular matrix or unusable normal produces ambient light only. */
+static int transform_eye_normal(const struct l10gl_ctx *ctx,
+                                float x, float y, float z,
+                                float output[3])
+{
+    const float *m = ctx->modelview_stack[ctx->modelview_top];
+    double a00 = m[0], a01 = m[4], a02 = m[8];
+    double a10 = m[1], a11 = m[5], a12 = m[9];
+    double a20 = m[2], a21 = m[6], a22 = m[10];
+    double c00 = a11 * a22 - a12 * a21;
+    double c01 = a12 * a20 - a10 * a22;
+    double c02 = a10 * a21 - a11 * a20;
+    double c10 = a02 * a21 - a01 * a22;
+    double c11 = a00 * a22 - a02 * a20;
+    double c12 = a01 * a20 - a00 * a21;
+    double c20 = a01 * a12 - a02 * a11;
+    double c21 = a02 * a10 - a00 * a12;
+    double c22 = a00 * a11 - a01 * a10;
+    double determinant = a00 * c00 + a01 * c01 + a02 * c02;
+    double nx, ny, nz, length;
+
+    if (!isfinite(determinant) || determinant == 0.0)
+        return 0;
+    /* Normalization cancels |determinant|. Keep only its sign to avoid
+     * overflowing the inverse for very small but still invertible scales. */
+    nx = c00 * x + c01 * y + c02 * z;
+    ny = c10 * x + c11 * y + c12 * z;
+    nz = c20 * x + c21 * y + c22 * z;
+    if (determinant < 0.0) {
+        nx = -nx;
+        ny = -ny;
+        nz = -nz;
+    }
+    length = sqrt(nx * nx + ny * ny + nz * nz);
+    if (!(length > 1.0e-20) || !isfinite(length))
+        return 0;
+    output[0] = (float)(nx / length);
+    output[1] = (float)(ny / length);
+    output[2] = (float)(nz / length);
+    return 1;
+}
+
+static void capture_vertex_color(const struct l10gl_ctx *ctx,
+                                 struct l10gl_immediate_vertex *vertex)
+{
+    float normal[3];
+    float diffuse = 0.0f;
+
+    if (!ctx->lighting_enabled) {
+        vertex->r = ctx->current_r;
+        vertex->g = ctx->current_g;
+        vertex->b = ctx->current_b;
+        vertex->a = ctx->current_a;
+        return;
+    }
+
+    if (transform_eye_normal(ctx, ctx->current_nx, ctx->current_ny,
+                             ctx->current_nz, normal)) {
+        diffuse = -(normal[0] * ctx->light_dir_x +
+                    normal[1] * ctx->light_dir_y +
+                    normal[2] * ctx->light_dir_z);
+        if (!(diffuse > 0.0f))
+            diffuse = 0.0f;
+        else if (diffuse > 1.0f)
+            diffuse = 1.0f;
+    }
+
+    vertex->r = clamp_lit_channel(ctx->material_r *
+                                  (ctx->ambient_r + ctx->light_r * diffuse));
+    vertex->g = clamp_lit_channel(ctx->material_g *
+                                  (ctx->ambient_g + ctx->light_g * diffuse));
+    vertex->b = clamp_lit_channel(ctx->material_b *
+                                  (ctx->ambient_b + ctx->light_b * diffuse));
+    vertex->a = clamp_lit_channel(ctx->material_a);
+}
+
 int l10gl_vertex3f(struct l10gl_ctx *ctx, float x, float y, float z)
 {
     struct l10gl_immediate_vertex vertex;
@@ -389,10 +492,7 @@ int l10gl_vertex3f(struct l10gl_ctx *ctx, float x, float y, float z)
     vertex.x = x;
     vertex.y = y;
     vertex.z = z;
-    vertex.r = ctx->current_r;
-    vertex.g = ctx->current_g;
-    vertex.b = ctx->current_b;
-    vertex.a = ctx->current_a;
+    capture_vertex_color(ctx, &vertex);
     vertex.nx = ctx->current_nx;
     vertex.ny = ctx->current_ny;
     vertex.nz = ctx->current_nz;
@@ -431,4 +531,47 @@ int l10gl_cull_face(struct l10gl_ctx *ctx, enum l10gl_cull_mode mode)
         return -EINVAL;
     ctx->cull_mode_val = mode;
     return 0;
+}
+
+void l10gl_enable_lighting(struct l10gl_ctx *ctx, int enable)
+{
+    ctx->lighting_enabled = !!enable;
+}
+
+int l10gl_light_dir(struct l10gl_ctx *ctx, float x, float y, float z)
+{
+    float length;
+
+    if (!ctx)
+        return -EINVAL;
+    length = sqrtf(x * x + y * y + z * z);
+    if (!(length > 0.0f) || !isfinite(length))
+        return -EINVAL;
+    ctx->light_dir_x = x / length;
+    ctx->light_dir_y = y / length;
+    ctx->light_dir_z = z / length;
+    return 0;
+}
+
+void l10gl_light_color(struct l10gl_ctx *ctx, float r, float g, float b)
+{
+    ctx->light_r = r;
+    ctx->light_g = g;
+    ctx->light_b = b;
+}
+
+void l10gl_light_ambient(struct l10gl_ctx *ctx, float r, float g, float b)
+{
+    ctx->ambient_r = r;
+    ctx->ambient_g = g;
+    ctx->ambient_b = b;
+}
+
+void l10gl_material(struct l10gl_ctx *ctx,
+                    float r, float g, float b, float a)
+{
+    ctx->material_r = r;
+    ctx->material_g = g;
+    ctx->material_b = b;
+    ctx->material_a = a;
 }
