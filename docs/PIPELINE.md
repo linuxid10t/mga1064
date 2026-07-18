@@ -1,7 +1,8 @@
 # Immediate-mode geometry pipeline
 
-X2 adds a model-space submission path above the existing screen-space drawing
-API. It uses X1 matrix and viewport state, but does not alter or replace
+X2 and X3 add a model-space submission and clipping path above the existing
+screen-space drawing API. It uses X1 matrix and viewport state, but does not
+alter or replace
 `l10gl_draw_triangle()`, `l10gl_draw_textured_triangle()`, or
 `l10gl_draw_line()`.
 
@@ -55,7 +56,8 @@ not affect earlier vertices. Defaults are opaque white, normal `(0,0,1)`, and
 texture coordinate `(0,0)`.
 
 Normals are retained in the captured frontend vertex for X4 lighting but are
-not evaluated yet. X2 copies color and UV into the emitted `l10gl_vertex`.
+not evaluated yet. Color, alpha, normal, and UV are interpolated when X3
+creates near-plane intersection vertices.
 
 Binding a non-NULL texture with `l10gl_bind_texture()` selects textured
 triangle dispatch. Binding NULL returns to Gouraud triangle dispatch. A backend
@@ -84,17 +86,25 @@ Configure culling with:
 
 Degenerate zero-area triangles are discarded. Lines are not culled.
 
-## Temporary limits before X3–X5
+## Clipping and current limits
 
-X3 near-plane clipping is not present yet. To keep invalid depth values away
-from vintage hardware, X2 rejects an entire triangle or line if any vertex has
-non-positive clip W or lies outside `-W <= clip Z <= W`. Geometry crossing the
-near plane will therefore pop out instead of being split; X3 will replace this
-whole-primitive rejection with interpolating clip-space polygon clipping.
+X3 clips assembled triangles against the OpenGL homogeneous near plane,
+`Z + W >= 0`, before perspective division and culling. Sutherland-Hodgman
+clipping produces zero, one, or two triangles from each input triangle. New
+vertices interpolate clip coordinates, color, alpha, normal, and UV; a vertex
+within a small relative epsilon of the plane is snapped onto it to avoid a
+numerical sliver. A clipped quad is triangulated as a fan, preserving its
+shared vertices.
 
-X/Y are left to the backend's existing clip rectangle. The X3 guard-band pass
-will also prevent projected triangles from exceeding hardware scan-count
-fields.
+X/Y are left to the backend's existing clip rectangle. After viewport
+transformation, triangles spanning more than 2047 scanlines are rejected
+before dispatch because the ViRGE command field is only 11 bits.
+
+Far-plane clipping is not implemented yet: a triangle crossing `Z - W = 0`
+is rejected whole. Lines are not clipped and likewise use conservative
+whole-segment depth rejection. These restrictions keep invalid coordinates
+away from vintage hardware while leaving the completed triangle near-plane
+path useful.
 
 X5 will derive reciprocal eye depth for perspective-correct texture mapping.
 Until then, immediate-mode vertices emit `w = 1.0`, so their textures are
@@ -106,5 +116,6 @@ supply explicit W.
 `make check` runs `test-pipeline` against a capture backend. It verifies exact
 screen coordinates and attributes, MODELVIEW connection, triangle grouping,
 strip alternation, fan origin, line pairing, incomplete primitives, bound
-texture selection, front/back culling, and safe clip-depth rejection. The
-separate swrast suite validates the rasterizer receiving those calls.
+texture selection, front/back culling, near-plane split/interpolation and
+boundary cases, conservative far/line rejection, and the 2047-scanline guard.
+The separate swrast suite validates the rasterizer receiving those calls.

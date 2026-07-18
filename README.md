@@ -230,7 +230,8 @@ PLAN.md                          phased implementation roadmap
 See [`docs/BACKEND.md`](docs/BACKEND.md) before adding another card.
 Transform conventions and the X1 API are documented in
 [`docs/XFORM.md`](docs/XFORM.md).
-Immediate submission and X2's current clipping limitations are documented in
+Immediate submission, homogeneous near-plane clipping, and current limits are
+documented in
 [`docs/PIPELINE.md`](docs/PIPELINE.md).
 
 ## License

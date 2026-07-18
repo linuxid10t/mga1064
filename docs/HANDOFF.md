@@ -105,9 +105,19 @@ backend calls. Strip winding alternates correctly; fan origin is fixed;
 texture binding selects textured dispatch; CCW culling happens in NDC before
 the top-left framebuffer Y conversion. `test-pipeline` uses a capture backend
 to verify exact calls and vertices. Existing demos are not ported yet (X6),
-normals are reserved for X4, texture W stays 1 until X5, and pre-X3 primitives
-with any vertex outside clip-depth bounds are rejected whole. X3 near-plane
-clipping is now the next core task.
+normals are reserved for X4, and texture W stays 1 until X5.
+
+Phase 2 X3 is complete as of 2026-07-17. Immediate-mode triangles are clipped
+in homogeneous space against `Z + W >= 0` before perspective division and
+culling. A crossing triangle emits one or two triangles with interpolated
+clip coordinates, color/alpha, normal, and UV. Near-boundary snapping prevents
+floating-point slivers, and projected triangles taller than 2047 scanlines are
+rejected before they reach the ViRGE's 11-bit count fields. `test-pipeline`
+covers one/two/all-outside cases, analytic intersections and interpolation,
+the exact near boundary, shared fan vertices, conservative far/line rejection,
+and both sides of the scan-height limit. X/Y still use the hardware clip
+rectangle; far-plane and line clipping remain future work. X4 lighting and X5
+perspective texture W are the next Phase 2 tasks and can proceed independently.
 
 ## Push workflow (non-negotiable — David has corrected agents on this repeatedly)
 

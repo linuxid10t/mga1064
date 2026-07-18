@@ -556,12 +556,12 @@ other vintage cards).
 
 ## Phase 2 — Frontend geometry pipeline
 
-**Status (2026-07-17): X1 and X2 complete; X3 is next.** Matrix stacks and
-viewport math live in `src/l10gl_xform.c`; current-attribute capture,
-model-space transformation, streaming primitive assembly, texture dispatch,
-and post-projection culling live in `src/l10gl_pipeline.c`. `test-xform` and
-`test-pipeline` cover both layers. Existing screen-space drawing remains
-unchanged.
+**Status (2026-07-17): X1 through X3 complete; X4 and X5 are next.** Matrix
+stacks and viewport math live in `src/l10gl_xform.c`; current-attribute
+capture, model-space transformation, streaming primitive assembly,
+homogeneous near clipping, texture dispatch, and post-projection culling live
+in `src/l10gl_pipeline.c`. `test-xform` and `test-pipeline` cover both layers.
+Existing screen-space drawing remains unchanged.
 
 Move the 3D math out of the demos and into the library, so applications
 supply model-space geometry and the library handles transform → light →
@@ -597,10 +597,8 @@ and `texcoord2f` stream triangles, alternating-winding strips, fixed-origin
 fans, independent lines, and line strips through X1 into existing backend draw
 calls without allocation. Binding a texture selects textured triangle dispatch;
 binding NULL selects Gouraud dispatch. CCW front/back culling is computed in
-NDC before the framebuffer Y flip. Until X3, any primitive with a vertex
-outside clip-depth bounds is safely rejected rather than passed invalid Z to
-hardware. Normals are captured for X4 and emitted texture W remains affine
-(`1.0`) until X5.
+NDC before the framebuffer Y flip. Normals are captured for X4 and emitted
+texture W remains affine (`1.0`) until X5.
 
 `l10gl_begin(prim)` / `l10gl_vertex3f` / `l10gl_color4f` / `l10gl_normal3f`
 / `l10gl_texcoord2f` / `l10gl_end()`. Assemble TRIANGLES, TRIANGLE_STRIP,
@@ -609,6 +607,16 @@ individual triangles/lines fed through the pipeline. Include back-face
 culling (`l10gl_cull_face`) computed post-projection.
 
 ### X3. Near-plane clipping
+
+**Complete 2026-07-17.** Assembled triangles are clipped against `Z + W >= 0`
+before perspective division using Sutherland-Hodgman. One input triangle emits
+zero, one, or two triangles, with clip coordinates, color, alpha, normal, and
+UV interpolated at new vertices. Near-boundary vertices are snapped within a
+small relative epsilon to avoid numerical slivers. X/Y remain handled by the
+backend clip rectangle; a frontend guard rejects projected triangles taller
+than the ViRGE's 2047-line field. Far-plane crossings and lines that cross a
+depth plane still use conservative whole-primitive rejection.
+
 Mandatory before this pipeline can be trusted: the hardware cannot handle
 vertices behind the eye (the cube demo dodges this with a `z < 0.1` clamp,
 `demos/cube.c:57`). Clip assembled triangles against the near plane in clip

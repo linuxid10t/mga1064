@@ -5,8 +5,8 @@ It is the mathematical foundation for the Phase 2 primitive pipeline and the
 eventual OpenGL 1.1 compatibility shim.
 
 X1 does not change the existing drawing contract: `l10gl_draw_triangle()` and
-`l10gl_draw_line()` still accept screen-space vertices. X2 will consume the
-state described here and emit those existing primitives after transformation.
+`l10gl_draw_line()` still accept screen-space vertices. X2 consumes the state
+described here and emits those existing primitives after transformation.
 
 ## Matrix convention
 
@@ -78,9 +78,10 @@ reversed depth range is valid.
 ## Pipeline helpers
 
 `l10gl_object_to_clip()` applies the current MODELVIEW and PROJECTION matrices
-without dividing by clip W. Keeping clip coordinates intact is important: X3
-will clip against the near plane before the perspective divide. After clipping
-and division, X2 can pass NDC coordinates to `l10gl_ndc_to_window()`.
+without dividing by clip W. Keeping clip coordinates intact lets X3 clip
+triangles against the near plane before the perspective divide. After clipping
+and division, the pipeline passes NDC coordinates to
+`l10gl_ndc_to_window()`.
 
 `make check` runs `test-xform`, which verifies matrix ordering, load/multiply,
 axis normalization, both stack limits, perspective and orthographic results,
