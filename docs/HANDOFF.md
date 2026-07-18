@@ -230,8 +230,8 @@ mode, the rotating cube was visible, native sync measured approximately
 closed; retain the diagnostic rate/routing logs for the later 75Hz and
 1024x768 gates.
 
-**P6e 640x480@75 gate implemented 2026-07-18; awaiting real-hardware
-validation.** Set `L10GL_REFRESH=75` alongside `L10GL_MODESET=native` to select
+**P6e 640x480@75 gate implemented and hardware-verified 2026-07-18.** Set
+`L10GL_REFRESH=75` alongside `L10GL_MODESET=native` to select
 it; the default remains the signed-off 60Hz image. This is intentionally the
 smallest next gate: resolution, stride, RGB555 format, and buffer allocation
 are unchanged from P6d, while the fixed table supplies 75Hz timings and a
@@ -248,8 +248,10 @@ This is the data-book CR16 wrap failure, not page-flip timing: DB019-B CR15/16
 eight bits. The encoder used `vtotal - 1`, producing `f3` even though the
 500-line raster's final counter value is `0x1f2`; blanking therefore survived
 the frame wrap and cleared only when low byte `f3` recurred near line 243.
-The corrected 75Hz image uses `CR16=f2`. The same general correction changes
-640x480@60 from `0c` to `0b`, so recheck that signed-off mode after P6e passes.
+The corrected 75Hz image uses `CR16=f2`; its hardware retest displayed the
+complete cube with no black upper half. The same general correction changes
+640x480@60 from `0c` to `0b`, so recheck that previously signed-off mode before
+opening the next gate.
 
 Run over SSH from a clean console baseline:
 
@@ -262,16 +264,17 @@ Verified: visible 640x480 cube, no out-of-range event, and recovery of the
 original 800x600 simplefb signal after Ctrl-C. P6e opens only 640x480@75;
 800x600@75 and 1024x768 remain locked until their own staged gates.
 
-Next real-hardware command:
+Hardware-verified P6e command:
 
 ```
 sudo env L10GL_BACKEND=virge L10GL_MODESET=native L10GL_REFRESH=75 \
   tools/l10gl-run -- ./cube 640 480 16
 ```
 
-Expected measured sync is about 37.50kHz / 75.00Hz. Confirm a stable visible
-cube, readback `CR15=df CR16=f2`, and recovery of the original 800x600
-simplefb console after Ctrl-C.
+Verified: the complete cube is visible with no black upper half; the first
+run also proved recovery of the original console. Target readback is
+`CR15=df CR16=f2`. Run the 60Hz command above once more to regression-check
+its corrected `CR16=0b` before continuing to another mode.
 
 ```
 sudo env L10GL_BACKEND=virge L10GL_MODESET=native \

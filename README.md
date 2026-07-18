@@ -152,17 +152,18 @@ sudo env L10GL_BACKEND=virge L10GL_MODESET=native \
 
 This uses the complete fixed CRTC image plus the ViRGE's built-in 25.175MHz
 VGA clock. The validated encoder leaves CR5D pulse-length extensions clear for
-the standard blank and sync widths. The next isolated hardware gate keeps the
-same resolution and selects its fixed 75Hz timing plus a 31.5MHz programmable
-DCLK:
+the standard blank and sync widths. The hardware-verified 75Hz gate keeps the
+same resolution and selects its fixed timing plus a 31.5MHz programmable DCLK:
 
 ```sh
 sudo env L10GL_BACKEND=virge L10GL_MODESET=native L10GL_REFRESH=75 \
     tools/l10gl-run -- ./cube 640 480 16
 ```
 
-Omitting `L10GL_REFRESH` retains the hardware-verified 60Hz default. The
-800x600@75 and 1024x768 entries remain locked pending staged validation.
+Its initial top-half blanking exposed an off-by-one CR16 vertical-blank wrap;
+the corrected image displays the complete cube. Omitting `L10GL_REFRESH`
+selects the 60Hz default. The 800x600@75 and 1024x768 entries remain locked
+pending staged validation.
 
 The detach/reattach sequence follows the Linux kernel's
 [`fbcon` documentation](https://docs.kernel.org/fb/fbcon.html) and the PCI
