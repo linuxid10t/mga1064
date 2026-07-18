@@ -331,6 +331,24 @@ and center holes render correctly. David then ran `sudo tools/l10gl-run --
 This closes the gears silicon gate. Texture objects are still G3 and are not
 required by gears.
 
+**Phase 4 G3 implemented 2026-07-18; swrast verified, ViRGE run pending.**
+The shim owns texture names and supplies gen/delete/is/bind, level-zero
+`glTexImage2D`, `glTexParameteri`, and unpack alignment. It converts tightly
+or padded RGB/RGBA unsigned-byte input to ARGB8888. DB019-B section 19.4 (PDF
+p.251) explicitly limits the texture side exponent to 9, so the public common
+contract requires square power-of-two images through 512x512. Texture names
+and parameters are per object; uploaded backend storage lasts until context
+cleanup because swrast owns an allocation list and ViRGE owns a VRAM bump
+heap. Filter and wrap selectors are reapplied when objects are bound.
+
+`test-gl` verifies object lifecycle, conversion, state/error mappings, and a
+real swrast 2x2 textured framebuffer at all four corners. The new `gltexture`
+demo renders a repeated colored/checkered 64x64 RGBA8888 texture; its 320x240
+RGB565 swrast frame was visually inspected and is correct. The remaining
+hardware command is `sudo tools/l10gl-run -- ./gltexture 800 600 16`; expect a
+black border around a rectangle containing a 2x2 repeat of the
+colored/checkered texture, followed by normal console recovery on Ctrl-C.
+
 ```
 sudo env L10GL_BACKEND=virge L10GL_MODESET=native \
   tools/l10gl-run -- ./cube 800 600 16

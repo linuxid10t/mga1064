@@ -3,6 +3,7 @@
 cube
 textured_cube
 gears
+gltexture
 *.a
 *.so
 *.elf

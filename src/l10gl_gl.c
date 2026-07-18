@@ -1,11 +1,24 @@
 /* Thin, single-current-context OpenGL 1.1 compatibility layer. */
 
 #include <errno.h>
+#include <limits.h>
+#include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include <GL/gl.h>
 
 #include "l10gl.h"
+
+struct l10gl_gl_texture {
+    struct l10gl_gl_texture *next;
+    GLuint name;
+    struct l10gl_texture texture;
+    enum l10gl_tex_filter filter;
+    enum l10gl_tex_wrap wrap;
+    int is_texture;
+    int uploaded;
+};
 
 struct l10gl_gl_state {
     struct l10gl_ctx owned_context;
@@ -13,6 +26,11 @@ struct l10gl_gl_state {
     GLenum error;
     GLenum cull_face;
     GLenum shade_model;
+    struct l10gl_gl_texture default_texture;
+    struct l10gl_gl_texture *textures;
+    struct l10gl_gl_texture *bound_texture;
+    GLuint next_texture_name;
+    GLint unpack_alignment;
     int owns_context;
     int cull_enabled;
     int lighting_enabled;
@@ -25,6 +43,31 @@ static struct l10gl_gl_state gl_state = {
     .cull_face = GL_BACK,
     .shade_model = GL_SMOOTH,
 };
+
+static void gl_init_texture(struct l10gl_gl_texture *texture, GLuint name)
+{
+    memset(texture, 0, sizeof(*texture));
+    texture->name = name;
+    texture->filter = L10GL_FILTER_NEAREST;
+    texture->wrap = L10GL_WRAP_REPEAT;
+}
+
+static void gl_release_textures(void)
+{
+    struct l10gl_gl_texture *texture = gl_state.textures;
+
+    if (gl_state.current)
+        l10gl_bind_texture(gl_state.current, NULL);
+    while (texture) {
+        struct l10gl_gl_texture *next = texture->next;
+
+        free(texture);
+        texture = next;
+    }
+    gl_state.textures = NULL;
+    gl_state.bound_texture = NULL;
+    memset(&gl_state.default_texture, 0, sizeof(gl_state.default_texture));
+}
 
 static void gl_record_error(GLenum error)
 {
@@ -49,6 +92,10 @@ static void gl_reset_compat_state(void)
     gl_state.light0_enabled = 0;
     gl_state.normalize_enabled = 0;
     gl_state.texture_2d_enabled = 0;
+    gl_init_texture(&gl_state.default_texture, 0);
+    gl_state.bound_texture = &gl_state.default_texture;
+    gl_state.next_texture_name = 1;
+    gl_state.unpack_alignment = 4;
 }
 
 int l10glCreateContext(GLsizei width, GLsizei height, GLint bits_per_pixel)
@@ -66,6 +113,7 @@ int l10glCreateContext(GLsizei width, GLsizei height, GLint bits_per_pixel)
     if (ret)
         return ret;
 
+    gl_release_textures();
     gl_state.current = &gl_state.owned_context;
     gl_state.owns_context = 1;
     gl_reset_compat_state();
@@ -79,6 +127,7 @@ int l10glCreateContext(GLsizei width, GLsizei height, GLint bits_per_pixel)
 
 void l10glDestroyContext(void)
 {
+    gl_release_textures();
     if (gl_state.owns_context)
         l10gl_destroy(&gl_state.owned_context);
     memset(&gl_state.owned_context, 0, sizeof(gl_state.owned_context));
@@ -89,6 +138,7 @@ void l10glDestroyContext(void)
 
 void l10glMakeCurrent(struct l10gl_ctx *ctx)
 {
+    gl_release_textures();
     gl_state.current = ctx;
     gl_reset_compat_state();
 }
@@ -443,6 +493,20 @@ static void gl_apply_lighting(struct l10gl_ctx *ctx)
                           gl_state.light0_enabled);
 }
 
+static void gl_apply_texture_binding(struct l10gl_ctx *ctx)
+{
+    struct l10gl_gl_texture *object = gl_state.bound_texture;
+
+    if (!gl_state.texture_2d_enabled || !object || !object->uploaded) {
+        l10gl_bind_texture(ctx, NULL);
+        return;
+    }
+    l10gl_bind_texture(ctx, &object->texture);
+    /* Backends expose one active filter and wrap mode. Reapply the bound
+     * object's cached values so GL object switching remains deterministic. */
+    l10gl_tex_parameter(ctx, object->filter, object->wrap);
+}
+
 static void gl_set_enable(GLenum cap, int enable)
 {
     struct l10gl_ctx *ctx = gl_current();
@@ -475,8 +539,8 @@ static void gl_set_enable(GLenum cap, int enable)
         gl_state.normalize_enabled = enable;
         break;
     case GL_TEXTURE_2D:
-        /* Texture object binding is added by the next Phase 4 slice. */
         gl_state.texture_2d_enabled = enable;
+        gl_apply_texture_binding(ctx);
         break;
     default:
         gl_record_error(GL_INVALID_ENUM);
@@ -657,6 +721,324 @@ void glMaterialfv(GLenum face, GLenum pname, const GLfloat *params)
      * GL_AMBIENT_AND_DIFFUSE and is the documented fallback for either
      * component alone. */
     l10gl_material(ctx, params[0], params[1], params[2], params[3]);
+}
+
+static struct l10gl_gl_texture *gl_find_texture(GLuint name)
+{
+    struct l10gl_gl_texture *texture;
+
+    if (name == 0)
+        return &gl_state.default_texture;
+    for (texture = gl_state.textures; texture; texture = texture->next)
+        if (texture->name == name)
+            return texture;
+    return NULL;
+}
+
+static struct l10gl_gl_texture *gl_alloc_texture(GLuint name, int is_texture)
+{
+    struct l10gl_gl_texture *texture = malloc(sizeof(*texture));
+
+    if (!texture)
+        return NULL;
+    gl_init_texture(texture, name);
+    texture->is_texture = is_texture;
+    texture->next = gl_state.textures;
+    gl_state.textures = texture;
+    return texture;
+}
+
+static GLuint gl_allocate_texture_name(void)
+{
+    GLuint candidate = gl_state.next_texture_name;
+
+    while (candidate != 0 && gl_find_texture(candidate))
+        candidate++;
+    if (candidate == 0)
+        return 0;
+    gl_state.next_texture_name = candidate + 1;
+    return candidate;
+}
+
+void glGenTextures(GLsizei n, GLuint *textures)
+{
+    if (!gl_current())
+        return;
+    if (n < 0 || (n > 0 && !textures)) {
+        gl_record_error(GL_INVALID_VALUE);
+        return;
+    }
+    for (GLsizei i = 0; i < n; i++) {
+        GLuint name = gl_allocate_texture_name();
+
+        if (!name || !gl_alloc_texture(name, 0)) {
+            gl_record_error(GL_OUT_OF_MEMORY);
+            for (; i < n; i++)
+                textures[i] = 0;
+            return;
+        }
+        textures[i] = name;
+    }
+}
+
+void glDeleteTextures(GLsizei n, const GLuint *textures)
+{
+    struct l10gl_ctx *ctx = gl_current();
+
+    if (!ctx)
+        return;
+    if (n < 0 || (n > 0 && !textures)) {
+        gl_record_error(GL_INVALID_VALUE);
+        return;
+    }
+    for (GLsizei i = 0; i < n; i++) {
+        struct l10gl_gl_texture **link = &gl_state.textures;
+
+        if (textures[i] == 0)
+            continue;
+        while (*link && (*link)->name != textures[i])
+            link = &(*link)->next;
+        if (*link) {
+            struct l10gl_gl_texture *dead = *link;
+
+            *link = dead->next;
+            if (gl_state.bound_texture == dead) {
+                gl_state.bound_texture = &gl_state.default_texture;
+                gl_apply_texture_binding(ctx);
+            }
+            /* Backend allocations intentionally live until context teardown:
+             * swrast owns its allocation list and ViRGE uses a VRAM bump
+             * allocator. Only the GL name/object metadata is reclaimed here. */
+            free(dead);
+        }
+    }
+}
+
+GLboolean glIsTexture(GLuint texture)
+{
+    struct l10gl_gl_texture *object;
+
+    if (!gl_current())
+        return GL_FALSE;
+    object = gl_find_texture(texture);
+    return object && object->is_texture ? GL_TRUE : GL_FALSE;
+}
+
+void glBindTexture(GLenum target, GLuint texture)
+{
+    struct l10gl_ctx *ctx = gl_current();
+    struct l10gl_gl_texture *object;
+
+    if (!ctx)
+        return;
+    if (target != GL_TEXTURE_2D) {
+        gl_record_error(GL_INVALID_ENUM);
+        return;
+    }
+    object = gl_find_texture(texture);
+    if (!object && texture != 0)
+        object = gl_alloc_texture(texture, 1);
+    if (!object) {
+        gl_record_error(GL_OUT_OF_MEMORY);
+        return;
+    }
+    if (texture != 0)
+        object->is_texture = 1;
+    gl_state.bound_texture = object;
+    gl_apply_texture_binding(ctx);
+}
+
+static int gl_texture_filter(GLint param, int magnification,
+                             enum l10gl_tex_filter *filter)
+{
+    switch ((GLenum)param) {
+    case GL_NEAREST:
+        *filter = L10GL_FILTER_NEAREST;
+        return 0;
+    case GL_LINEAR:
+        *filter = L10GL_FILTER_LINEAR;
+        return 0;
+    case GL_NEAREST_MIPMAP_NEAREST:
+    case GL_NEAREST_MIPMAP_LINEAR:
+        if (magnification)
+            return -1;
+        *filter = L10GL_FILTER_NEAREST;
+        return 0;
+    case GL_LINEAR_MIPMAP_NEAREST:
+    case GL_LINEAR_MIPMAP_LINEAR:
+        if (magnification)
+            return -1;
+        *filter = L10GL_FILTER_LINEAR;
+        return 0;
+    default:
+        return -1;
+    }
+}
+
+void glTexParameteri(GLenum target, GLenum pname, GLint param)
+{
+    struct l10gl_ctx *ctx = gl_current();
+    struct l10gl_gl_texture *object = gl_state.bound_texture;
+    enum l10gl_tex_filter filter;
+
+    if (!ctx)
+        return;
+    if (target != GL_TEXTURE_2D) {
+        gl_record_error(GL_INVALID_ENUM);
+        return;
+    }
+    if (!object) {
+        gl_record_error(GL_INVALID_OPERATION);
+        return;
+    }
+
+    switch (pname) {
+    case GL_TEXTURE_MIN_FILTER:
+    case GL_TEXTURE_MAG_FILTER:
+        if (gl_texture_filter(param, pname == GL_TEXTURE_MAG_FILTER,
+                              &filter)) {
+            gl_record_error(GL_INVALID_ENUM);
+            return;
+        }
+        /* There is no LOD derivative in the Phase 2 contract, so minification
+         * and magnification share the backend's single filter selector. The
+         * most recently specified one is the effective object setting. */
+        object->filter = filter;
+        break;
+    case GL_TEXTURE_WRAP_S:
+    case GL_TEXTURE_WRAP_T:
+        if ((GLenum)param == GL_REPEAT)
+            object->wrap = L10GL_WRAP_REPEAT;
+        else if ((GLenum)param == GL_CLAMP)
+            object->wrap = L10GL_WRAP_CLAMP;
+        else {
+            gl_record_error(GL_INVALID_ENUM);
+            return;
+        }
+        /* ViRGE exposes one wrap bit for both axes; the most recently
+         * specified S/T value is therefore effective for the object. */
+        break;
+    default:
+        gl_record_error(GL_INVALID_ENUM);
+        return;
+    }
+    if (gl_state.texture_2d_enabled && object->uploaded)
+        gl_apply_texture_binding(ctx);
+}
+
+void glPixelStorei(GLenum pname, GLint param)
+{
+    if (!gl_current())
+        return;
+    if (pname != GL_UNPACK_ALIGNMENT) {
+        gl_record_error(GL_INVALID_ENUM);
+        return;
+    }
+    if (param != 1 && param != 2 && param != 4 && param != 8) {
+        gl_record_error(GL_INVALID_VALUE);
+        return;
+    }
+    gl_state.unpack_alignment = param;
+}
+
+static int gl_is_power_of_two(GLsizei value)
+{
+    return value > 0 && (value & (value - 1)) == 0;
+}
+
+void glTexImage2D(GLenum target, GLint level, GLint internal_format,
+                  GLsizei width, GLsizei height, GLint border,
+                  GLenum format, GLenum type, const GLvoid *pixels)
+{
+    struct l10gl_ctx *ctx = gl_current();
+    struct l10gl_gl_texture *object = gl_state.bound_texture;
+    const uint8_t *source = pixels;
+    uint32_t *converted;
+    size_t components, row_bytes, source_stride, pixel_count;
+    int ret;
+
+    if (!ctx)
+        return;
+    if (target != GL_TEXTURE_2D ||
+        (format != GL_RGB && format != GL_RGBA) ||
+        type != GL_UNSIGNED_BYTE) {
+        gl_record_error(GL_INVALID_ENUM);
+        return;
+    }
+    /* DB019-B section 19.4 (PDF p.251) defines one side as 2^s and caps
+     * s at 9, hence square power-of-two level-zero images up to 512x512. */
+    if (level != 0 || border != 0 ||
+        (internal_format != 3 && internal_format != 4 &&
+         internal_format != (GLint)GL_RGB &&
+         internal_format != (GLint)GL_RGBA) ||
+        width != height || width > 512 || !gl_is_power_of_two(width)) {
+        gl_record_error(GL_INVALID_VALUE);
+        return;
+    }
+    if (!object) {
+        gl_record_error(GL_INVALID_OPERATION);
+        return;
+    }
+    if (!(ctx->backend->caps & L10GL_CAP_TEXTURE) ||
+        !ctx->backend->tex_image_2d) {
+        gl_record_error(GL_INVALID_OPERATION);
+        return;
+    }
+
+    components = format == GL_RGBA ? 4u : 3u;
+    if ((size_t)width > SIZE_MAX / components) {
+        gl_record_error(GL_OUT_OF_MEMORY);
+        return;
+    }
+    row_bytes = (size_t)width * components;
+    if (row_bytes > SIZE_MAX - (size_t)(gl_state.unpack_alignment - 1)) {
+        gl_record_error(GL_OUT_OF_MEMORY);
+        return;
+    }
+    source_stride = (row_bytes + (size_t)(gl_state.unpack_alignment - 1)) &
+                    ~(size_t)(gl_state.unpack_alignment - 1);
+    pixel_count = (size_t)width * (size_t)height;
+    if (pixel_count > SIZE_MAX / sizeof(*converted)) {
+        gl_record_error(GL_OUT_OF_MEMORY);
+        return;
+    }
+    converted = malloc(pixel_count * sizeof(*converted));
+    if (!converted) {
+        gl_record_error(GL_OUT_OF_MEMORY);
+        return;
+    }
+
+    for (GLsizei y = 0; y < height; y++) {
+        for (GLsizei x = 0; x < width; x++) {
+            uint8_t red = 0, green = 0, blue = 0;
+            uint8_t alpha = format == GL_RGB ? 255 : 0;
+
+            if (source) {
+                const uint8_t *texel = source + (size_t)y * source_stride +
+                                       (size_t)x * components;
+                red = texel[0];
+                green = texel[1];
+                blue = texel[2];
+                if (format == GL_RGBA)
+                    alpha = texel[3];
+            }
+            converted[(size_t)y * (size_t)width + (size_t)x] =
+                ((uint32_t)alpha << 24) | ((uint32_t)red << 16) |
+                ((uint32_t)green << 8) | blue;
+        }
+    }
+
+    ret = l10gl_tex_image_2d(ctx, &object->texture, width, height,
+                             L10GL_TEX_FMT_ARGB8888, converted);
+    free(converted);
+    if (ret) {
+        gl_record_error(GL_OUT_OF_MEMORY);
+        return;
+    }
+    object->uploaded = 1;
+    object->is_texture = object->name != 0;
+    if (gl_state.texture_2d_enabled)
+        gl_apply_texture_binding(ctx);
 }
 
 void glFlush(void)

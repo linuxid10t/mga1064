@@ -221,9 +221,9 @@ Consequences:
 - After M1/M2, mga1064 caps become `GOURAUD|ZBUFFER|LINES|TEXTURE|
   PERSPECTIVE|DITHER` — never `BLEND`, `BILINEAR`, `TRILINEAR`, or `FOG`.
   The ViRGE claims all of those plus `FOG`.
-- Maximum texture sizes are not yet verified from either document —
-  confirm before hardcoding limits (`l10gl_virge.c:368` currently caps
-  s at 9 = 512×512 unverified).
+- ViRGE's maximum texture side is documented as 512 texels (DB019-B
+  section 19.4, PDF p. 251). The Mystique limit still needs confirmation
+  before Phase 5 exposes its texture path.
 - swrast (F3) implements the union of both profiles and is the reference
   for every feature here.
 
@@ -1124,8 +1124,26 @@ MODELVIEW-transformed directional position (`w=0`) to Phase 2, while
 fullscreen setup, swap, and process lifecycle to L10GL. Its 320x240 RGB565
 swrast frame was rendered and visually inspected successfully. David then ran
 the same demo through `tools/l10gl-run` on the 4MB ViRGE/DX and reported that
-it renders correctly; the G2 silicon gate is closed. G3 is the texture-object
-API.
+it renders correctly; the G2 silicon gate is closed.
+
+**G3 implemented 2026-07-18; swrast verified, ViRGE sign-off pending.**
+The shim now owns GL texture names and implements `glGenTextures`,
+`glDeleteTextures`, `glIsTexture`, `glBindTexture`, `glTexImage2D`,
+`glTexParameteri`, and `glPixelStorei(GL_UNPACK_ALIGNMENT)`. RGB/RGBA
+unsigned-byte uploads are unpacked with the GL row alignment and converted to
+backend ARGB8888. The cross-backend contract is level zero, square
+power-of-two images through 512x512: DB019-B section 19.4 (PDF p.251)
+explicitly caps the ViRGE side exponent at 9. Per-object filter/wrap metadata
+is reapplied on bind over the backend's single active selectors. Deleting a
+name unbinds and frees shim metadata; swrast allocations and ViRGE bump-heap
+storage remain owned by the context and are reclaimed at teardown.
+
+`test-gl` covers name lifecycle, RGBA and padded-RGB conversion, parameters,
+enable/disable dispatch, and invalid inputs, then renders a 2x2 GL texture
+through real swrast and verifies all four framebuffer quadrants from its PPM.
+The `gltexture` proof renders a repeated 64x64 RGBA8888 pattern; its 320x240
+RGB565 swrast frame was visually inspected successfully. Run that demo on the
+ViRGE to close G3. G4 is the final Phase 4 documentation/acceptance closure.
 
 A thin `include/GL/gl.h`-subset (`src/l10gl_gl.c`) mapping real GL 1.1
 entry points onto the Phase 2 pipeline: `glBegin/glEnd/glVertex*/glColor*/

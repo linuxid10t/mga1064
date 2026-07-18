@@ -62,6 +62,10 @@ Key facts verified against this document (2026-07):
 - **Blend control** (bits 19-18): 10b = texture alpha, 11b = source
   alpha. Fog (bit 17) and source-alpha blending are mutually exclusive
   (PDF p. 134).
+- **Maximum texture side is 512 texels** (section 19.4, PDF p. 251).
+  CMD_SET bits 11-8 hold `s`, one side of the largest texture rectangle is
+  `2^s`, and the document explicitly caps `s` at 9. The native ViRGE path
+  therefore requires square power-of-two textures no larger than 512x512.
 - **CR36 bits 7-5**: 000 = 4MB, 100 = 2MB, all other values reserved
   (PDF p. 197). Bits are strap-sampled; writable only after CR39 unlock.
 - **MM8504 read**: bit 13 = 1 means S3d engine *idle*; bits 12-8 = S3d

@@ -83,6 +83,25 @@ typedef void GLvoid;
 #define GL_BLEND                         0x0BE2
 #define GL_TEXTURE_2D                    0x0DE1
 
+#define GL_UNPACK_ALIGNMENT              0x0CF5
+
+#define GL_UNSIGNED_BYTE                 0x1401
+#define GL_RGB                           0x1907
+#define GL_RGBA                          0x1908
+
+#define GL_NEAREST                       0x2600
+#define GL_LINEAR                        0x2601
+#define GL_NEAREST_MIPMAP_NEAREST        0x2700
+#define GL_LINEAR_MIPMAP_NEAREST         0x2701
+#define GL_NEAREST_MIPMAP_LINEAR         0x2702
+#define GL_LINEAR_MIPMAP_LINEAR          0x2703
+#define GL_TEXTURE_MAG_FILTER            0x2800
+#define GL_TEXTURE_MIN_FILTER            0x2801
+#define GL_TEXTURE_WRAP_S                0x2802
+#define GL_TEXTURE_WRAP_T                0x2803
+#define GL_CLAMP                         0x2900
+#define GL_REPEAT                        0x2901
+
 #define GL_FLAT                          0x1D00
 #define GL_SMOOTH                        0x1D01
 
@@ -148,6 +167,15 @@ void glBlendFunc(GLenum sfactor, GLenum dfactor);
 void glShadeModel(GLenum mode);
 void glLightfv(GLenum light, GLenum pname, const GLfloat *params);
 void glMaterialfv(GLenum face, GLenum pname, const GLfloat *params);
+void glGenTextures(GLsizei n, GLuint *textures);
+void glDeleteTextures(GLsizei n, const GLuint *textures);
+GLboolean glIsTexture(GLuint texture);
+void glBindTexture(GLenum target, GLuint texture);
+void glTexImage2D(GLenum target, GLint level, GLint internal_format,
+                  GLsizei width, GLsizei height, GLint border,
+                  GLenum format, GLenum type, const GLvoid *pixels);
+void glTexParameteri(GLenum target, GLenum pname, GLint param);
+void glPixelStorei(GLenum pname, GLint param);
 void glFlush(void);
 void glFinish(void);
 

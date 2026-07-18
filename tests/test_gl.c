@@ -1,8 +1,11 @@
 /* Unit tests for the Phase 4 OpenGL compatibility entry points. */
 
 #include <math.h>
+#include <limits.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #include <GL/gl.h>
 
@@ -13,7 +16,18 @@
 
 struct capture_state {
     struct l10gl_vertex triangle[3];
+    uint32_t texture_pixels[4];
+    struct l10gl_texture *bound_texture;
     int triangles;
+    int textured_triangles;
+    int texture_uploads;
+    int texture_binds;
+    int texture_parameters;
+    int texture_width;
+    int texture_height;
+    enum l10gl_tex_format texture_format;
+    enum l10gl_tex_filter texture_filter;
+    enum l10gl_tex_wrap texture_wrap;
     int color_clears;
     int depth_clears;
     int waits;
@@ -60,6 +74,58 @@ static void capture_triangle(struct l10gl_ctx *ctx,
     capture.triangles++;
 }
 
+static void capture_textured_triangle(struct l10gl_ctx *ctx,
+                                      struct l10gl_vertex v0,
+                                      struct l10gl_vertex v1,
+                                      struct l10gl_vertex v2)
+{
+    capture_triangle(ctx, v0, v1, v2);
+    capture.textured_triangles++;
+}
+
+static int capture_texture_upload(struct l10gl_ctx *ctx,
+                                  struct l10gl_texture *texture,
+                                  int width, int height,
+                                  enum l10gl_tex_format format,
+                                  const void *data)
+{
+    size_t count = (size_t)width * (size_t)height;
+    (void)ctx;
+
+    if (count > 4)
+        count = 4;
+    memset(capture.texture_pixels, 0, sizeof(capture.texture_pixels));
+    memcpy(capture.texture_pixels, data, count * sizeof(uint32_t));
+    capture.texture_width = width;
+    capture.texture_height = height;
+    capture.texture_format = format;
+    capture.texture_uploads++;
+    texture->width = width;
+    texture->height = height;
+    texture->format = format;
+    texture->bytes_per_texel = 4;
+    texture->backend_data = texture;
+    return 0;
+}
+
+static void capture_texture_bind(struct l10gl_ctx *ctx,
+                                 struct l10gl_texture *texture)
+{
+    (void)ctx;
+    capture.bound_texture = texture;
+    capture.texture_binds++;
+}
+
+static void capture_texture_parameter(struct l10gl_ctx *ctx,
+                                      enum l10gl_tex_filter filter,
+                                      enum l10gl_tex_wrap wrap)
+{
+    (void)ctx;
+    capture.texture_filter = filter;
+    capture.texture_wrap = wrap;
+    capture.texture_parameters++;
+}
+
 static void capture_clear_color(struct l10gl_ctx *ctx,
                                 float red, float green, float blue)
 {
@@ -95,9 +161,13 @@ static const struct l10gl_backend capture_backend = {
     .clear_color = capture_clear_color,
     .clear_depth = capture_clear_depth,
     .draw_triangle = capture_triangle,
+    .draw_textured_triangle = capture_textured_triangle,
+    .tex_image_2d = capture_texture_upload,
+    .bind_texture = capture_texture_bind,
+    .tex_parameter = capture_texture_parameter,
     .wait_engine = capture_wait,
     .swap_buffers = capture_swap,
-    .caps = L10GL_CAP_GOURAUD | L10GL_CAP_ZBUFFER,
+    .caps = L10GL_CAP_GOURAUD | L10GL_CAP_ZBUFFER | L10GL_CAP_TEXTURE,
 };
 
 static void test_no_context(void)
@@ -269,6 +339,113 @@ static void test_shade_model(struct l10gl_ctx *ctx)
     expect_int("bad shade model", glGetError(), GL_INVALID_ENUM);
 }
 
+static void test_texture_objects(struct l10gl_ctx *ctx)
+{
+    const GLubyte rgba[16] = {
+        255, 0, 0, 255,  0, 255, 0, 128,
+        0, 0, 255, 64,   255, 255, 255, 0,
+    };
+    /* Default GL_UNPACK_ALIGNMENT=4: two RGB texels occupy six bytes and
+     * each source row has two padding bytes. */
+    const GLubyte rgb[16] = {
+        1, 2, 3, 4, 5, 6, 0, 0,
+        7, 8, 9, 10, 11, 12, 0, 0,
+    };
+    GLuint textures[2] = { 0, 0 };
+    int plain_before;
+
+    memset(&capture, 0, sizeof(capture));
+    glGenTextures(2, textures);
+    expect_int("generated texture 0 nonzero", textures[0] != 0, 1);
+    expect_int("generated texture names differ", textures[0] != textures[1],
+               1);
+    expect_int("reserved name is not texture", glIsTexture(textures[0]),
+               GL_FALSE);
+
+    glBindTexture(GL_TEXTURE_2D, textures[0]);
+    expect_int("bound name becomes texture", glIsTexture(textures[0]),
+               GL_TRUE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 2, 2, 0,
+                 GL_RGBA, GL_UNSIGNED_BYTE, rgba);
+    expect_int("RGBA upload count", capture.texture_uploads, 1);
+    expect_int("RGBA upload width", capture.texture_width, 2);
+    expect_int("RGBA backend format", capture.texture_format,
+               L10GL_TEX_FMT_ARGB8888);
+    expect_int("RGBA red conversion", (int)capture.texture_pixels[0],
+               (int)0xffff0000u);
+    expect_int("RGBA alpha conversion", (int)capture.texture_pixels[1],
+               (int)0x8000ff00u);
+    expect_int("disabled texture remains unbound", ctx->current_texture == NULL,
+               1);
+
+    glEnable(GL_TEXTURE_2D);
+    expect_int("enabled texture bound", ctx->current_texture != NULL, 1);
+    expect_int("linear filter applied", capture.texture_filter,
+               L10GL_FILTER_LINEAR);
+    expect_int("repeat applied", capture.texture_wrap, L10GL_WRAP_REPEAT);
+
+    glColor3f(1, 1, 1);
+    glBegin(GL_TRIANGLES);
+    glTexCoord2f(0, 0); glVertex2f(-.25f, -.25f);
+    glTexCoord2f(1, 0); glVertex2f( .25f, -.25f);
+    glTexCoord2f(0, 1); glVertex2f(0, .25f);
+    glEnd();
+    expect_int("textured GL dispatch", capture.textured_triangles, 1);
+
+    glDisable(GL_TEXTURE_2D);
+    expect_int("disable unbinds backend texture", ctx->current_texture == NULL,
+               1);
+    plain_before = capture.triangles;
+    glBegin(GL_TRIANGLES);
+    glVertex2f(-.25f, -.25f);
+    glVertex2f( .25f, -.25f);
+    glVertex2f(0, .25f);
+    glEnd();
+    expect_int("disabled texture uses plain path", capture.triangles,
+               plain_before + 1);
+    expect_int("no extra textured dispatch", capture.textured_triangles, 1);
+
+    glBindTexture(GL_TEXTURE_2D, textures[1]);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, 2, 2, 0,
+                 GL_RGB, GL_UNSIGNED_BYTE, rgb);
+    expect_int("RGB upload count", capture.texture_uploads, 2);
+    expect_int("RGB row 0 texel 0", (int)capture.texture_pixels[0],
+               (int)0xff010203u);
+    expect_int("RGB row 0 texel 1", (int)capture.texture_pixels[1],
+               (int)0xff040506u);
+    expect_int("RGB padded row 1 texel 0", (int)capture.texture_pixels[2],
+               (int)0xff070809u);
+    expect_int("RGB padded row 1 texel 1", (int)capture.texture_pixels[3],
+               (int)0xff0a0b0cu);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP);
+    glEnable(GL_TEXTURE_2D);
+    expect_int("second texture bound", ctx->current_texture != NULL, 1);
+    expect_int("nearest filter applied", capture.texture_filter,
+               L10GL_FILTER_NEAREST);
+    expect_int("clamp applied", capture.texture_wrap, L10GL_WRAP_CLAMP);
+
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 3, 3, 0,
+                 GL_RGBA, GL_UNSIGNED_BYTE, rgba);
+    expect_int("non-power-of-two rejected", glGetError(), GL_INVALID_VALUE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER,
+                    GL_LINEAR_MIPMAP_LINEAR);
+    expect_int("mipmap magnification rejected", glGetError(), GL_INVALID_ENUM);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 3);
+    expect_int("bad unpack alignment", glGetError(), GL_INVALID_VALUE);
+
+    glDeleteTextures(1, &textures[1]);
+    expect_int("deleted bound texture unbound", ctx->current_texture == NULL,
+               1);
+    expect_int("deleted texture name gone", glIsTexture(textures[1]),
+               GL_FALSE);
+    glDeleteTextures(2, textures);
+    glDisable(GL_TEXTURE_2D);
+}
+
 static void test_clear_and_sync(struct l10gl_ctx *ctx)
 {
     memset(&capture, 0, sizeof(capture));
@@ -303,6 +480,100 @@ static void test_stack_errors(void)
     expect_int("projection overflow", glGetError(), GL_STACK_OVERFLOW);
 }
 
+static void expect_rgb(const char *label, const unsigned char *pixel,
+                       int red, int green, int blue)
+{
+    if (pixel[0] == red && pixel[1] == green && pixel[2] == blue)
+        return;
+    fprintf(stderr, "test-gl: %s is (%u,%u,%u), expected (%d,%d,%d)\n",
+            label, pixel[0], pixel[1], pixel[2], red, green, blue);
+    failures++;
+}
+
+static void test_swrast_texture_pixels(void)
+{
+    const GLubyte pixels[16] = {
+        255, 0, 0, 255,    0, 255, 0, 255,
+        0, 0, 255, 255,    255, 255, 255, 255,
+    };
+    unsigned char image[4 * 4 * 3];
+    char directory[] = "/tmp/l10gl-gl-test.XXXXXX";
+    char path[PATH_MAX];
+    char magic[3];
+    struct l10gl_ctx ctx;
+    GLuint texture;
+    FILE *file;
+    int width, height, maximum;
+
+    if (!mkdtemp(directory)) {
+        fprintf(stderr, "test-gl: cannot create swrast temp directory\n");
+        failures++;
+        return;
+    }
+    snprintf(path, sizeof(path), "%s/frame.ppm", directory);
+    setenv("L10GL_SWRAST_DUMP", path, 1);
+    if (l10gl_create(&ctx, &swrast_backend, 4, 4, 3) != 0) {
+        fprintf(stderr, "test-gl: cannot create swrast texture context\n");
+        failures++;
+        unsetenv("L10GL_SWRAST_DUMP");
+        rmdir(directory);
+        return;
+    }
+    l10glMakeCurrent(&ctx);
+    glViewport(0, 0, 4, 4);
+    glMatrixMode(GL_PROJECTION);
+    glLoadIdentity();
+    glMatrixMode(GL_MODELVIEW);
+    glLoadIdentity();
+    glDisable(GL_DEPTH_TEST);
+    glDisable(GL_CULL_FACE);
+    glClearColor(0, 0, 0, 1);
+    glClear(GL_COLOR_BUFFER_BIT);
+
+    glGenTextures(1, &texture);
+    glBindTexture(GL_TEXTURE_2D, texture);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 2, 2, 0,
+                 GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    glEnable(GL_TEXTURE_2D);
+    glColor3f(1, 1, 1);
+    glBegin(GL_QUADS);
+    glTexCoord2f(0, 0); glVertex2f(-1, -1);
+    glTexCoord2f(1, 0); glVertex2f( 1, -1);
+    glTexCoord2f(1, 1); glVertex2f( 1,  1);
+    glTexCoord2f(0, 1); glVertex2f(-1,  1);
+    glEnd();
+    l10glSwapBuffers();
+    expect_int("swrast GL texture error", glGetError(), GL_NO_ERROR);
+
+    l10glMakeCurrent(NULL);
+    l10gl_destroy(&ctx);
+    unsetenv("L10GL_SWRAST_DUMP");
+
+    file = fopen(path, "rb");
+    if (!file || fscanf(file, "%2s%d%d%d", magic, &width, &height,
+                        &maximum) != 4 || strcmp(magic, "P6") != 0 ||
+        width != 4 || height != 4 || maximum != 255 || fgetc(file) == EOF ||
+        fread(image, sizeof(image), 1, file) != 1) {
+        fprintf(stderr, "test-gl: cannot read swrast GL texture frame\n");
+        failures++;
+    } else {
+        expect_rgb("swrast textured top-left", &image[(0 * 4 + 0) * 3],
+                   0, 0, 255);
+        expect_rgb("swrast textured top-right", &image[(0 * 4 + 3) * 3],
+                   255, 255, 255);
+        expect_rgb("swrast textured bottom-left", &image[(3 * 4 + 0) * 3],
+                   255, 0, 0);
+        expect_rgb("swrast textured bottom-right", &image[(3 * 4 + 3) * 3],
+                   0, 255, 0);
+    }
+    if (file)
+        fclose(file);
+    unlink(path);
+    rmdir(directory);
+}
+
 int main(void)
 {
     struct l10gl_ctx ctx;
@@ -320,11 +591,13 @@ int main(void)
     test_state(&ctx);
     test_lighting_material(&ctx);
     test_shade_model(&ctx);
+    test_texture_objects(&ctx);
     test_clear_and_sync(&ctx);
     test_stack_errors();
 
     l10glMakeCurrent(NULL);
     l10gl_destroy(&ctx);
+    test_swrast_texture_pixels();
 
     if (failures) {
         fprintf(stderr, "test-gl: %d failure(s)\n", failures);

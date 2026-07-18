@@ -55,7 +55,14 @@ clears, depth/blend/cull/lighting state, synchronization, and GL error
 reporting onto that frontend. Directional LIGHT0, ambient/diffuse material,
 and flat/smooth shading are sufficient for the new `gears` demo, now verified
 under both swrast and the target ViRGE/DX. L10GL still owns fullscreen context
-creation and buffer swapping; texture objects remain the next Phase 4 slice.
+creation and buffer swapping.
+
+The texture-object slice now supports GL texture names, level-zero RGB/RGBA
+unsigned-byte uploads, unpack alignment, nearest/linear filtering, and
+repeat/clamp selection. For a safe common hardware contract, images must be
+square powers of two no larger than 512x512. The new `gltexture` proof and
+pixel-level `test-gl` integration are verified under swrast; ViRGE validation
+is pending.
 
 | Backend | Hardware | Status |
 |---|---|---|
@@ -252,6 +259,7 @@ Run a demo as root:
 sudo ./cube
 sudo ./textured_cube
 sudo ./gears
+sudo ./gltexture
 sudo ./cube 800 600 16
 ```
 
@@ -263,6 +271,7 @@ sudo env L10GL_BACKEND=virge ./cube
 sudo env L10GL_BACKEND=mga1064 ./cube
 env L10GL_BACKEND=swrast L10GL_FRAMES=1 ./cube
 env L10GL_BACKEND=swrast L10GL_FRAMES=1 ./gears
+env L10GL_BACKEND=swrast L10GL_FRAMES=1 ./gltexture
 ```
 
 An unknown override is rejected and prints the available backend names. If no
@@ -275,6 +284,14 @@ link the archive and `libm`, then create a context with
 with `-Iinclude`, calls `l10glCreateContext(width, height, bits_per_pixel)`,
 uses the implemented GL subset, presents with `l10glSwapBuffers()`, and ends
 with `l10glDestroyContext()`.
+
+Texture storage follows the vintage backends' lifetime: `glDeleteTextures`
+releases the GL name and unbinds it, while the uploaded swrast allocation or
+ViRGE VRAM bump allocation is reclaimed when the context is destroyed.
+Backends expose one active filter and one wrap selector, so the most recently
+specified min/mag filter and S/T wrap value is effective for each object when
+it is bound. ViRGE implements `GL_CLAMP` with its wrap-disabled border
+behavior; `GL_REPEAT` is the portable hardware path.
 
 ## Diagnostics
 
