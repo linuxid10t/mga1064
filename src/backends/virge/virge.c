@@ -554,6 +554,11 @@ static uint8_t merge_masked(uint8_t old, uint8_t value, uint8_t mask)
     return (uint8_t)((old & (uint8_t)~mask) | (value & mask));
 }
 
+static void vga_feature_write(uint8_t misc, uint8_t value)
+{
+    outb(value, (misc & 0x01) ? 0x3da : 0x3ba);
+}
+
 static uint64_t virge_monotonic_ns(void)
 {
     struct timespec ts;
@@ -656,6 +661,13 @@ static void virge_native_mode_restore(struct virge_ctx *ctx)
     if (image->mask[0x35])
         vga_crtc_write(0x35, ctx->saved_native_crtc[0x35]);
 
+    for (i = 0; i < VIRGE_SEQ_IMAGE_SIZE; i++) {
+        if (!image->seq_mask[i] || i == 0x01 || i == 0x08 ||
+            i == 0x12 || i == 0x13 || i == 0x15)
+            continue;
+        vga_seq_write((uint8_t)i, ctx->saved_native_seq[i]);
+    }
+
     vga_seq_write(0x12, ctx->saved_native_seq[0x12]);
     vga_seq_write(0x13, ctx->saved_native_seq[0x13]);
     outb(ctx->saved_native_misc, 0x3C2);
@@ -664,6 +676,9 @@ static void virge_native_mode_restore(struct virge_ctx *ctx)
     vga_seq_write(0x15, sr15);
     if (ctx->saved_native_seq[0x15] & 0x20)
         vga_seq_write(0x15, ctx->saved_native_seq[0x15]);
+    if (image->feature_mask)
+        vga_feature_write(ctx->saved_native_misc,
+                          ctx->saved_native_feature);
     /* Start-address writes latch on retrace. Repeat them after the saved
      * clock/timing domain is live, then wait one complete latch opportunity
      * before unblanking or handing the card back to fbcon. */
@@ -678,7 +693,7 @@ static void virge_native_mode_restore(struct virge_ctx *ctx)
            "CR07=%02x CR12=%02x CR13=%02x CR15=%02x CR16=%02x "
            "CR3B=%02x CR5D=%02x CR5E=%02x CR67=%02x "
            "start=%02x:%02x:%02x Misc=%02x SR12=%02x SR13=%02x "
-           "SR15=%02x\n",
+           "SR15=%02x SR0D=%02x FCR=%02x CR33=%02x CR56=%02x\n",
            vga_crtc_read(0x00), vga_crtc_read(0x01),
            vga_crtc_read(0x06), vga_crtc_read(0x07),
            vga_crtc_read(0x12), vga_crtc_read(0x13),
@@ -688,7 +703,8 @@ static void virge_native_mode_restore(struct virge_ctx *ctx)
            vga_crtc_read(0x69), vga_crtc_read(0x0c),
            vga_crtc_read(0x0d),
            inb(0x3cc), vga_seq_read(0x12), vga_seq_read(0x13),
-           vga_seq_read(0x15));
+           vga_seq_read(0x15), vga_seq_read(0x0d), inb(0x3ca),
+           vga_crtc_read(0x33), vga_crtc_read(0x56));
     outb(ctx->saved_native_dac_mask, 0x3C6);
     vga_seq_write(0x01, ctx->saved_native_seq[0x01]);
     vga_seq_write(0x08, ctx->saved_native_seq[0x08]);
@@ -719,6 +735,7 @@ static int virge_native_mode_apply(struct virge_ctx *ctx,
         virge_mode_limit_first_gate(image);
 
     ctx->saved_native_misc = inb(0x3CC);
+    ctx->saved_native_feature = inb(0x3CA);
     ctx->saved_native_dac_mask = inb(0x3C6);
     for (i = 0; i < VIRGE_CRTC_IMAGE_SIZE; i++) {
         if (image->mask[i])
@@ -746,6 +763,12 @@ static int virge_native_mode_apply(struct virge_ctx *ctx,
         printf("S3 ViRGE: P6 resolution gate will replace the complete "
                "live CRTC timing image\n");
         virge_measure_sync("pre-mode");
+        printf("S3 ViRGE: pre-mode external path: FCR=%02x SR0D=%02x "
+               "CR33=%02x CR55=%02x CR56=%02x\n",
+               ctx->saved_native_feature, ctx->saved_native_seq[0x0d],
+               ctx->saved_native_crtc[0x33],
+               ctx->saved_native_crtc[0x55],
+               ctx->saved_native_crtc[0x56]);
     }
     if (image->builtin_dclk_25175) {
         printf("S3 ViRGE: P6 native mode: %ux%u@%u RGB555, exact built-in "
@@ -763,6 +786,14 @@ static int virge_native_mode_apply(struct virge_ctx *ctx,
      * clock select 00 directly chooses the standard 25.175 MHz VGA DCLK.
      * Only the 11 path needs SR12/SR13 followed by an SR15.5 load pulse. */
     vga_seq_write(0x01, (uint8_t)(ctx->saved_native_seq[0x01] | 0x20));
+    for (i = 0; i < VIRGE_SEQ_IMAGE_SIZE; i++) {
+        if (!image->seq_mask[i] || i == 0x01 || i == 0x08 ||
+            i == 0x12 || i == 0x13 || i == 0x15)
+            continue;
+        target = merge_masked(ctx->saved_native_seq[i], image->seq_value[i],
+                              image->seq_mask[i]);
+        vga_seq_write((uint8_t)i, target);
+    }
     if (!image->builtin_dclk_25175) {
         target = merge_masked(ctx->saved_native_seq[0x12],
                               image->seq_value[0x12], image->seq_mask[0x12]);
@@ -809,6 +840,12 @@ static int virge_native_mode_apply(struct virge_ctx *ctx,
                                           image->value[0x35],
                                           image->mask[0x35]));
 
+    if (image->feature_mask) {
+        target = merge_masked(ctx->saved_native_feature,
+                              image->feature_value, image->feature_mask);
+        vga_feature_write(inb(0x3cc), target);
+    }
+
     outb(image->dac_mask_value, 0x3C6);
 
     for (i = 0; i < VIRGE_CRTC_IMAGE_SIZE; i++) {
@@ -847,6 +884,13 @@ static int virge_native_mode_apply(struct virge_ctx *ctx,
         fprintf(stderr, "S3 ViRGE: P6 Misc Output readback mismatch\n");
         mismatches++;
     }
+    target = merge_masked(ctx->saved_native_feature, image->feature_value,
+                          image->feature_mask);
+    if ((inb(0x3ca) & image->feature_mask) !=
+        (target & image->feature_mask)) {
+        fprintf(stderr, "S3 ViRGE: P6 Feature Control readback mismatch\n");
+        mismatches++;
+    }
     if (mismatches) {
         fprintf(stderr, "S3 ViRGE: P6 native image rejected: %u CRTC "
                         "readback mismatch(es); restoring\n", mismatches);
@@ -875,7 +919,7 @@ static int virge_native_mode_apply(struct virge_ctx *ctx,
            "CR07=%02x CR12=%02x CR13=%02x CR15=%02x CR16=%02x "
            "CR3B=%02x CR5D=%02x CR5E=%02x CR67=%02x "
            "start=%02x:%02x:%02x Misc=%02x SR12=%02x SR13=%02x "
-           "SR15=%02x\n",
+           "SR15=%02x SR0D=%02x FCR=%02x CR33=%02x CR56=%02x\n",
            vga_crtc_read(0x00), vga_crtc_read(0x01),
            vga_crtc_read(0x06), vga_crtc_read(0x07),
            vga_crtc_read(0x12), vga_crtc_read(0x13),
@@ -884,7 +928,8 @@ static int virge_native_mode_apply(struct virge_ctx *ctx,
            vga_crtc_read(0x5e), vga_crtc_read(0x67),
            vga_crtc_read(0x69), vga_crtc_read(0x0c),
            vga_crtc_read(0x0d), inb(0x3cc), vga_seq_read(0x12),
-           vga_seq_read(0x13), vga_seq_read(0x15));
+           vga_seq_read(0x13), vga_seq_read(0x15), vga_seq_read(0x0d),
+           inb(0x3ca), vga_crtc_read(0x33), vga_crtc_read(0x56));
     return 0;
 }
 

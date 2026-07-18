@@ -936,6 +936,18 @@ It also reports SR01 and CR43, the documented dot-clock divide and horizontal
 counter-double controls. Those measured rates will identify the remaining
 counter-scaling error.
 
+The hardware measurement returned a correct live baseline of 37.854kHz /
+60.279Hz and a correct native 640x480 raster of 31.321kHz / 59.664Hz. The
+monitor nevertheless rejected only the native transaction and recovered after
+the exact register restore. This exonerates the DCLK and internal CRTC timing
+and moves the gate to the external signal path. DB019-B shows that CR33.3=0
+does not unconditionally select internal DCLK: it permits feature-connector
+VCLK when that path is enabled, while CR33.3=1 forces internal DCLK. The next
+gate therefore forces CR33.3, normalizes SR0D's feature/DPMS H/V overrides,
+and clears Feature Control bit 3 so VSYNC cannot be ORed with active display.
+All three states are snapshotted, verified, logged, and restored. The verified
+800x600 clock-only gate explicitly excludes these new writes.
+
 75Hz and 1024x768 remain locked. Hardware test over SSH:
 
 ```

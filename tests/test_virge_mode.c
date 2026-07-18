@@ -188,14 +188,18 @@ static void test_crtc_image(void)
     EXPECT(image.value[0x3b] == 0xea && image.fifo_fetch == 234 &&
            image.value[0x5d] == 0x21,
            "hardware-verified 800x600 x2/SFF bytes");
-    EXPECT(image.value[0x50] == 0x10 && image.value[0x51] == 0x00 &&
+    EXPECT(image.value[0x33] == 0x08 && image.value[0x50] == 0x10 &&
+           image.value[0x51] == 0x00 &&
            image.value[0x67] == 0x30,
-           "RGB555 pixel length and scanout mode");
+           "internal VCLK, RGB555 pixel length, and scanout mode");
     EXPECT(image.value[0x58] == 0x13 && image.misc_value == 0x0f &&
            image.misc_mask == 0xcf,
            "4MB linear window and positive sync");
     EXPECT(!image.builtin_dclk_25175,
            "800x600 uses programmable DCLK");
+    EXPECT(image.feature_value == 0 && image.feature_mask == 0x08 &&
+           image.seq_value[0x0d] == 0 && image.seq_mask[0x0d] == 0xf1,
+           "normal external sync path is in save image");
     EXPECT(image.seq_mask[0x01] == 0x20 &&
            image.seq_value[0x08] == 0x06 &&
            image.seq_value[0x12] == image.pll.sr12 &&
@@ -283,6 +287,8 @@ static void test_first_gate_image(void)
            "first gate preserves live vertical/addressing timing state");
     EXPECT(image.misc_mask == 0x0f,
            "first gate changes DCLK select without changing sync polarity");
+    EXPECT(image.feature_mask == 0 && image.seq_mask[0x0d] == 0,
+           "first gate preserves live external sync routing");
     EXPECT(image.seq_mask[0x12] && image.seq_mask[0x13] &&
            image.seq_mask[0x15],
            "first gate retains programmable DCLK load sequence");

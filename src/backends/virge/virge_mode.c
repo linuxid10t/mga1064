@@ -308,7 +308,10 @@ int virge_mode_encode_16bpp(const struct virge_mode *mode, uint32_t stride,
      * CR50 pixel length is retained from the hardware-verified takeover; that
      * register is not described in DB019-B. */
     crtc_set(image, 0x31, 0x08, 0x38);
-    crtc_set(image, 0x33, 0x00, 0x08); /* do not invert DCLK */
+    /* Force VCLK from the internal DCLK. CR33.3=0 permits an external
+     * feature-connector VCLK when that path is enabled; CR33.3=1 explicitly
+     * selects inverted internal DCLK (DB019-B section 18, PDF p.194). */
+    crtc_set(image, 0x33, 0x08, 0x08);
     crtc_set(image, 0x34, 0x10, 0x10);
     crtc_set(image, 0x35, 0x00, 0x30); /* timing registers unlocked */
     crtc_set(image, 0x3a, 0x10, 0x18);
@@ -339,6 +342,11 @@ int virge_mode_encode_16bpp(const struct virge_mode *mode, uint32_t stride,
     if (!(mode->sync_flags & VIRGE_MODE_VSYNC_POSITIVE))
         image->misc_value |= 0x80;
 
+    /* Feature Control bit 3 ORs vertical sync with active display when set.
+     * Native scanout always needs the normal external VSYNC waveform. */
+    image->feature_value = 0x00;
+    image->feature_mask = 0x08;
+
     /* Extended sequencer access must be unlocked through SR08 before SR12,
      * SR13, and SR15 are touched (DB019-B section 13.2.1, PDF p.90). SR15
      * bit 5 is toggled 0->1->0 by the future writer to load this PLL image.
@@ -347,6 +355,11 @@ int virge_mode_encode_16bpp(const struct virge_mode *mode, uint32_t stride,
      * save set. */
     image->seq_value[0x08] = 0x06;
     image->seq_mask[0x08] = 0xff;
+    /* SR0D owns the external feature connector and DPMS sync overrides.
+     * Disable feature-connector direction control and select normal H/V sync
+     * output, preserving the unrelated LPB selector and reserved bits. */
+    image->seq_value[0x0d] = 0x00;
+    image->seq_mask[0x0d] = 0xf1;
     image->seq_value[0x01] = 0x00; /* screen on after the atomic load */
     image->seq_mask[0x01] = 0x20;
     image->seq_value[0x12] = image->pll.sr12;
@@ -395,6 +408,8 @@ void virge_mode_limit_first_gate(struct virge_crtc_image *image)
      * color-CRTC access. The complete encoder still owns polarity for the
      * later true resolution-change gate. */
     image->misc_mask &= 0x0fu;
+    image->feature_mask = 0;
+    image->seq_mask[0x0d] = 0;
 
     /* Preserve CR11's interrupt/retrace bits; only its timing lock is part of
      * this transaction. CR35 is deliberately absent because the proven

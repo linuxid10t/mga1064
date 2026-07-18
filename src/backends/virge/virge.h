@@ -579,6 +579,7 @@ struct virge_ctx {
     uint8_t  saved_native_crtc[VIRGE_CRTC_IMAGE_SIZE];
     uint8_t  saved_native_seq[VIRGE_SEQ_IMAGE_SIZE];
     uint8_t  saved_native_misc;
+    uint8_t  saved_native_feature;
     uint8_t  saved_native_dac_mask;
     /* Snapshot of ALL VRAM taken at scanout takeover and memcpy'd back at
      * cleanup. On a no-fbdev box the console is the bootloader's VBE

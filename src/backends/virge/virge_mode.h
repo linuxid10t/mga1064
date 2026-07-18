@@ -47,6 +47,8 @@ struct virge_crtc_image {
     uint8_t seq_mask[VIRGE_SEQ_IMAGE_SIZE];
     uint8_t misc_value;
     uint8_t misc_mask;
+    uint8_t feature_value;
+    uint8_t feature_mask;
     uint8_t dac_mask_value;
     uint8_t dac_mask_mask;
     uint16_t stride;

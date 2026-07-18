@@ -203,6 +203,16 @@ three vertical retraces before and after the mode transaction. The same line
 logs SR01 and CR43, the documented dot-clock divide and horizontal-counter
 double controls. Use those H/V measurements to choose the next correction.
 
+Measured hardware results were 37.854kHz / 60.279Hz before the transaction and
+31.321kHz / 59.664Hz in native 640x480. Those are valid internal sync rates,
+but the monitor still reported out of range until cleanup restored the old
+mode. The pending gate now owns the documented external path instead: CR33.3
+is set to force VCLK from internal DCLK; SR0D feature-connector direction and
+DPMS sync overrides are set to normal output; and Feature Control bit 3 is
+cleared to prevent VSYNC from being ORed with active display. Each added byte
+is saved, read back, logged, and restored. `virge_mode_limit_first_gate`
+removes these additions from the already-verified 800x600 clock-only path.
+
 Run over SSH from a clean console baseline:
 
 ```
