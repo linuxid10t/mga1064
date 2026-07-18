@@ -76,6 +76,14 @@ Key facts verified against this document (2026-07):
   produced a clean full-screen page flip (x8 sheared, x2 hit the Z
   region, x1 hit end-of-VRAM). This is the CRTC page-flip register for
   double-buffering.
+- **Split-screen line compare does not require CR5E bit 6 for L10GL's fixed
+  modes.** CR18 supplies bits 7-0, CR07 bit 4 supplies bit 8, CR09 bit 6
+  supplies bit 9, and CR5E bit 6 supplies the ViRGE extension bit 10
+  (sections 16/18, PDF pp.161/214). Programming `0x3ff` already places the
+  split beyond every supported raster (all are shorter than 1024 lines), so
+  the native image leaves CR5E.6 clear. This matches the live 800x600
+  hardware readback (`CR5E=00`) and avoids an unnecessary extended vertical
+  state change.
 - **VSY INT latch needs VSY ENB.** Subsystem Status bit 0 (VSY INT) is
   interrupt *status* that only reports an interrupt that is *enabled*;
   Subsystem Control bit 8 (VSY ENB) must be set or the latch never sets

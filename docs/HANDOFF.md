@@ -140,8 +140,8 @@ sizes the linear window from detected VRAM. The CR3B policy holds the verified
 "typically CR00-5" suggestion. That checkpoint was also hardware-inert.
 
 **Phase 3 P6c first 800x600 hardware gate implemented and silicon-verified
-2026-07-18.** `L10GL_MODESET=native` now selects a complete native save/apply/
-restore transaction, but only for 800x600@60. The restriction is intentional:
+2026-07-18.** `L10GL_MODESET=native` selects a native save/apply/restore
+transaction. Its first gate was restricted to 800x600@60 intentionally:
 the target already displays that raster correctly, so the first run isolates
 the new programmable DCLK load (40 MHz target, computed 40.025 MHz,
 SR12=49/SR13=79) and full-register restoration. The path requires `/dev/fb0`
@@ -177,6 +177,25 @@ the active VT so the kernel-retained text overwrites L10GL's stale color/Z
 pixels. The 800x600 PLL and restore gate is closed; enable 640x480@60 next as
 the first real resolution-change test.
 
+**P6d 640x480@60 gate implemented; silicon validation pending.** The backend
+now allows that mode under `L10GL_MODESET=native` and applies the complete
+databook-derived CRTC image rather than the 800x600 clock gate's restricted
+live-raster subset. Unit tests pin all 25 standard bytes plus CR5D/CR5E, pitch,
+sync polarity, FIFO fetch, and `SR12=67`/`SR13=7d` for a computed 25.255MHz
+DCLK. DB019-B CR18 and its CR07/CR09 overflow fields only require line compare
+to be beyond the visible raster; using standard `0x3ff` disables split-screen
+for every supported mode without unnecessarily setting ViRGE CR5E bit 6. Run
+over SSH from a clean console baseline:
+
+```
+sudo env L10GL_BACKEND=virge L10GL_MODESET=native \
+  tools/l10gl-run -- ./cube 640 480 16
+```
+
+Verify a correctly filled 640x480 display, no out-of-range event, and exact
+restoration of the original 800x600 simplefb console after Ctrl-C. Keep 75Hz
+and 1024x768 locked until this gate passes.
+
 ```
 sudo env L10GL_BACKEND=virge L10GL_MODESET=native \
   tools/l10gl-run -- ./cube 800 600 16
@@ -184,7 +203,7 @@ sudo env L10GL_BACKEND=virge L10GL_MODESET=native \
 
 Expected: the normal cube at 800x600 with no monitor resync/out-of-range event,
 the P6 PLL/readback lines in the log, and a working console after Ctrl-C and
-launcher rebind. This gate is confirmed; 640x480@60 is next.
+launcher rebind. This gate is confirmed; the P6d command above is next.
 
 ## Test setup (fixed, do not re-derive)
 

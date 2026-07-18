@@ -885,8 +885,9 @@ plus Misc Output and DAC mask, blanks the screen, loads the PLL and CRTC,
 requires masked readback to match, then restores the exact saved register
 bytes at cleanup. Default operation remains the hardware-verified live-raster
 takeover. After the 800x600 run and restore are confirmed, enable 640x480@60
-as the first actual resolution change. That confirmation is now complete;
-keep 75 Hz and 1024x768 gated (the
+as the first actual resolution change. That confirmation is complete and P6d
+now exposes 640x480 for its isolated silicon test; keep 75 Hz and 1024x768
+gated (the
 latter also exceeds a 4MB card's double-buffer+Z budget).
 
 The first P6c run stayed synchronized but showed roughly 100-115 black lines
@@ -905,6 +906,26 @@ not introduced by the corrected restore. After reboot re-established the
 firmware/simplefb baseline, the same P6 run rendered correctly and returned to
 a correct framebuffer console. The 800x600 PLL/save/restore gate is closed;
 640x480@60 is now the next P6 resolution-change gate.
+
+**P6d 640x480@60 resolution gate implemented 2026-07-18; silicon validation
+pending.** The opt-in native path now admits 640x480 alongside the verified
+800x600 clock gate. Unlike 800x600, 640x480 applies the complete standard and
+extended CRTC image because it is a real raster change. The image is locked by
+tests to DB019-B's exact field encodings: CR00-CR18, CR5D/CR5E overflow, pitch,
+negative sync polarity, the 25.175MHz PLL (`SR12=67`, `SR13=7d`, actual
+25.255MHz), and the 3us FIFO-refill budget. The split-screen line compare was
+reduced from the unnecessary ViRGE-extended `0x7ff` to standard VGA `0x3ff`;
+all supported rasters are shorter than 1024 lines, this keeps split-screen
+disabled, and it preserves `CR5E=00` as observed in the proven live mode.
+75Hz and 1024x768 remain locked. Hardware test over SSH:
+
+```
+sudo env L10GL_BACKEND=virge L10GL_MODESET=native \
+  tools/l10gl-run -- ./cube 640 480 16
+```
+
+Acceptance: monitor synchronizes at 640x480, the cube fills that raster without
+bands or displacement, and Ctrl-C returns to the clean pre-run 800x600 console.
 
 The end-state for the primary card: set the mode by programming the chip
 directly, so L10GL runs even on a `vesafb`/fixed-mode console — the same

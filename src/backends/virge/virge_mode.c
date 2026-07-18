@@ -173,7 +173,13 @@ int virge_mode_encode_16bpp(const struct virge_mode *mode, uint32_t stride,
     uint32_t vt, vd, vbs, vbe, vss, vse;
     uint32_t lsw;
     uint32_t refill;
-    uint32_t line_compare = 0x7ffu;
+    /* Disable split-screen by placing line compare at the largest standard
+     * VGA value, 0x3ff. CR18 + CR07.4 + CR09.6 encode those ten bits. All P6
+     * modes have fewer than 1024 lines, so CR5E.6 (the ViRGE-only bit 10) is
+     * unnecessary. This matches the proven live 800x600 CR5E=00 state and
+     * avoids changing an extended vertical bit without need (DB019-B section
+     * 16 CR18, PDF p.161; section 18 CR5E, PDF p.214). */
+    uint32_t line_compare = 0x3ffu;
     uint8_t cr07, cr09, cr5d, cr5e;
     unsigned i;
     int ret;

@@ -143,7 +143,16 @@ sudo env L10GL_BACKEND=virge L10GL_MODESET=native \
 
 This test programs and verifies the ViRGE DCLK/CRTC image and restores the
 complete saved register state on exit. Other native resolutions remain locked;
-640x480@60 is the next deliberate hardware gate.
+640x480@60 is now the next deliberate hardware gate:
+
+```sh
+sudo env L10GL_BACKEND=virge L10GL_MODESET=native \
+    tools/l10gl-run -- ./cube 640 480 16
+```
+
+This is the first true resolution change and uses the complete fixed CRTC
+image. The 75Hz and 1024x768 entries remain locked pending staged hardware
+validation.
 
 The detach/reattach sequence follows the Linux kernel's
 [`fbcon` documentation](https://docs.kernel.org/fb/fbcon.html) and the PCI

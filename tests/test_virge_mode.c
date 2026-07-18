@@ -36,7 +36,7 @@ static void test_fixed_modes(void)
                             expected[i].refresh);
         struct virge_pll pll;
         struct virge_crtc_image image;
-        unsigned hde, vde, lsw;
+        unsigned ht, hde, vtotal, vde, vrs, vbs, line_compare, lsw;
 
         EXPECT(mode != NULL, "find fixed mode");
         if (!mode)
@@ -62,15 +62,39 @@ static void test_fixed_modes(void)
                "fixed mode has representable CRTC image");
         hde = image.value[0x01] |
               (unsigned)((image.value[0x5d] >> 1) & 1u) << 8;
+        ht = image.value[0x00] |
+             (unsigned)(image.value[0x5d] & 1u) << 8;
         vde = image.value[0x12] |
               (unsigned)((image.value[0x07] >> 1) & 1u) << 8 |
               (unsigned)((image.value[0x07] >> 6) & 1u) << 9 |
               (unsigned)((image.value[0x5e] >> 1) & 1u) << 10;
+        vtotal = image.value[0x06] |
+                 (unsigned)(image.value[0x07] & 1u) << 8 |
+                 (unsigned)((image.value[0x07] >> 5) & 1u) << 9 |
+                 (unsigned)(image.value[0x5e] & 1u) << 10;
+        vrs = image.value[0x10] |
+              (unsigned)((image.value[0x07] >> 2) & 1u) << 8 |
+              (unsigned)((image.value[0x07] >> 7) & 1u) << 9 |
+              (unsigned)((image.value[0x5e] >> 4) & 1u) << 10;
+        vbs = image.value[0x15] |
+              (unsigned)((image.value[0x07] >> 3) & 1u) << 8 |
+              (unsigned)((image.value[0x09] >> 5) & 1u) << 9 |
+              (unsigned)((image.value[0x5e] >> 2) & 1u) << 10;
+        line_compare = image.value[0x18] |
+                       (unsigned)((image.value[0x07] >> 4) & 1u) << 8 |
+                       (unsigned)((image.value[0x09] >> 6) & 1u) << 9 |
+                       (unsigned)((image.value[0x5e] >> 6) & 1u) << 10;
         lsw = image.value[0x13] |
               (unsigned)((image.value[0x51] >> 4) & 3u) << 8;
-        EXPECT((hde + 1u) * 4u == mode->width &&
-               vde + 1u == mode->height && lsw * 8u == mode->width * 2u,
-               "CRTC image decodes to requested geometry and pitch");
+        EXPECT((ht + 5u) * 4u == mode->htotal &&
+               (hde + 1u) * 4u == mode->width &&
+               vtotal + 2u == mode->vtotal &&
+               vde + 1u == mode->height &&
+               vrs == mode->vsync_start && vbs + 1u == mode->vdisplay &&
+               image.value[0x16] == (uint8_t)(mode->vtotal - 1u) &&
+               line_compare == 0x3ffu &&
+               lsw * 8u == mode->width * 2u,
+               "CRTC image decodes to requested complete timing and pitch");
     }
 
     EXPECT(virge_mode_find(1280, 720, 60) == NULL,
@@ -192,6 +216,24 @@ static void test_crtc_image(void)
                                    &image) == 0 &&
            image.value[0x58] == 0x12 && image.misc_value == 0xcf,
            "2MB window and negative sync encoding");
+    {
+        static const uint8_t expected_standard[25] = {
+            0xc3, 0x9f, 0xa0, 0x04, 0xa4, 0x1c, 0x0b, 0x3e,
+            0x00, 0x40, 0x20, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0xea, 0xac, 0xdf, 0xa0, 0x00, 0xdf, 0x0c, 0xe3,
+            0xff,
+        };
+
+        for (i = 0; i < sizeof(expected_standard); i++)
+            EXPECT(image.value[i] == expected_standard[i],
+                   "640x480 standard CRTC byte matches DB019-B encoding");
+    }
+    EXPECT(image.value[0x3b] == 0xb5 && image.fifo_fetch == 181 &&
+           image.value[0x5d] == 0x28 && image.value[0x5e] == 0x00,
+           "640x480 FIFO and extended overflow bytes");
+    EXPECT(image.value[0x13] == 0xa0 && image.value[0x51] == 0x00 &&
+           image.pll.sr12 == 0x67 && image.pll.sr13 == 0x7d,
+           "640x480 pitch and 25.175MHz PLL bytes");
     EXPECT(virge_mode_encode_16bpp(mode, 1279, 2u * 1024u * 1024u,
                                    &image) == -EINVAL,
            "reject unaligned pitch");
