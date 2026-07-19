@@ -1129,8 +1129,9 @@ int virge_parse_autoexec(const char *value, int *enabled)
 
 int virge_parse_tri_reuse(const char *value, int *enabled)
 {
-    /* Gate the persistent triangle-parameter experiment until real DX
-     * hardware validates it. The value-zero path emits the old full image. */
+    /* Real ViRGE/DX testing produced severe corruption when any identical
+     * triangle parameters were omitted. Keep the rejected path as an
+     * explicit diagnostic only; value zero emits the proven full image. */
     return parse_enabled(value, 0, enabled);
 }
 
@@ -2677,7 +2678,7 @@ int virge_init(struct virge_ctx *ctx, int width, int height, int bpp)
                : "legacy CMD_SET kick (default; L10GL_AUTOEXEC=0)");
     printf("S3 ViRGE: triangle parameter reuse: %s\n",
            ctx->tri_reuse_enabled
-               ? "enabled (L10GL_TRI_REUSE=1; hardware experiment)"
+               ? "REJECTED DX diagnostic enabled (corruption expected)"
                : "disabled (default; full parameter image per triangle)");
     printf("  Screen: %dx%d, %d bpp (stride %u)\n",
            ctx->width, ctx->height, bpp * 8, ctx->stride);

@@ -518,11 +518,11 @@ static void test_triangle_reuse_config(void)
     int value = -1;
 
     EXPECT(virge_parse_tri_reuse(NULL, &value) == 0 && value == 0,
-           "triangle reuse defaults off pending hardware validation");
+           "rejected triangle reuse defaults off");
     EXPECT(virge_parse_tri_reuse("", &value) == 0 && value == 0,
            "empty triangle reuse value keeps full parameter writes");
     EXPECT(virge_parse_tri_reuse("1", &value) == 0 && value == 1,
-           "triangle reuse one enables the experiment");
+           "triangle reuse one enables the rejected diagnostic");
     EXPECT(virge_parse_tri_reuse("0", &value) == 0 && value == 0,
            "triangle reuse zero selects the exact control path");
     EXPECT(virge_parse_tri_reuse("yes", &value) == -EINVAL,
