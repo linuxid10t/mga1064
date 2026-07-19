@@ -1221,14 +1221,16 @@ The 800x600 RGB555, 600-frame ViRGE/DX baseline is: `cube` 57.37 FPS,
 `textured_cube` 30.01 FPS, and `gears` 30.13 FPS. `test-fps` pins interval
 rollover and whole-run math.
 
-**Item 1 FIFO-aware submission implemented 2026-07-18; real-hardware
-validation pending.** MM8504 bits 12-8 are decoded as the documented free
+**Item 1 FIFO-aware submission hardware-verified 2026-07-18.** MM8504 bits
+12-8 are decoded as the documented free
 count for the 16-entry S3d FIFO. Fill, Z clear, line, Gouraud, and textured
 submission are split into explicitly counted groups no larger than 16, with
 the command kick last in each primitive. Full-idle waits remain before CPU
-linear-VRAM access, page flips, and teardown. The three B0 workloads must be
-rerun on the ViRGE/DX and compared against the baseline above before item 1
-is considered verified.
+linear-VRAM access, page flips, and teardown. All three 600-frame workloads
+completed on the ViRGE/DX with normal console recovery. Results were `cube`
+57.74 FPS (+0.64%), `textured_cube` 30.13 FPS (+0.40%), and `gears` 30.13
+FPS (unchanged). This is performance-neutral under the presentation-limited
+benchmark but removes unnecessary full-idle serialization safely.
 
 Ordered by expected win/effort on the ViRGE:
 
@@ -1238,7 +1240,7 @@ Ordered by expected win/effort on the ViRGE:
    free, and the FIFO is 16 slots deep. Wait for enough free slots
    instead of idle so triangle setup overlaps rasterization. Keep
    full-idle waits before CPU framebuffer access and buffer flips.
-   Implemented; hardware performance/correctness confirmation pending.
+   Hardware-verified; performance-neutral in the current vsync-limited runs.
 2. **Dirty-state tracking.** Skip re-writing CLIP/STRIDE/DEST_BASE per
    draw (`virge_fill_rect` reprograms them every call); cache last-written
    values in `virge_ctx`, invalidate on Z-clear's base swap.

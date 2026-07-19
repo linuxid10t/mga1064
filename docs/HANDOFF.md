@@ -374,8 +374,8 @@ nanosecond timestamps to pin the math; five-frame swrast smoke runs pass for
 all three demos. The 800x600 RGB555, 600-frame ViRGE/DX baseline is `cube`
 57.37 FPS, `textured_cube` 30.01 FPS, and `gears` 30.13 FPS.
 
-**Phase 6 item 1 FIFO-aware submission implemented 2026-07-18; hardware
-validation pending.** DB019-B sec.15.3 and sec.22 (absolute PDF pp.108 and
+**Phase 6 item 1 FIFO-aware submission hardware-verified 2026-07-18.**
+DB019-B sec.15.3 and sec.22 (absolute PDF pp.108 and
 300) establish that S3d MMIO writes use the S3d FIFO and MM8504 bits 12-8
 report free slots in its 16-entry queue. The draw paths now reserve explicitly
 counted groups: fill/Z 10, line 11, Gouraud 16+9, and textured 16+16+7.
@@ -383,7 +383,12 @@ Gouraud/textured first groups include the seven per-primitive state re-arm
 writes. Z's two restore writes stay ordered after its command in the same
 FIFO. Full idle is deliberately retained before CPU texture upload, page
 flip, cleanup, and console restoration. `test-virge-mode` pins the MM8504
-mask/shift/depth decode. Re-run all three commands below over SSH:
+mask/shift/depth decode. On the real ViRGE/DX, all three 600-frame runs
+completed and restored the console normally. The post-change results were
+`cube` 57.74 FPS (+0.64%), `textured_cube` 30.13 FPS (+0.40%), and `gears`
+30.13 FPS (unchanged). Treat this as performance-neutral at the current
+vsync/presentation cadence; the synchronization change itself is validated.
+The exact repeat commands are:
 
 ```
 sudo env L10GL_FRAMES=600 tools/l10gl-run -- ./cube 800 600 16

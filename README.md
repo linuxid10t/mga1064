@@ -303,6 +303,9 @@ The pre-optimization ViRGE/DX baseline at 800x600 RGB555 over 600 frames is
 `gears`. Phase 6 FIFO-aware submission uses the documented MM8504 S3d
 free-slot count to queue bounded register groups while the rasterizer is busy;
 full engine drains remain at CPU VRAM and page-flip boundaries.
+The hardware-verified FIFO result is 57.74, 30.13, and 30.13 FPS respectively;
+the sub-one-percent changes are effectively neutral under this
+presentation-limited workload.
 
 An unknown override is rejected and prints the available backend names. If no
 supported card is present, automatic selection uses offscreen swrast without
