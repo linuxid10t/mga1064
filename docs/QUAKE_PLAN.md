@@ -63,30 +63,77 @@ else GL 1.1 requires stays in Phase 8.
   screenshots on hardware (`glReadPixels` from VRAM is a known-unreliable
   path, Phase 8 C7), and any GL feature Quake does not call.
 
-## Gap inventory (to be pinned authoritatively by Q0)
+## GL usage manifest (Q0 — authoritative)
 
-Missing entry points expected from source inspection of GLQuake — today
-these are link failures against `libl10gl.a`:
+Audited against the id Software GLQuake GPL-2.0 source release
+(`id-Software/Quake`, commit `bf4ac42`), `WinQuake/gl_*.c` GL renderer and
+`gl_vidlinuxglx.c` platform layer — the tree the Q9 port forks. The audit
+is read-only and out-of-tree (the GPL boundary forbids the source from
+entering this repository). The figures below come from a comment-stripped
+sweep of *direct* core GL calls; the manifest that drives the automated
+gate is `tests/quake_gl_symbols.def`, exercised by
+`tests/test_quake_linkgate.c`.
 
-| Entry point | Used for | Difficulty |
-|---|---|---|
-| `glGetString` | init banner, extension probe | trivial (must return real strings) |
-| `glTexParameterf` | filter selection (`gl_texturemode`) | alias of `glTexParameteri` |
-| `glColor3ubv` (byte-color family per Q0) | particles | trivial conversion |
-| `glTexEnvf` | `GL_MODULATE`/`GL_REPLACE`/`GL_DECAL` selection | small (Q6) |
-| `glAlphaFunc` | HUD/console art, sprites | real rasterizer stage (Q5) |
-| `glTexSubImage2D` | dynamic lightmap updates, every frame | real implementation (Q4) |
-| `glPolygonMode` | `GL_FILL` at init | honest stub |
-| `glDrawBuffer` | `GL_BACK`/`GL_FRONT` selection | honest stub |
-| `glReadPixels` | screenshots/envmap only | stub returning error until Phase 8 C7 |
+**Link posture.** The Linux GLX build calls core GL directly (no `qgl`
+function-pointer indirection for core functions), so every entry point in
+the table must be present in `libl10gl.a` for the port to link. Extensions
+are runtime-probed and skipped when `glGetString(GL_EXTENSIONS)` is empty,
+so they are **not** link dependencies:
 
-Missing tokens: `GL_POLYGON`, `GL_ALPHA_TEST`, `GL_TEXTURE_ENV`,
-`GL_TEXTURE_ENV_MODE`, `GL_MODULATE`, `GL_DECAL`, `GL_REPLACE`,
-`GL_LUMINANCE`, `GL_ALPHA`, `GL_INTENSITY`, `GL_RGBA4`, `GL_FILL`,
-`GL_VENDOR`/`GL_RENDERER`/`GL_VERSION`/`GL_EXTENSIONS`, plus whatever else
-Q0's audit finds.
+- `glMTexCoord2fSGIS` / `glSelectTextureSGIS` — SGIS_multitexture,
+  `dlsym`'d into `qgl*` pointers in `gl_vidlinuxglx.c:554-555`; clean
+  fallback to single-texture.
+- `glColorTableEXT` / `gl3DfxSetPaletteEXT` — EXT shared texture palette,
+  `dlsym`'d, `is8bit = false` path (`gl_vidlinuxglx.c:106`).
+- `gl{Array,Color,TexCoord,Vertex,Texture}PointerEXT` — EXT_vertex_array;
+  Quake-internal `PROC` pointers (`gl_vidnt.c`, Windows only; the Linux
+  port defines/stubs them itself).
+- `glBindTextureEXT` — Windows-only `wglGetProcAddress` probe.
+- `glFog{,i,fv,f}` — **dead code**: the entire fog block is a commented-out
+  "Experimental silly looking fog" section in `gl_rmain.c` (≈line 1131).
 
-Semantic gaps:
+**Entry points.** 47 distinct direct GL core calls; 35 are already in
+`libl10gl.a`, 12 are the Q0–Q6 gap (the gate reports exactly this set).
+The 12 missing symbols, with the subsystem that uses them:
+
+| Symbol | Used for | Source | Owner |
+|---|---|---|---|
+| `glGetString` | init banner, `GL_EXTENSIONS`/`GL_VENDOR`/`GL_RENDERER`/`GL_VERSION` probe | `gl_rmisc.c`, `gl_rmain.c` | Q1 |
+| `glTexParameterf` | min/mag filter + wrap (`gl_texturemode`) | `gl_rsurf.c`, `gl_draw.c` (38 calls) | Q1 |
+| `glColor3ubv` | particle color from `d_8to24table` | `r_part.c:720` | Q1 |
+| `glPolygonMode` | `GL_FILL` at setup | `gl_rmain.c` | Q1 |
+| `glDrawBuffer` | `GL_BACK`/`GL_FRONT` | `gl_rmisc.c`, `gl_rmain.c` | Q1 |
+| `glReadBuffer` | `GL_FRONT`/`GL_BACK` around screenshot/envmap | `gl_rmisc.c:112,162` | Q1 |
+| `glReadPixels` | screenshots, envmap capture | `gl_rmain.c` | Q1 stub (Phase 8 C7 real) |
+| `glHint` | `GL_PERSPECTIVE_CORRECTION_HINT` (`gl_affinemodels`) | `gl_rmain.c:567,575` | Q1 |
+| `glGetFloatv` | capture `GL_MODELVIEW_MATRIX` into `r_world_matrix` | `gl_rmain.c:927` | Q1 |
+| `glTexSubImage2D` | dynamic lightmap updates | `gl_rsurf.c:444,546,711` | Q4 |
+| `glAlphaFunc` | `GL_GREATER 0.666` for console text/HUD/sprites/fence | `gl_draw.c`, `gl_rsurf.c` | Q5 |
+| `glTexEnvf` | `GL_MODULATE`/`GL_REPLACE` for alias-model passes | `gl_rmain.c:567` | Q6 |
+
+The other 35 (`glBegin`/`glEnd`, the `glVertex*`/`glTexCoord*`/`glColor*`
+immediate family, the matrix stack, `glFrustum`/`glOrtho`/`glViewport`/
+`glDepthRange`, clear/enable/disable/cull/depth/blend/shade, `glTexImage2D`,
+`glBindTexture`, `glFlush`/`glFinish`) are present from Phase 4. Note
+GLQuake **self-manages texture-object names** — it never calls
+`glGenTextures`/`glDeleteTextures`/`glIsTexture` (it `glBindTexture`s its
+own integer names); those entry points remain for Phase 8 and other clients.
+
+**Tokens.** 60 GLQuake-referenced tokens; 40 are already in
+`include/GL/gl.h`. The 20 missing tokens land with the entry point that
+uses them (defining a token makes no behavior claim and `GL_EXTENSIONS`
+stays empty, so this is honest): `GL_POLYGON` (Q2), `GL_ALPHA_TEST` (Q5),
+`GL_TEXTURE_ENV`/`GL_TEXTURE_ENV_MODE`/`GL_MODULATE`/`GL_REPLACE` (Q6),
+`GL_LUMINANCE`/`GL_ALPHA`/`GL_INTENSITY`/`GL_RGBA4` (Q7/Q10 formats), and
+`GL_FILL`, `GL_PERSPECTIVE_CORRECTION_HINT`, `GL_FASTEST`, `GL_NICEST`,
+`GL_MODELVIEW_MATRIX`, `GL_VENDOR`/`GL_RENDERER`/`GL_VERSION`/
+`GL_EXTENSIONS`, `GL_FLOAT` (all Q1). `GL_DECAL` is not referenced by
+Quake; it arrives with its Q6 behavior. The guarded 8-bit paletted path
+also references `GL_COLOR_INDEX`/`GL_COLOR_INDEX8_EXT`; the port defines
+the latter locally and Q1 adds `GL_COLOR_INDEX` so the (runtime-skipped)
+path compiles.
+
+**Semantic gaps:**
 
 1. **Rectangular textures.** `glTexImage2D` currently rejects
    `width != height` for every backend (`src/l10gl_gl.c`). Quake wall

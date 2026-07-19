@@ -1,0 +1,70 @@
+/*
+ * Q0 manifest: every GL core entry point the id GLQuake source release
+ * references as a *direct* call (WinQuake GL renderer, GPL-2.0; audited
+ * out-of-tree at scratch time). This is the authoritative source for the
+ * Phase 7 link gate (tests/test_quake_linkgate.c).
+ *
+ * Excluded by design (audited, not link dependencies):
+ *   - glX*            platform layer; replaced by vid_l10gl.c in the Q9 port.
+ *   - glMTexCoord2fSGIS / glSelectTextureSGIS
+ *                     SGIS_multitexture; dlsym'd into function pointers and
+ *                     skipped when GL_EXTENSIONS is empty (clean fallback).
+ *   - glColorTableEXT / gl3DfxSetPaletteEXT
+ *                     EXT_shared_texture_palette; dlsym'd, is8bit=false path.
+ *   - gl{Array,Color,TexCoord,Vertex,Texture}PointerEXT
+ *                     EXT_vertex_array; Quake-internal PROC pointers.
+ *   - glBindTextureEXT  Windows-only wglGetProcAddress probe (gl_vidnt.c).
+ *   - glFog{,i,fv,f}   dead: the entire fog block is a commented-out
+ *                     "Experimental silly looking fog" section in gl_rmain.c.
+ *
+ * Usage: X-macro. Consumers #define QGL_SYMBOL(name) before #including this,
+ * then #undef it. `name` is the bare GL symbol (no leading gl shenanigans).
+ */
+
+QGL_SYMBOL(glBegin)
+QGL_SYMBOL(glEnd)
+QGL_SYMBOL(glVertex2f)
+QGL_SYMBOL(glVertex3f)
+QGL_SYMBOL(glVertex3fv)
+QGL_SYMBOL(glTexCoord2f)
+QGL_SYMBOL(glTexCoord2fv)
+QGL_SYMBOL(glColor3f)
+QGL_SYMBOL(glColor3ubv)
+QGL_SYMBOL(glColor4f)
+QGL_SYMBOL(glColor4fv)
+QGL_SYMBOL(glMatrixMode)
+QGL_SYMBOL(glLoadIdentity)
+QGL_SYMBOL(glLoadMatrixf)
+QGL_SYMBOL(glPushMatrix)
+QGL_SYMBOL(glPopMatrix)
+QGL_SYMBOL(glRotatef)
+QGL_SYMBOL(glScalef)
+QGL_SYMBOL(glTranslatef)
+QGL_SYMBOL(glFrustum)
+QGL_SYMBOL(glOrtho)
+QGL_SYMBOL(glViewport)
+QGL_SYMBOL(glDepthRange)
+QGL_SYMBOL(glClearColor)
+QGL_SYMBOL(glClear)
+QGL_SYMBOL(glEnable)
+QGL_SYMBOL(glDisable)
+QGL_SYMBOL(glCullFace)
+QGL_SYMBOL(glDepthFunc)
+QGL_SYMBOL(glDepthMask)
+QGL_SYMBOL(glBlendFunc)
+QGL_SYMBOL(glShadeModel)
+QGL_SYMBOL(glTexImage2D)
+QGL_SYMBOL(glTexParameterf)
+QGL_SYMBOL(glTexEnvf)
+QGL_SYMBOL(glTexSubImage2D)
+QGL_SYMBOL(glBindTexture)
+QGL_SYMBOL(glDrawBuffer)
+QGL_SYMBOL(glReadBuffer)
+QGL_SYMBOL(glReadPixels)
+QGL_SYMBOL(glPolygonMode)
+QGL_SYMBOL(glAlphaFunc)
+QGL_SYMBOL(glHint)
+QGL_SYMBOL(glGetFloatv)
+QGL_SYMBOL(glGetString)
+QGL_SYMBOL(glFlush)
+QGL_SYMBOL(glFinish)

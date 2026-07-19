@@ -35,13 +35,14 @@ DEMOS = $(FRONTEND_DEMOS) fbtest
 TESTS = scantest filltest tritest gltritest fliptest dztest seamtest \
 	cubefb diagap texprobe
 CHECK_PROGRAMS = test-console test-mode test-swrast test-xform test-pipeline \
-	test-gl test-fps test-mga1064 test-virge-mode
+	test-gl test-fps test-mga1064 test-virge-mode test-quake-linkgate
 
 PROGRAMS = $(DEMOS) $(TESTS)
 PROGRAM_OBJS = $(addprefix demos/,$(addsuffix .o,$(PROGRAMS)))
 CHECK_OBJS = tests/test_console.o tests/test_mode.o tests/test_swrast.o \
 	tests/test_xform.o tests/test_pipeline.o tests/test_mga1064.o \
-	tests/test_gl.o tests/test_fps.o tests/test_virge_mode.o
+	tests/test_gl.o tests/test_fps.o tests/test_virge_mode.o \
+	tests/test_quake_linkgate.o
 ALL_OBJS = $(LIB_OBJS) $(PROGRAM_OBJS) $(CHECK_OBJS)
 DEPS = $(ALL_OBJS:.o=.d)
 
@@ -60,6 +61,7 @@ check: all $(CHECK_PROGRAMS)
 	./test-fps
 	./test-mga1064
 	./test-virge-mode
+	./test-quake-linkgate
 
 $(LIBRARY): $(LIB_OBJS)
 	$(AR) rcs $@ $^
@@ -93,6 +95,12 @@ test-mga1064: tests/test_mga1064.o $(LIBRARY)
 
 test-virge-mode: tests/test_virge_mode.o $(LIBRARY)
 	$(CC) -o $@ $< $(LIBRARY) $(LDFLAGS)
+
+# The Quake link gate links the whole archive so weakref aliases resolve to
+# every defined symbol (see tests/test_quake_linkgate.c).
+test-quake-linkgate: tests/test_quake_linkgate.o $(LIBRARY)
+	$(CC) -o $@ tests/test_quake_linkgate.o \
+		-Wl,--whole-archive $(LIBRARY) -Wl,--no-whole-archive $(LDFLAGS)
 
 # CPU-drawn fbdev pattern; deliberately independent of L10GL and PCI access.
 fbtest: demos/fbtest.o
