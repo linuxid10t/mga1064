@@ -653,16 +653,17 @@ struct virge_ctx {
     uint8_t *saved_console_vram;
     size_t   saved_console_vram_size;
 
-    /* Memory layout (byte offsets in VRAM). Two color buffers back the
-     * double-buffer page flip: buffer 0 at offset 0 (the scanout at init),
-     * buffer 1 at fb_base_back. fb_base is always the CURRENT render
-     * target (the buffer the 2D/3D engine draws into) and starts at 0, so
-     * single-buffer callers and the offset-0 readback diagnostics are
-     * unchanged; virge_swap_buffers flips it between 0 and fb_base_back. */
+    /* Memory layout (byte offsets in VRAM). By default, two color buffers
+     * back the synchronized page flip: buffer 0 at offset 0 (the scanout at
+     * init), buffer 1 at fb_base_back. L10GL_VSYNC=0 instead renders directly
+     * to visible buffer 0 and places Z immediately after that single color
+     * buffer. fb_base is always the CURRENT render target and starts at 0,
+     * so direct-front callers and offset-0 readback diagnostics agree. */
     uint32_t fb_base;       /* Current render-target base (engine draws here) */
-    uint32_t fb_base_back;  /* Second color buffer base (== stride*height) */
+    uint32_t fb_base_back;  /* Second color base, or 0 in direct-front mode */
     int      current_back;  /* 0 = rendering buffer 0, 1 = buffer fb_base_back */
-    uint32_t z_base;        /* Z-buffer base (after BOTH color buffers) */
+    int      vsync_enabled; /* 1 = synchronized page flip; 0 = visible direct */
+    uint32_t z_base;        /* Z-buffer base (after allocated color buffers) */
     uint32_t vram_size;     /* Total VRAM in bytes */
 
     /* Cached CMD_SET destination format field */
@@ -790,6 +791,20 @@ int virge_probe(void);
  */
 int virge_init(struct virge_ctx *ctx, int width, int height, int bpp);
 
+/* Hardware-independent helpers used by init and test-virge-mode. */
+struct virge_buffer_layout {
+    uint32_t front_base;
+    uint32_t back_base;
+    uint32_t z_base;
+    uint32_t texture_base;
+};
+
+int virge_parse_vsync(const char *value, int *enabled);
+int virge_buffer_layout_compute(uint32_t stride, uint32_t height,
+                                uint32_t z_bytes, uint32_t vram_size,
+                                int vsync_enabled,
+                                struct virge_buffer_layout *layout);
+
 /*
  * virge_cleanup - Unmap memory, close fds.
  */
@@ -821,10 +836,10 @@ void virge_wait_vsync(struct virge_ctx *ctx);
 void virge_set_display_start(struct virge_ctx *ctx, uint32_t byte_off);
 
 /*
- * virge_swap_buffers - Publish the just-rendered buffer via a CRTC page
- * flip at the next vblank, then flip the render target to the other
- * buffer for the next frame. No-op-ish until a caller renders + swaps;
- * single-buffer code that never swaps is unaffected.
+ * virge_swap_buffers - Finish the just-rendered frame. In the default
+ * synchronized mode, publish it via a CRTC page flip at the next vblank and
+ * select the other render target. With L10GL_VSYNC=0, rendering is already
+ * visible in the front buffer, so this only waits for engine completion.
  */
 void virge_swap_buffers(struct virge_ctx *ctx);
 

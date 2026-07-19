@@ -1232,8 +1232,8 @@ completed on the ViRGE/DX with normal console recovery. Results were `cube`
 FPS (unchanged). This is performance-neutral under the presentation-limited
 benchmark but removes unnecessary full-idle serialization safely.
 
-**Item 2 dirty-state tracking implemented 2026-07-18; real-hardware
-validation pending.** A hardware-independent register cache computes dirty
+**Item 2 dirty-state tracking hardware-verified 2026-07-18.** A
+hardware-independent register cache computes dirty
 masks before reserving FIFO entries. The 2D path tracks destination base,
 stride, and both clip registers; Z clear leaves the cache accurately pointed
 at Z instead of eagerly restoring two framebuffer registers. The 3D path
@@ -1241,8 +1241,22 @@ tracks seven shared registers and invalidates only `Z_STRIDE` and `TEX_BASE`
 after a 2D command, matching the established ViRGE/DX silicon quirk. Buffer
 flips and texture binds become normal value changes. Cleanup reports emitted
 versus considered 2D/3D state writes, and `test-virge-mode` pins initial,
-unchanged, changed-value, and targeted-invalidation behavior. Compare the
-three 600-frame workloads against the item-1 results before marking verified.
+unchanged, changed-value, and targeted-invalidation behavior. All three
+600-frame workloads rendered correctly and restored the console. Results were
+`cube` 58.49 FPS, `textured_cube` 30.11 FPS, and `gears` 30.13 FPS. The cache
+emitted 1203/4800 2D writes in every run and only 1806/19033, 2566/19033, and
+1806/1643579 3D shared writes respectively.
+
+**Direct-front raw-performance gate implemented 2026-07-18; real-hardware
+validation pending.** Strict `L10GL_VSYNC=0` selects a visible ViRGE front
+buffer at offset 0. End-of-frame swaps still drain the engine so FPS counts
+completed work, but they do not write the CRTC display start or wait for
+vertical retrace. The one-color-buffer layout moves Z and the texture heap one
+frame earlier in VRAM. The synchronized double-buffer path remains the
+default (`L10GL_VSYNC=1`). `test-virge-mode` pins parsing, both 800x600 layout
+images, reclaimed capacity, and rejection of invalid/overflowing layouts.
+Tearing and visible partial clears are expected in direct mode. Establish raw
+600-frame cube/textured/gears numbers before evaluating item 3.
 
 Ordered by expected win/effort on the ViRGE:
 
@@ -1256,8 +1270,7 @@ Ordered by expected win/effort on the ViRGE:
 2. **Dirty-state tracking.** Skip re-writing CLIP/STRIDE/DEST_BASE per
    draw (`virge_fill_rect` reprograms them every call); cache last-written
    values in `virge_ctx`, invalidate on Z-clear's base swap.
-   Implemented; hardware correctness, cache-count, and performance validation
-   pending.
+   Hardware-verified; synchronized presentation remains the dominant limiter.
 3. **Autoexecute mode.** Program CMD_SET once per state change with
    `VIRGE_CMD_AUTOEXEC`, then per-triangle write only the geometry
    registers ending at the TY01_Y12 kick (`virge.h:295`) — roughly halves

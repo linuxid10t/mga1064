@@ -71,9 +71,13 @@ existing MGA-1064 code and regression tests remain in the tree. Performance
 work on the verified ViRGE path is next.
 
 The animated `cube`, `textured_cube`, and `gears` demos report completed-frame
-FPS every two seconds and a whole-run average at exit. Measurements include
-engine completion, page-flip presentation, and vsync. Use the same resolution
-and `L10GL_FRAMES` count for meaningful before/after comparisons.
+FPS every two seconds and a whole-run average at exit. Normal measurements
+include engine completion, page-flip presentation, and vsync. The ViRGE backend
+also accepts `L10GL_VSYNC=0` for visible direct-front rendering: swaps retain
+the engine-completion barrier but skip page flips and retrace waits. This raw
+mode can tear because clears and drawing are visible while they happen. Use
+the same presentation mode, resolution, and `L10GL_FRAMES` count for meaningful
+before/after comparisons.
 
 | Backend | Hardware | Status |
 |---|---|---|
@@ -307,11 +311,28 @@ The hardware-verified FIFO result is 57.74, 30.13, and 30.13 FPS respectively;
 the sub-one-percent changes are effectively neutral under this
 presentation-limited workload.
 
-The current Phase 6 checkpoint adds dirty-state tracking to the ViRGE 2D target
-and 3D shared registers. At cleanup it prints `state cache emitted X/Y 2D and
-X/Y 3D shared-register writes`; lower emitted counts confirm that unchanged
-state was suppressed. The cache preserves FIFO ordering and selectively
-re-arms the two 3D values known to be clobbered by 2D commands on DX silicon.
+Dirty-state tracking is also hardware-verified. It preserves FIFO ordering and
+selectively re-arms the two 3D values known to be clobbered by 2D commands on
+DX silicon. Its synchronized results were 58.49, 30.11, and 30.13 FPS; the
+30-FPS pair demonstrates half-refresh quantization rather than equal raw
+rendering cost.
+
+Measure completed rendering without the retrace quantization using the opt-in
+visible direct-front mode:
+
+```sh
+sudo env L10GL_VSYNC=0 L10GL_FRAMES=600 \
+  tools/l10gl-run -- ./cube 800 600 16
+sudo env L10GL_VSYNC=0 L10GL_FRAMES=600 \
+  tools/l10gl-run -- ./textured_cube 800 600 16
+sudo env L10GL_VSYNC=0 L10GL_FRAMES=600 \
+  tools/l10gl-run -- ./gears 800 600 16
+```
+
+The init log must say `direct front buffer`; tearing or visible partial clears
+are expected. This mode uses one color buffer, places Z immediately after it,
+and reclaims one 960,000-byte 800x600 RGB555 page for textures. Omit the
+variable (or set `L10GL_VSYNC=1`) for normal tear-free presentation.
 
 An unknown override is rejected and prints the available backend names. If no
 supported card is present, automatic selection uses offscreen swrast without

@@ -412,6 +412,57 @@ static void test_state_cache(void)
            "targeted invalidation re-emits only clobbered registers");
 }
 
+static void test_presentation_config(void)
+{
+    struct virge_buffer_layout synced;
+    struct virge_buffer_layout direct;
+    int enabled = -1;
+
+    EXPECT(virge_parse_vsync(NULL, &enabled) == 0 && enabled == 1,
+           "unset vsync selects synchronized presentation");
+    EXPECT(virge_parse_vsync("", &enabled) == 0 && enabled == 1,
+           "empty vsync selects synchronized presentation");
+    EXPECT(virge_parse_vsync("1", &enabled) == 0 && enabled == 1,
+           "vsync one selects synchronized presentation");
+    EXPECT(virge_parse_vsync("0", &enabled) == 0 && enabled == 0,
+           "vsync zero selects direct-front presentation");
+    EXPECT(virge_parse_vsync("off", &enabled) == -EINVAL,
+           "invalid vsync value is rejected");
+    EXPECT(virge_parse_vsync("0", NULL) == -EINVAL,
+           "null vsync destination is rejected");
+
+    EXPECT(virge_buffer_layout_compute(1600, 600, 800u * 600u * 2u,
+                                       4u * 1024u * 1024u, 1,
+                                       &synced) == 0,
+           "800x600 synchronized layout fits 4MB");
+    EXPECT(synced.front_base == 0 && synced.back_base == 960000u &&
+           synced.z_base == 1920000u && synced.texture_base == 2880000u,
+           "synchronized layout has two color buffers before Z");
+
+    EXPECT(virge_buffer_layout_compute(1600, 600, 800u * 600u * 2u,
+                                       4u * 1024u * 1024u, 0,
+                                       &direct) == 0,
+           "800x600 direct-front layout fits 4MB");
+    EXPECT(direct.front_base == 0 && direct.back_base == 0 &&
+           direct.z_base == 960000u && direct.texture_base == 1920000u,
+           "direct-front layout has one color buffer before Z");
+    EXPECT(synced.texture_base - direct.texture_base == 960000u,
+           "direct-front layout reclaims exactly one color buffer");
+
+    EXPECT(virge_buffer_layout_compute(1600, 600, 960000,
+                                       1500000, 0, &direct) == -ENOSPC,
+           "layout rejects insufficient VRAM");
+    EXPECT(virge_buffer_layout_compute(UINT32_MAX, UINT32_MAX, 0,
+                                       UINT32_MAX, 1, &direct) == -EOVERFLOW,
+           "layout rejects 32-bit offset overflow");
+    EXPECT(virge_buffer_layout_compute(1600, 600, 960000,
+                                       UINT32_MAX, 2, &direct) == -EINVAL,
+           "layout rejects invalid presentation flag");
+    EXPECT(virge_buffer_layout_compute(1600, 600, 960000,
+                                       UINT32_MAX, 0, NULL) == -EINVAL,
+           "layout rejects null result");
+}
+
 int main(void)
 {
     test_fixed_modes();
@@ -421,8 +472,9 @@ int main(void)
     test_first_gate_image();
     test_fifo_status_decode();
     test_state_cache();
+    test_presentation_config();
     if (failed)
         return 1;
-    printf("test-virge-mode: PASS (fixed modes, DCLK PLL, CRTC/save image, FIFO/state cache)\n");
+    printf("test-virge-mode: PASS (modes, PLL, CRTC, FIFO/state cache, presentation layout)\n");
     return 0;
 }

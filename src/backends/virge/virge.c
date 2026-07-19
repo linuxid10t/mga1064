@@ -1087,10 +1087,56 @@ void virge_swap_buffers(struct virge_ctx *ctx)
      * The Z buffer is shared across both color buffers (cleared per frame
      * by the caller), so no second Z region is needed. */
     virge_wait_engine(ctx);
+    if (!ctx->vsync_enabled)
+        return;
     virge_set_display_start(ctx, ctx->fb_base);
     virge_wait_vsync(ctx);
     ctx->current_back ^= 1;
     ctx->fb_base = ctx->current_back ? ctx->fb_base_back : 0;
+}
+
+int virge_parse_vsync(const char *value, int *enabled)
+{
+    if (!enabled)
+        return -EINVAL;
+    if (!value || !*value || strcmp(value, "1") == 0) {
+        *enabled = 1;
+        return 0;
+    }
+    if (strcmp(value, "0") == 0) {
+        *enabled = 0;
+        return 0;
+    }
+    return -EINVAL;
+}
+
+int virge_buffer_layout_compute(uint32_t stride, uint32_t height,
+                                uint32_t z_bytes, uint32_t vram_size,
+                                int vsync_enabled,
+                                struct virge_buffer_layout *layout)
+{
+    uint64_t one_fb;
+    uint64_t z_base;
+    uint64_t texture_base;
+
+    if (!layout || !stride || !height ||
+        (vsync_enabled != 0 && vsync_enabled != 1))
+        return -EINVAL;
+
+    one_fb = (uint64_t)stride * height;
+    z_base = one_fb * (vsync_enabled ? 2u : 1u);
+    texture_base = (z_base + z_bytes + 7u) & ~UINT64_C(7);
+    if (one_fb > UINT32_MAX || z_base > UINT32_MAX ||
+        texture_base > UINT32_MAX)
+        return -EOVERFLOW;
+    if (texture_base > vram_size)
+        return -ENOSPC;
+
+    layout->front_base = 0;
+    layout->back_base = vsync_enabled ? (uint32_t)one_fb : 0;
+    layout->z_base = (uint32_t)z_base;
+    layout->texture_base = (uint32_t)texture_base;
+    return 0;
 }
 
 /* ========================================================================
@@ -2110,8 +2156,10 @@ int virge_init(struct virge_ctx *ctx, int width, int height, int bpp)
     const struct virge_mode *native_mode = NULL;
     const char *modeset = getenv("L10GL_MODESET");
     const char *refresh = getenv("L10GL_REFRESH");
+    const char *vsync = getenv("L10GL_VSYNC");
     unsigned native_refresh = 60;
     int native_requested = 0;
+    int vsync_enabled;
     int ret;
     /* The S3d engine's destination format field (2D CMD_SET bits 4-2)
      * only encodes 8/16/24bpp -- there is no 32bpp mode on this chip
@@ -2127,6 +2175,13 @@ int virge_init(struct virge_ctx *ctx, int width, int height, int bpp)
                         "chip's engine only supports 8/16/24bpp "
                         "(bpp 1/2/3), not 32bpp\n", bpp, bpp * 8);
         return -EINVAL;
+    }
+
+    ret = virge_parse_vsync(vsync, &vsync_enabled);
+    if (ret) {
+        fprintf(stderr, "S3 ViRGE: invalid L10GL_VSYNC '%s' "
+                        "(supported: 0 or 1)\n", vsync ? vsync : "");
+        return ret;
     }
 
     if (modeset && *modeset) {
@@ -2183,6 +2238,7 @@ int virge_init(struct virge_ctx *ctx, int width, int height, int bpp)
     ctx->width = width;
     ctx->height = height;
     ctx->bpp = bpp;
+    ctx->vsync_enabled = vsync_enabled;
     ctx->fb_fd = -1;
     ctx->bar_fd = -1;
 
@@ -2365,13 +2421,15 @@ int virge_init(struct virge_ctx *ctx, int width, int height, int bpp)
      * 16bpp path is supported natively (Mode 9/555 -- see V8). */
     if (native_requested) {
         uint64_t color_bytes = (uint64_t)ctx->stride * ctx->height;
-        uint64_t required = color_bytes * 2u +
+        uint64_t required = color_bytes *
+                            (ctx->vsync_enabled ? 2u : 1u) +
                             (uint64_t)ctx->width * ctx->height * 2u;
 
         if (required > ctx->vram_size) {
-            fprintf(stderr, "S3 ViRGE: native %dx%d double-buffer + Z "
+            fprintf(stderr, "S3 ViRGE: native %dx%d %s + Z "
                             "layout needs %llu bytes, but only %u bytes of "
                             "VRAM were detected\n", ctx->width, ctx->height,
+                    ctx->vsync_enabled ? "double-buffer" : "direct-front",
                     (unsigned long long)required, ctx->vram_size);
             virge_cleanup(ctx);
             return -ENOSPC;
@@ -2391,22 +2449,30 @@ int virge_init(struct virge_ctx *ctx, int width, int height, int bpp)
      * just refuses large textures rather than over-allocating.
      * ctx->width/height, not the caller's request: the takeover above
      * may have adopted the real raster. */
-    /* Two color buffers back the page-flip: buffer 0 at offset 0 (the
-     * scanout at init), buffer 1 at stride*height. ctx->fb_base is always
-     * the current render target and starts at 0, so single-buffer callers
-     * and the offset-0 readback diagnostics are unchanged; the Z buffer
-     * and texture heap follow BOTH color buffers. */
-    uint32_t one_fb = ctx->stride * (uint32_t)ctx->height;
-    ctx->fb_base = 0;
-    ctx->fb_base_back = one_fb;
+    /* The default layout has two color buffers for synchronized page flips.
+     * Direct-front mode has only visible color buffer 0, reclaiming one full
+     * frame for the texture heap. */
+    struct virge_buffer_layout layout;
+    uint32_t z_size = (uint32_t)ctx->width * (uint32_t)ctx->height * 2u;
+    ret = virge_buffer_layout_compute(ctx->stride, (uint32_t)ctx->height,
+                                      z_size, ctx->vram_size,
+                                      ctx->vsync_enabled, &layout);
+    if (ret) {
+        fprintf(stderr, "S3 ViRGE: %s buffer layout does not fit in %u "
+                        "bytes of VRAM\n",
+                ctx->vsync_enabled ? "synchronized" : "direct-front",
+                ctx->vram_size);
+        virge_cleanup(ctx);
+        return ret;
+    }
+    ctx->fb_base = layout.front_base;
+    ctx->fb_base_back = layout.back_base;
     ctx->current_back = 0;
-    ctx->z_base = one_fb + one_fb;            /* Z after both color buffers */
+    ctx->z_base = layout.z_base;
     /* vram_size detected above, before virge_scanout_takeover. */
 
-    /* Texture heap starts after both color buffers + Z buffer, quadword aligned */
-    uint32_t z_size = ctx->width * ctx->height * 2;  /* Z is always 16-bit */
-    ctx->tex_heap_next = ctx->z_base + z_size;
-    ctx->tex_heap_next = (ctx->tex_heap_next + 7) & ~7;  /* QW align */
+    /* Texture heap starts after allocated color buffer(s) + 16-bit Z. */
+    ctx->tex_heap_next = layout.texture_base;
     ctx->tex_cmd_bits = 0;
     ctx->tex_bound = 0;
 
@@ -2433,6 +2499,10 @@ int virge_init(struct virge_ctx *ctx, int width, int height, int bpp)
     program_3d_state(ctx, 0);
 
     printf("S3 ViRGE: S3d Engine initialized.\n");
+    printf("S3 ViRGE: presentation: %s\n",
+           ctx->vsync_enabled
+               ? "synchronized double buffer (L10GL_VSYNC=1)"
+               : "direct front buffer (L10GL_VSYNC=0; tearing expected)");
     printf("S3 ViRGE: FIFO-aware submission enabled (16-slot S3d FIFO).\n");
     printf("S3 ViRGE: dirty-state tracking enabled (2D target + 3D shared).\n");
     printf("  Screen: %dx%d, %d bpp (stride %u)\n",

@@ -390,8 +390,8 @@ completed and restored the console normally. The post-change results were
 vsync/presentation cadence; the synchronization change itself is validated.
 These are the comparison numbers for item 2.
 
-**Phase 6 item 2 dirty-state tracking implemented 2026-07-18; hardware
-validation pending.** DB019-B sec.15.3 (absolute PDF p.108) places enhanced
+**Phase 6 item 2 dirty-state tracking hardware-verified 2026-07-18.**
+DB019-B sec.15.3 (absolute PDF p.108) places enhanced
 drawing registers behind the ordered 16x40 S3d FIFO. A generic dirty-mask
 cache now tracks four 2D target registers and seven 3D shared registers.
 FIFO space is reserved for cache misses plus the immediately following
@@ -403,7 +403,22 @@ DX silicon; destination, source stride, Z base, and clip values remain cached.
 Texture bind is now logical state only and the next triangle emits changed
 texture base/stride in FIFO order. `test-virge-mode` pins cache commit/change/
 invalidation semantics. Cleanup prints emitted/considered counts for both
-caches. Use the commands below and retain those count lines as well as FPS.
+caches. The three 600-frame hardware runs rendered correctly and restored the
+console. Final averages were `cube` 58.49, `textured_cube` 30.11, and `gears`
+30.13 FPS. Every run emitted 1203/4800 2D target writes; the 3D counts were
+1806/19033, 2566/19033, and 1806/1643579 respectively. The optimization is
+correct and eliminates nearly all redundant gear state traffic, but the
+synchronized FPS values remain quantized by presentation.
+
+**Phase 6 direct-front raw-performance gate implemented 2026-07-18;
+hardware validation pending.** `L10GL_VSYNC=0` is a strict ViRGE-only opt-in.
+It renders at visible VRAM offset 0, drains the engine at every swap, and skips
+the per-frame display-start write and vertical-retrace wait. The default stays
+tear-free synchronized double buffering. Direct mode allocates one color page,
+then Z, then textures; at 800x600 RGB555 it reclaims exactly 960,000 bytes.
+`test-virge-mode` pins env parsing, both layouts, capacity, and overflow cases.
+Tearing and partial clears are expected; correctness means complete geometry,
+normal termination/console recovery, and substantially unquantized FPS.
 
 ```
 sudo env L10GL_FRAMES=600 tools/l10gl-run -- ./cube 800 600 16
@@ -415,6 +430,20 @@ Record every `L10GL FPS:` line and each final average. Do not compare runs
 with different modes or frame counts. A near-60 result means vsync is the
 limiter for that workload; preserve it as presentation evidence, while gears
 is expected to be the more sensitive engine/submission benchmark.
+
+For the raw direct-front checkpoint, run the same workloads with exactly one
+additional variable and retain the complete logs:
+
+```
+sudo env L10GL_VSYNC=0 L10GL_FRAMES=600 tools/l10gl-run -- ./cube 800 600 16
+sudo env L10GL_VSYNC=0 L10GL_FRAMES=600 tools/l10gl-run -- ./textured_cube 800 600 16
+sudo env L10GL_VSYNC=0 L10GL_FRAMES=600 tools/l10gl-run -- ./gears 800 600 16
+```
+
+Expect `presentation: direct front buffer (L10GL_VSYNC=0; tearing expected)`,
+`FB base: 0x0 (back buf 0x0), Z base: 0xea600`, and normal console recovery.
+Compare these three results only against later direct-front runs, never against
+the synchronized historical baseline.
 
 ```
 sudo env L10GL_BACKEND=virge L10GL_MODESET=native \
