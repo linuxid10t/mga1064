@@ -445,6 +445,40 @@ continues to pin both parser paths, AE/NOP images, B57C, cache behavior, and
 2D invalidation so the rejected experiment remains reproducible rather than
 being lost.
 
+**Phase 6 item 4 triangle-parameter reuse staged 2026-07-18.** The primary
+DB019-B manual describes the triangle parameters as persistent read/write
+registers and says commands can execute with changed parameter subsets
+(section 15.4.3; absolute PDF pp.110, 250, and 253-273). The implementation
+uses three value caches shared by both triangle paths: nine color/Z values,
+fourteen texture values, and seven edge-geometry values. It never caches
+`TY01_Y12` or the default B500 launch. All dynamic caches are invalidated by
+every 2D command because real DX already demonstrates cross-bank clobbering.
+FIFO reservations still top out at 16 writes. Strict `L10GL_TRI_REUSE=1`
+enables the experiment; unset/empty/`0` is the exact full-parameter control
+and remains the default pending hardware validation. Cleanup prints the
+dynamic emitted/considered count.
+
+Validate the synchronized control and experiment first, keeping
+`L10GL_AUTOEXEC=0`, then use the direct-front pair only if both images are
+correct:
+
+```sh
+sudo env L10GL_TRI_REUSE=0 L10GL_FRAMES=600 \
+  tools/l10gl-run -- ./gears 800 600 16
+sudo env L10GL_TRI_REUSE=1 L10GL_FRAMES=600 \
+  tools/l10gl-run -- ./gears 800 600 16
+sudo env L10GL_TRI_REUSE=0 L10GL_VSYNC=0 L10GL_FRAMES=600 \
+  tools/l10gl-run -- ./gears 800 600 16
+sudo env L10GL_TRI_REUSE=1 L10GL_VSYNC=0 L10GL_FRAMES=600 \
+  tools/l10gl-run -- ./gears 800 600 16
+```
+
+The pass criteria are complete, stable gears with correct depth/color,
+600-frame completion, normal console recovery, and a repeatable raw-FPS win.
+Any missing geometry, stale attributes, flicker, hang, or slowdown rejects the
+experiment; set `L10GL_TRI_REUSE=0` immediately and retain both cleanup count
+lines with the FPS logs.
+
 ```
 sudo env L10GL_FRAMES=600 tools/l10gl-run -- ./cube 800 600 16
 sudo env L10GL_FRAMES=600 tools/l10gl-run -- ./textured_cube 800 600 16

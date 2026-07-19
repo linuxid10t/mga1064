@@ -350,6 +350,30 @@ default. Autoexecute remains available only as an explicit diagnostic through
 `L10GL_AUTOEXEC=1`; it must not be used for production rendering on the tested
 ViRGE/DX.
 
+Phase 6 item 4 is a separate, guarded triangle-parameter reuse experiment.
+It keeps the proven B500-per-triangle launch and only suppresses identical
+read/write parameter values on adjacent triangles. The default remains the
+full-write control path. Compare the same binary first with synchronized
+presentation for correctness, then with direct-front presentation for raw
+throughput:
+
+```sh
+sudo env L10GL_TRI_REUSE=0 L10GL_FRAMES=600 \
+  tools/l10gl-run -- ./gears 800 600 16
+sudo env L10GL_TRI_REUSE=1 L10GL_FRAMES=600 \
+  tools/l10gl-run -- ./gears 800 600 16
+sudo env L10GL_TRI_REUSE=0 L10GL_VSYNC=0 L10GL_FRAMES=600 \
+  tools/l10gl-run -- ./gears 800 600 16
+sudo env L10GL_TRI_REUSE=1 L10GL_VSYNC=0 L10GL_FRAMES=600 \
+  tools/l10gl-run -- ./gears 800 600 16
+```
+
+The enabled init log must identify the hardware experiment. In both enabled
+runs, inspect every gear for missing wedges, stale colors/depth, or flicker,
+and confirm normal console recovery. Cleanup reports emitted/considered
+triangle parameter writes. `L10GL_AUTOEXEC` must remain unset (or `0`) so this
+test does not mix in the rejected autoexecute path.
+
 An unknown override is rejected and prints the available backend names. If no
 supported card is present, automatic selection uses offscreen swrast without
 attempting MMIO access; it prints a reminder when no dump path was configured.

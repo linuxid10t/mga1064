@@ -1127,6 +1127,13 @@ int virge_parse_autoexec(const char *value, int *enabled)
     return parse_enabled(value, 0, enabled);
 }
 
+int virge_parse_tri_reuse(const char *value, int *enabled)
+{
+    /* Gate the persistent triangle-parameter experiment until real DX
+     * hardware validates it. The value-zero path emits the old full image. */
+    return parse_enabled(value, 0, enabled);
+}
+
 uint32_t virge_autoexec_command(uint32_t command)
 {
     return command | VIRGE_CMD_AUTOEXEC;
@@ -1199,15 +1206,87 @@ enum virge_3d_state_index {
     VIRGE_3D_STATE_COUNT
 };
 
+enum {
+    VIRGE_3D_ATTR_COUNT = 9,
+    VIRGE_3D_TEX_COUNT = 14,
+    VIRGE_3D_GEOM_COUNT = 7,
+};
+
+static const uint32_t virge_3d_attr_offset[VIRGE_3D_ATTR_COUNT] = {
+    VIRGE_3D_TGS_BS,
+    VIRGE_3D_TAS_RS,
+    VIRGE_3D_TdGdX_dBdX,
+    VIRGE_3D_TdAdX_dRdX,
+    VIRGE_3D_TdGdY_dBdY,
+    VIRGE_3D_TdAdY_dRdY,
+    VIRGE_3D_TZS,
+    VIRGE_3D_TdZdX,
+    VIRGE_3D_TdZdY,
+};
+
+static const uint32_t virge_3d_tex_offset[VIRGE_3D_TEX_COUNT] = {
+    VIRGE_3D_TBU,
+    VIRGE_3D_TBV,
+    VIRGE_3D_TWS,
+    VIRGE_3D_TdWdX,
+    VIRGE_3D_TdWdY,
+    VIRGE_3D_TDS,
+    VIRGE_3D_TdDdX,
+    VIRGE_3D_TdDdY,
+    VIRGE_3D_TVS,
+    VIRGE_3D_TdVdX,
+    VIRGE_3D_TdVdY,
+    VIRGE_3D_TUS,
+    VIRGE_3D_TdUdX,
+    VIRGE_3D_TdUdY,
+};
+
+static const uint32_t virge_3d_geom_offset[VIRGE_3D_GEOM_COUNT] = {
+    VIRGE_3D_TdXdY02,
+    VIRGE_3D_TdXdY01,
+    VIRGE_3D_TdXdY12,
+    VIRGE_3D_TXEND01,
+    VIRGE_3D_TXEND12,
+    VIRGE_3D_TXS,
+    VIRGE_3D_TYS,
+};
+
 _Static_assert(VIRGE_2D_STATE_COUNT <= VIRGE_STATE_CACHE_REGS,
                "2D state exceeds cache capacity");
 _Static_assert(VIRGE_3D_STATE_COUNT <= VIRGE_STATE_CACHE_REGS,
                "3D state exceeds cache capacity");
-_Static_assert(VIRGE_3D_STATE_COUNT + 9 <= VIRGE_FIFO_DEPTH,
+_Static_assert(VIRGE_3D_ATTR_COUNT <= VIRGE_STATE_CACHE_REGS,
+               "3D attribute state exceeds cache capacity");
+_Static_assert(VIRGE_3D_TEX_COUNT <= VIRGE_STATE_CACHE_REGS,
+               "3D texture state exceeds cache capacity");
+_Static_assert(VIRGE_3D_GEOM_COUNT <= VIRGE_STATE_CACHE_REGS,
+               "3D geometry state exceeds cache capacity");
+_Static_assert(VIRGE_3D_STATE_COUNT + VIRGE_3D_ATTR_COUNT <= VIRGE_FIFO_DEPTH,
                "largest dirty-state group exceeds S3d FIFO");
 
 #define VIRGE_3D_STATE_2D_CLOBBER_MASK \
     ((1u << VIRGE_3D_STATE_Z_STRIDE) | (1u << VIRGE_3D_STATE_TEX_BASE))
+
+#define VIRGE_STATE_MASK(count) ((1u << (count)) - 1u)
+
+static void emit_cached_state_mask(struct virge_ctx *ctx,
+                                   struct virge_state_cache *cache,
+                                   const uint32_t *offset,
+                                   const uint32_t *desired,
+                                   unsigned count, uint32_t dirty,
+                                   uint64_t *considered, uint64_t *emitted)
+{
+    unsigned i;
+
+    for (i = 0; i < count; i++) {
+        if (!(dirty & (1u << i)))
+            continue;
+        virge_write32(ctx, offset[i], desired[i]);
+        virge_state_commit(cache, i, desired[i]);
+    }
+    *considered += count;
+    *emitted += virge_state_dirty_count(dirty);
+}
 
 static void emit_cached_state(struct virge_ctx *ctx,
                               struct virge_state_cache *cache,
@@ -1218,19 +1297,12 @@ static void emit_cached_state(struct virge_ctx *ctx,
 {
     uint32_t dirty = virge_state_dirty_mask(cache, desired, count);
     unsigned dirty_count = virge_state_dirty_count(dirty);
-    unsigned i;
 
     /* Reserve cache misses and the caller's immediately-following dynamic
      * writes as one group.  Every caller is statically bounded to <=16. */
     virge_wait_fifo(ctx, dirty_count + trailing_writes);
-    for (i = 0; i < count; i++) {
-        if (!(dirty & (1u << i)))
-            continue;
-        virge_write32(ctx, offset[i], desired[i]);
-        virge_state_commit(cache, i, desired[i]);
-    }
-    *considered += count;
-    *emitted += dirty_count;
+    emit_cached_state_mask(ctx, cache, offset, desired, count, dirty,
+                           considered, emitted);
 }
 
 static void program_2d_state(struct virge_ctx *ctx, uint32_t dest_base,
@@ -1284,6 +1356,36 @@ static void program_3d_state(struct virge_ctx *ctx,
                       &ctx->state_3d_emitted);
 }
 
+static void program_3d_state_and_attributes(struct virge_ctx *ctx,
+                                             const uint32_t *attr_offset,
+                                             const uint32_t *attr_desired)
+{
+    uint32_t dirty = virge_state_dirty_mask(&ctx->state_3d_attr,
+                                             attr_desired,
+                                             VIRGE_3D_ATTR_COUNT);
+
+    /* One reservation covers shared-state misses and all changed color/Z
+     * parameters. The maximum remains exactly the documented 16 slots. */
+    program_3d_state(ctx, virge_state_dirty_count(dirty));
+    emit_cached_state_mask(ctx, &ctx->state_3d_attr, attr_offset,
+                           attr_desired, VIRGE_3D_ATTR_COUNT, dirty,
+                           &ctx->state_3d_dynamic_considered,
+                           &ctx->state_3d_dynamic_emitted);
+}
+
+static void prepare_triangle_parameter_cache(struct virge_ctx *ctx)
+{
+    if (ctx->tri_reuse_enabled)
+        return;
+
+    virge_state_invalidate(&ctx->state_3d_attr,
+                           VIRGE_STATE_MASK(VIRGE_3D_ATTR_COUNT));
+    virge_state_invalidate(&ctx->state_3d_tex,
+                           VIRGE_STATE_MASK(VIRGE_3D_TEX_COUNT));
+    virge_state_invalidate(&ctx->state_3d_geom,
+                           VIRGE_STATE_MASK(VIRGE_3D_GEOM_COUNT));
+}
+
 static void program_3d_autoexec_command(struct virge_ctx *ctx,
                                         uint32_t command,
                                         unsigned trailing_writes)
@@ -1304,6 +1406,15 @@ static void invalidate_3d_after_2d(struct virge_ctx *ctx)
      * Conservatively re-arm autoexecute CMD_SET before the first following
      * triangle as well; subsequent same-state triangles reuse it. */
     virge_state_invalidate(&ctx->state_3d_cmd, 1u);
+    /* DB019-B defines the triangle parameters as persistent R/W registers,
+     * but DX silicon already proves that 2D activity clobbers part of the 3D
+     * bank. Do not carry any dynamic parameter assumption across a 2D kick. */
+    virge_state_invalidate(&ctx->state_3d_attr,
+                           VIRGE_STATE_MASK(VIRGE_3D_ATTR_COUNT));
+    virge_state_invalidate(&ctx->state_3d_tex,
+                           VIRGE_STATE_MASK(VIRGE_3D_TEX_COUNT));
+    virge_state_invalidate(&ctx->state_3d_geom,
+                           VIRGE_STATE_MASK(VIRGE_3D_GEOM_COUNT));
 }
 
 /* ========================================================================
@@ -1651,11 +1762,6 @@ void virge_draw_triangle_gouraud(struct virge_ctx *ctx,
                  | ctx->z_cmd_bits
                  | ctx->gouraud_blend_bits;
 
-    /* Reserve dirty shared state plus the nine color/Z writes below.  After
-     * a 2D clear, Z_STRIDE/TEX_BASE are forced dirty; subsequent triangles
-     * usually need no shared-state writes at all. */
-    program_3d_state(ctx, 9);
-
     /* X-direction attribute deltas are sign-flipped for lr=0 (R-to-L). The
      * engine seeds each attribute at TXS (edge 02) and iterates toward TXEND
      * adding +TdAdX per pixel; for lr=0 that iteration runs in -X, so the
@@ -1666,54 +1772,51 @@ void virge_draw_triangle_gouraud(struct virge_ctx *ctx,
      * diagonal where the true Z is ~0.1) because dzdx was programmed with
      * the wrong sign -- same magnitude, opposite slope. */
     float sx = (lr_direction == 0) ? -1.0f : 1.0f;
+    uint32_t attr[VIRGE_3D_ATTR_COUNT] = {
+        ((uint16_t)VIRGE_COLOR_FIXED(g_s) << 16) |
+            (uint16_t)VIRGE_COLOR_FIXED(b_s),
+        ((uint16_t)VIRGE_COLOR_FIXED(a_s) << 16) |
+            (uint16_t)VIRGE_COLOR_FIXED(r_s),
+        ((uint16_t)VIRGE_COLOR_FIXED(sx * dgdx) << 16) |
+            (uint16_t)VIRGE_COLOR_FIXED(sx * dbdx),
+        ((uint16_t)VIRGE_COLOR_FIXED(sx * dadx) << 16) |
+            (uint16_t)VIRGE_COLOR_FIXED(sx * drdx),
+        ((uint16_t)VIRGE_COLOR_FIXED(ew_g) << 16) |
+            (uint16_t)VIRGE_COLOR_FIXED(ew_b),
+        ((uint16_t)VIRGE_COLOR_FIXED(ew_a) << 16) |
+            (uint16_t)VIRGE_COLOR_FIXED(ew_r),
+        (uint32_t)VIRGE_Z_FIXED(z_s),
+        (uint32_t)VIRGE_Z_FIXED(sx * dzdx),
+        (uint32_t)VIRGE_Z_FIXED(ew_z),
+    };
+    uint32_t geom[VIRGE_3D_GEOM_COUNT] = {
+        (uint32_t)dXdY02,
+        (uint32_t)dXdY01,
+        (uint32_t)dXdY12,
+        (uint32_t)x_end01,
+        (uint32_t)x_end12,
+        (uint32_t)x_start,
+        (uint32_t)y_bot,
+    };
 
-    /* --- Program color start values (S8.7 packed) --- */
-    virge_write32(ctx, VIRGE_3D_TGS_BS,
-                  ((uint16_t)VIRGE_COLOR_FIXED(g_s) << 16) |
-                  (uint16_t)VIRGE_COLOR_FIXED(b_s));
-    virge_write32(ctx, VIRGE_3D_TAS_RS,
-                  ((uint16_t)VIRGE_COLOR_FIXED(a_s) << 16) |
-                  (uint16_t)VIRGE_COLOR_FIXED(r_s));
+    prepare_triangle_parameter_cache(ctx);
+    program_3d_state_and_attributes(ctx, virge_3d_attr_offset, attr);
 
-    /* --- Program color deltas (S8.7 packed) --- */
-    virge_write32(ctx, VIRGE_3D_TdGdX_dBdX,
-                  ((uint16_t)VIRGE_COLOR_FIXED(sx * dgdx) << 16) |
-                  (uint16_t)VIRGE_COLOR_FIXED(sx * dbdx));
-    virge_write32(ctx, VIRGE_3D_TdAdX_dRdX,
-                  ((uint16_t)VIRGE_COLOR_FIXED(sx * dadx) << 16) |
-                  (uint16_t)VIRGE_COLOR_FIXED(sx * drdx));
-    /* Y deltas are edge-walk along side 02: -dA/dy + slope02*dA/dx
-     * (86Box; docs/datasheets/README.md); lr-independent, so not flipped. */
-    virge_write32(ctx, VIRGE_3D_TdGdY_dBdY,
-                  ((uint16_t)VIRGE_COLOR_FIXED(ew_g) << 16) |
-                  (uint16_t)VIRGE_COLOR_FIXED(ew_b));
-    virge_write32(ctx, VIRGE_3D_TdAdY_dRdY,
-                  ((uint16_t)VIRGE_COLOR_FIXED(ew_a) << 16) |
-                  (uint16_t)VIRGE_COLOR_FIXED(ew_r));
-
-    /* --- Program Z start and deltas (S16.15) --- */
-    virge_write32(ctx, VIRGE_3D_TZS, (uint32_t)VIRGE_Z_FIXED(z_s));
-    virge_write32(ctx, VIRGE_3D_TdZdX, (uint32_t)VIRGE_Z_FIXED(sx * dzdx));
-    virge_write32(ctx, VIRGE_3D_TdZdY, (uint32_t)VIRGE_Z_FIXED(ew_z));
-
-    /* Autoexecute writes changed CMD_SET state before reserving the eight
-     * geometry writes; TY01_Y12 is last and launches the triangle. The
-     * fallback retains the former eight-geometry-plus-B500 sequence. */
-    if (ctx->autoexec_enabled)
-        program_3d_autoexec_command(ctx, cmd, 8);
-    else
-        virge_wait_fifo(ctx, 9);
-
-    /* --- Program edge geometry --- */
-    virge_write32(ctx, VIRGE_3D_TdXdY02, (uint32_t)dXdY02);
-    virge_write32(ctx, VIRGE_3D_TdXdY01, (uint32_t)dXdY01);
-    virge_write32(ctx, VIRGE_3D_TdXdY12, (uint32_t)dXdY12);
-
-    virge_write32(ctx, VIRGE_3D_TXEND01, (uint32_t)x_end01);
-    virge_write32(ctx, VIRGE_3D_TXEND12, (uint32_t)x_end12);
-
-    virge_write32(ctx, VIRGE_3D_TXS, (uint32_t)x_start);
-    virge_write32(ctx, VIRGE_3D_TYS, (uint32_t)y_bot);
+    /* Autoexecute writes changed CMD_SET state before the seven cached edge
+     * parameters; TY01_Y12 is always last and launches the triangle. The
+     * fallback retains the seven-geometry-plus-TY01-plus-B500 sequence. */
+    if (ctx->autoexec_enabled) {
+        program_3d_autoexec_command(ctx, cmd, 0);
+        emit_cached_state(ctx, &ctx->state_3d_geom, virge_3d_geom_offset,
+                          geom, VIRGE_3D_GEOM_COUNT, 1,
+                          &ctx->state_3d_dynamic_considered,
+                          &ctx->state_3d_dynamic_emitted);
+    } else {
+        emit_cached_state(ctx, &ctx->state_3d_geom, virge_3d_geom_offset,
+                          geom, VIRGE_3D_GEOM_COUNT, 2,
+                          &ctx->state_3d_dynamic_considered,
+                          &ctx->state_3d_dynamic_emitted);
+    }
 
     /* --- Program scan counts and L/R direction ---
      * This is the highest-address triangle register and therefore the AE
@@ -2094,44 +2197,11 @@ void virge_draw_textured_triangle(struct virge_ctx *ctx,
                  | ctx->z_cmd_bits
                  | ctx->textured_blend_bits;
 
-    /* Dirty shared state plus nine color/Z writes form the first FIFO group. */
-    program_3d_state(ctx, 9);
-
     /* X-direction attribute deltas sign-flipped for lr=0 (R-to-L); see the
      * Gouraud path for the full rationale (engine iterates -X from the edge-
      * 02 seed, so the per-pixel step must be -dA/dx). Y deltas (ew_*) are
      * edge-walk along side 02 and stay raw. */
     float sx = (lr_direction == 0) ? -1.0f : 1.0f;
-
-    /* --- Color starts + deltas (S8.7, modulation) --- */
-    virge_write32(ctx, VIRGE_3D_TGS_BS,
-                  ((uint16_t)VIRGE_COLOR_FIXED(g_s) << 16) |
-                  (uint16_t)VIRGE_COLOR_FIXED(b_s));
-    virge_write32(ctx, VIRGE_3D_TAS_RS,
-                  ((uint16_t)VIRGE_COLOR_FIXED(a_s) << 16) |
-                  (uint16_t)VIRGE_COLOR_FIXED(r_s));
-    virge_write32(ctx, VIRGE_3D_TdGdX_dBdX,
-                  ((uint16_t)VIRGE_COLOR_FIXED(sx * dgdx) << 16) |
-                  (uint16_t)VIRGE_COLOR_FIXED(sx * dbdx));
-    virge_write32(ctx, VIRGE_3D_TdAdX_dRdX,
-                  ((uint16_t)VIRGE_COLOR_FIXED(sx * dadx) << 16) |
-                  (uint16_t)VIRGE_COLOR_FIXED(sx * drdx));
-    /* Y deltas are edge-walk along side 02: -dA/dy + slope02*dA/dx
-     * (86Box; docs/datasheets/README.md); lr-independent, not flipped. */
-    virge_write32(ctx, VIRGE_3D_TdGdY_dBdY,
-                  ((uint16_t)VIRGE_COLOR_FIXED(ew_g) << 16) |
-                  (uint16_t)VIRGE_COLOR_FIXED(ew_b));
-    virge_write32(ctx, VIRGE_3D_TdAdY_dRdY,
-                  ((uint16_t)VIRGE_COLOR_FIXED(ew_a) << 16) |
-                  (uint16_t)VIRGE_COLOR_FIXED(ew_r));
-
-    /* --- Z starts + deltas (S16.15) --- */
-    virge_write32(ctx, VIRGE_3D_TZS, (uint32_t)VIRGE_Z_FIXED(z_s));
-    virge_write32(ctx, VIRGE_3D_TdZdX, (uint32_t)VIRGE_Z_FIXED(sx * dzdx));
-    virge_write32(ctx, VIRGE_3D_TdZdY, (uint32_t)VIRGE_Z_FIXED(ew_z));
-
-    /* The next sixteen writes run from TBU through TdXdY01. */
-    virge_wait_fifo(ctx, 16);
 
     /* --- Texture coordinates (U, V, W with perspective) --- */
     /* Convert to hardware fixed-point */
@@ -2149,47 +2219,68 @@ void virge_draw_textured_triangle(struct virge_ctx *ctx,
     int32_t dw_dx = (int32_t)(sx * dwdx * (float)(1 << 19));
     int32_t dw_dy = (int32_t)(ew_w * (float)(1 << 19));
 
-    /* Base U/V are common offsets added to all U/V values (usually 0) */
-    virge_write32(ctx, VIRGE_3D_TBU, 0);
-    virge_write32(ctx, VIRGE_3D_TBV, 0);
+    uint32_t attr[VIRGE_3D_ATTR_COUNT] = {
+        ((uint16_t)VIRGE_COLOR_FIXED(g_s) << 16) |
+            (uint16_t)VIRGE_COLOR_FIXED(b_s),
+        ((uint16_t)VIRGE_COLOR_FIXED(a_s) << 16) |
+            (uint16_t)VIRGE_COLOR_FIXED(r_s),
+        ((uint16_t)VIRGE_COLOR_FIXED(sx * dgdx) << 16) |
+            (uint16_t)VIRGE_COLOR_FIXED(sx * dbdx),
+        ((uint16_t)VIRGE_COLOR_FIXED(sx * dadx) << 16) |
+            (uint16_t)VIRGE_COLOR_FIXED(sx * drdx),
+        ((uint16_t)VIRGE_COLOR_FIXED(ew_g) << 16) |
+            (uint16_t)VIRGE_COLOR_FIXED(ew_b),
+        ((uint16_t)VIRGE_COLOR_FIXED(ew_a) << 16) |
+            (uint16_t)VIRGE_COLOR_FIXED(ew_r),
+        (uint32_t)VIRGE_Z_FIXED(z_s),
+        (uint32_t)VIRGE_Z_FIXED(sx * dzdx),
+        (uint32_t)VIRGE_Z_FIXED(ew_z),
+    };
+    uint32_t tex[VIRGE_3D_TEX_COUNT] = {
+        0,
+        0,
+        (uint32_t)w_start,
+        (uint32_t)dw_dx,
+        (uint32_t)dw_dy,
+        0,
+        0,
+        0,
+        (uint32_t)v_start,
+        (uint32_t)dv_dx,
+        (uint32_t)dv_dy,
+        (uint32_t)u_start,
+        (uint32_t)du_dx,
+        (uint32_t)du_dy,
+    };
+    uint32_t geom[VIRGE_3D_GEOM_COUNT] = {
+        (uint32_t)dXdY02,
+        (uint32_t)dXdY01,
+        (uint32_t)dXdY12,
+        (uint32_t)x_end01,
+        (uint32_t)x_end12,
+        (uint32_t)x_start,
+        (uint32_t)y_bot,
+    };
 
-    /* W start + deltas (S12.19) */
-    virge_write32(ctx, VIRGE_3D_TWS, (uint32_t)w_start);
-    virge_write32(ctx, VIRGE_3D_TdWdX, (uint32_t)dw_dx);
-    virge_write32(ctx, VIRGE_3D_TdWdY, (uint32_t)dw_dy);
+    prepare_triangle_parameter_cache(ctx);
+    program_3d_state_and_attributes(ctx, virge_3d_attr_offset, attr);
+    emit_cached_state(ctx, &ctx->state_3d_tex, virge_3d_tex_offset, tex,
+                      VIRGE_3D_TEX_COUNT, 0,
+                      &ctx->state_3d_dynamic_considered,
+                      &ctx->state_3d_dynamic_emitted);
 
-    /* D (mipmap level) — set to 0, no mipmap interpolation for now */
-    virge_write32(ctx, VIRGE_3D_TDS, 0);
-    virge_write32(ctx, VIRGE_3D_TdDdX, 0);
-    virge_write32(ctx, VIRGE_3D_TdDdY, 0);
-
-    /* V start + deltas */
-    virge_write32(ctx, VIRGE_3D_TVS, (uint32_t)v_start);
-    virge_write32(ctx, VIRGE_3D_TdVdX, (uint32_t)dv_dx);
-    virge_write32(ctx, VIRGE_3D_TdVdY, (uint32_t)dv_dy);
-
-    /* U start + deltas */
-    virge_write32(ctx, VIRGE_3D_TUS, (uint32_t)u_start);
-    virge_write32(ctx, VIRGE_3D_TdUdX, (uint32_t)du_dx);
-    virge_write32(ctx, VIRGE_3D_TdUdY, (uint32_t)du_dy);
-
-    /* --- Edge geometry (same as Gouraud) --- */
-    virge_write32(ctx, VIRGE_3D_TdXdY02, (uint32_t)dXdY02);
-    virge_write32(ctx, VIRGE_3D_TdXdY01, (uint32_t)dXdY01);
-
-    /* Six final geometry writes remain, ending in the B57C AE kick. A
-     * changed command consumes one additional FIFO slot before them. */
-    if (ctx->autoexec_enabled)
-        program_3d_autoexec_command(ctx, cmd, 6);
-    else
-        virge_wait_fifo(ctx, 7);
-    virge_write32(ctx, VIRGE_3D_TdXdY12, (uint32_t)dXdY12);
-    /* TXEND01 = edge 01 X at the bottom scanline; TXEND12 = edge 12 X at
-     * the middle scanline -- prestepped. See gouraud path for derivation. */
-    virge_write32(ctx, VIRGE_3D_TXEND01, (uint32_t)x_end01);
-    virge_write32(ctx, VIRGE_3D_TXEND12, (uint32_t)x_end12);
-    virge_write32(ctx, VIRGE_3D_TXS, (uint32_t)x_start);
-    virge_write32(ctx, VIRGE_3D_TYS, (uint32_t)y_bot);
+    if (ctx->autoexec_enabled) {
+        program_3d_autoexec_command(ctx, cmd, 0);
+        emit_cached_state(ctx, &ctx->state_3d_geom, virge_3d_geom_offset,
+                          geom, VIRGE_3D_GEOM_COUNT, 1,
+                          &ctx->state_3d_dynamic_considered,
+                          &ctx->state_3d_dynamic_emitted);
+    } else {
+        emit_cached_state(ctx, &ctx->state_3d_geom, virge_3d_geom_offset,
+                          geom, VIRGE_3D_GEOM_COUNT, 2,
+                          &ctx->state_3d_dynamic_considered,
+                          &ctx->state_3d_dynamic_emitted);
+    }
 
     virge_write32(ctx, VIRGE_3D_TY01_Y12,
                   ((uint32_t)lr_direction << 31) |
@@ -2211,10 +2302,12 @@ int virge_init(struct virge_ctx *ctx, int width, int height, int bpp)
     const char *refresh = getenv("L10GL_REFRESH");
     const char *vsync = getenv("L10GL_VSYNC");
     const char *autoexec = getenv("L10GL_AUTOEXEC");
+    const char *tri_reuse = getenv("L10GL_TRI_REUSE");
     unsigned native_refresh = 60;
     int native_requested = 0;
     int vsync_enabled;
     int autoexec_enabled;
+    int tri_reuse_enabled;
     int ret;
     /* The S3d engine's destination format field (2D CMD_SET bits 4-2)
      * only encodes 8/16/24bpp -- there is no 32bpp mode on this chip
@@ -2244,6 +2337,14 @@ int virge_init(struct virge_ctx *ctx, int width, int height, int bpp)
         fprintf(stderr, "S3 ViRGE: invalid L10GL_AUTOEXEC '%s' "
                         "(supported: 0 or 1)\n",
                 autoexec ? autoexec : "");
+        return ret;
+    }
+
+    ret = virge_parse_tri_reuse(tri_reuse, &tri_reuse_enabled);
+    if (ret) {
+        fprintf(stderr, "S3 ViRGE: invalid L10GL_TRI_REUSE '%s' "
+                        "(supported: 0 or 1)\n",
+                tri_reuse ? tri_reuse : "");
         return ret;
     }
 
@@ -2303,6 +2404,7 @@ int virge_init(struct virge_ctx *ctx, int width, int height, int bpp)
     ctx->bpp = bpp;
     ctx->vsync_enabled = vsync_enabled;
     ctx->autoexec_enabled = autoexec_enabled;
+    ctx->tri_reuse_enabled = tri_reuse_enabled;
     ctx->fb_fd = -1;
     ctx->bar_fd = -1;
 
@@ -2573,6 +2675,10 @@ int virge_init(struct virge_ctx *ctx, int width, int height, int bpp)
            ctx->autoexec_enabled
                ? "autoexecute (B57C kick; L10GL_AUTOEXEC=1)"
                : "legacy CMD_SET kick (default; L10GL_AUTOEXEC=0)");
+    printf("S3 ViRGE: triangle parameter reuse: %s\n",
+           ctx->tri_reuse_enabled
+               ? "enabled (L10GL_TRI_REUSE=1; hardware experiment)"
+               : "disabled (default; full parameter image per triangle)");
     printf("  Screen: %dx%d, %d bpp (stride %u)\n",
            ctx->width, ctx->height, bpp * 8, ctx->stride);
     printf("  FB base: 0x%x (back buf 0x%x), Z base: 0x%x\n",
@@ -2586,7 +2692,7 @@ void virge_cleanup(struct virge_ctx *ctx)
     virge_wait_engine(ctx);
 
     if (ctx->state_2d_considered || ctx->state_3d_considered ||
-        ctx->state_3d_cmd_considered) {
+        ctx->state_3d_cmd_considered || ctx->state_3d_dynamic_considered) {
         printf("S3 ViRGE: state cache emitted %llu/%llu 2D and %llu/%llu "
                "3D shared-register writes\n",
                (unsigned long long)ctx->state_2d_emitted,
@@ -2598,6 +2704,12 @@ void virge_cleanup(struct virge_ctx *ctx)
                    "writes\n",
                    (unsigned long long)ctx->state_3d_cmd_emitted,
                    (unsigned long long)ctx->state_3d_cmd_considered);
+        if (ctx->state_3d_dynamic_considered)
+            printf("S3 ViRGE: triangle parameter cache emitted %llu/%llu "
+                   "writes%s\n",
+                   (unsigned long long)ctx->state_3d_dynamic_emitted,
+                   (unsigned long long)ctx->state_3d_dynamic_considered,
+                   ctx->tri_reuse_enabled ? "" : " (reuse disabled)");
     }
 
     if (ctx->autoexec_enabled && ctx->state_3d_cmd.valid_mask) {

@@ -1275,6 +1275,17 @@ therefore the default again. `L10GL_AUTOEXEC=1` retains the AE path only for
 diagnosis or other-chip research; tests pin parsing, command images, B57C,
 cache reuse/change, and 2D invalidation.
 
+**Item 4 triangle-parameter reuse staged for hardware validation
+2026-07-18.** DB019-B section 15.4.3 and the B500/B57C register descriptions
+(absolute PDF pp.110, 250, and 253-273) establish a persistent read/write
+triangle parameter bank. Strict `L10GL_TRI_REUSE=1` now skips unchanged
+color/Z, texture, and edge-geometry register values between adjacent
+triangles. `TY01_Y12` and the silicon-proven legacy B500 launch remain
+unconditional, and every 2D command invalidates all dynamic parameter caches.
+The default remains `L10GL_TRI_REUSE=0`, which invalidates before every
+triangle and emits the complete former parameter image, until real DX A/B
+testing proves both rendering correctness and a worthwhile raw-FPS change.
+
 Ordered by expected win/effort on the ViRGE:
 
 1. **FIFO-aware submission.** Previously every draw spun for full engine
@@ -1293,8 +1304,9 @@ Ordered by expected win/effort on the ViRGE:
    dirty-state tracking this saves one B500 write per same-state triangle.
    Tested and rejected on ViRGE/DX: severe performance loss plus textured
    corruption. Legacy B500 submission remains the default; item closed.
-4. **Triangle-strip aware register reuse** and, much later, the ViRGE DMA
-   command queue (probably not worth it for this project's goals).
+4. **Triangle-strip aware register reuse.** Staged behind strict
+   `L10GL_TRI_REUSE=1`; hardware validation is pending. The much later ViRGE
+   DMA command queue is probably not worth it for this project's goals.
 
 Each item needs before/after frame-rate numbers from the same demo, mode, and
 frame count. FPS instrumentation is now present; retain the raw interval and

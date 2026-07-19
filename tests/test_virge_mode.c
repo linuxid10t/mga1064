@@ -382,16 +382,17 @@ static void test_fifo_status_decode(void)
 static void test_state_cache(void)
 {
     struct virge_state_cache cache = {0};
-    uint32_t desired[VIRGE_STATE_CACHE_REGS] = {
-        0x10, 0x20, 0x30, 0x40, 0x50, 0x60, 0x70,
-    };
+    uint32_t desired[VIRGE_STATE_CACHE_REGS];
     uint32_t dirty;
     unsigned i;
 
+    for (i = 0; i < VIRGE_STATE_CACHE_REGS; i++)
+        desired[i] = 0x10u * (i + 1u);
+
     dirty = virge_state_dirty_mask(&cache, desired,
                                    VIRGE_STATE_CACHE_REGS);
-    EXPECT(dirty == 0x7fu && virge_state_dirty_count(dirty) == 7u,
-           "empty state cache marks every register dirty");
+    EXPECT(dirty == 0xffffu && virge_state_dirty_count(dirty) == 16u,
+           "empty full-size state cache marks every register dirty");
     for (i = 0; i < VIRGE_STATE_CACHE_REGS; i++)
         virge_state_commit(&cache, i, desired[i]);
     EXPECT(virge_state_dirty_mask(&cache, desired,
@@ -404,10 +405,10 @@ static void test_state_cache(void)
     EXPECT(dirty == (1u << 2) && virge_state_dirty_count(dirty) == 1u,
            "state cache isolates one changed register");
     virge_state_commit(&cache, 2, desired[2]);
-    virge_state_invalidate(&cache, (1u << 3) | (1u << 6));
+    virge_state_invalidate(&cache, (1u << 3) | (1u << 14));
     dirty = virge_state_dirty_mask(&cache, desired,
                                    VIRGE_STATE_CACHE_REGS);
-    EXPECT(dirty == ((1u << 3) | (1u << 6)) &&
+    EXPECT(dirty == ((1u << 3) | (1u << 14)) &&
            virge_state_dirty_count(dirty) == 2u,
            "targeted invalidation re-emits only clobbered registers");
 }
@@ -512,6 +513,24 @@ static void test_autoexecute(void)
            "2D kick invalidates cached autoexecute command");
 }
 
+static void test_triangle_reuse_config(void)
+{
+    int value = -1;
+
+    EXPECT(virge_parse_tri_reuse(NULL, &value) == 0 && value == 0,
+           "triangle reuse defaults off pending hardware validation");
+    EXPECT(virge_parse_tri_reuse("", &value) == 0 && value == 0,
+           "empty triangle reuse value keeps full parameter writes");
+    EXPECT(virge_parse_tri_reuse("1", &value) == 0 && value == 1,
+           "triangle reuse one enables the experiment");
+    EXPECT(virge_parse_tri_reuse("0", &value) == 0 && value == 0,
+           "triangle reuse zero selects the exact control path");
+    EXPECT(virge_parse_tri_reuse("yes", &value) == -EINVAL,
+           "invalid triangle reuse value is rejected");
+    EXPECT(virge_parse_tri_reuse("0", NULL) == -EINVAL,
+           "null triangle reuse destination is rejected");
+}
+
 int main(void)
 {
     test_fixed_modes();
@@ -523,8 +542,9 @@ int main(void)
     test_state_cache();
     test_presentation_config();
     test_autoexecute();
+    test_triangle_reuse_config();
     if (failed)
         return 1;
-    printf("test-virge-mode: PASS (modes, CRTC, FIFO/state cache, presentation, autoexecute)\n");
+    printf("test-virge-mode: PASS (modes, CRTC, FIFO/state cache, presentation, triangle gates)\n");
     return 0;
 }

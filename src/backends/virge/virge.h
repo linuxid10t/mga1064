@@ -106,7 +106,7 @@ static inline unsigned virge_fifo_slots_free(uint32_t status)
 /* Small hardware-independent register-value cache used by the 2D and 3D
  * state planners.  A dirty mask is computed before FIFO space is reserved;
  * values are committed only as their writes are emitted. */
-#define VIRGE_STATE_CACHE_REGS 7u
+#define VIRGE_STATE_CACHE_REGS 16u
 
 struct virge_state_cache {
     uint32_t valid_mask;
@@ -669,20 +669,30 @@ struct virge_ctx {
     /* Cached CMD_SET destination format field */
     uint32_t dest_format;   /* VIRGE_DEST_16BPP, etc. */
 
-    /* Last values submitted to the 2D target-state and 3D shared-state
-     * registers.  Cache state follows FIFO order: committed means queued,
+    /* Last values submitted to the 2D target-state, 3D shared-state, and
+     * triangle parameter registers. Dynamic triangle caches are an opt-in
+     * hardware experiment: they are invalidated before every triangle unless
+     * L10GL_TRI_REUSE=1. TY01_Y12 and the legacy B500 kick are never cached.
+     * Cache state follows FIFO order: committed means queued,
      * not necessarily already rasterized.  2D commands invalidate the two
-     * 3D values proven clobbered on DX silicon (Z_STRIDE and TEX_BASE). */
+     * shared 3D values proven clobbered on DX silicon (Z_STRIDE and TEX_BASE)
+     * and conservatively invalidate every dynamic triangle parameter. */
     struct virge_state_cache state_2d;
     struct virge_state_cache state_3d;
     struct virge_state_cache state_3d_cmd;
+    struct virge_state_cache state_3d_attr;
+    struct virge_state_cache state_3d_tex;
+    struct virge_state_cache state_3d_geom;
     uint64_t state_2d_considered;
     uint64_t state_2d_emitted;
     uint64_t state_3d_considered;
     uint64_t state_3d_emitted;
     uint64_t state_3d_cmd_considered;
     uint64_t state_3d_cmd_emitted;
+    uint64_t state_3d_dynamic_considered;
+    uint64_t state_3d_dynamic_emitted;
     int      autoexec_enabled; /* 1 = B57C kick; 0 = legacy B500 kick */
+    int      tri_reuse_enabled; /* 1 = reuse identical adjacent parameters */
 
     /* Cached CMD_SET Z-buffering bits for the 3D triangle paths:
      * ZB mode [25-24], Z compare code [22-20], Z update [23]. Built by
@@ -805,6 +815,7 @@ struct virge_buffer_layout {
 
 int virge_parse_vsync(const char *value, int *enabled);
 int virge_parse_autoexec(const char *value, int *enabled);
+int virge_parse_tri_reuse(const char *value, int *enabled);
 int virge_buffer_layout_compute(uint32_t stride, uint32_t height,
                                 uint32_t z_bytes, uint32_t vram_size,
                                 int vsync_enabled,
