@@ -221,11 +221,36 @@ Relax the shim's square-only rule into a per-backend capability:
   reported in the limitations doc if Q0 shows Quake needs clamped
   rectangles.
 
+  The replication is a pure function (`virge_replicate_to_square`,
+  `src/backends/virge/virge.c`) producing `dst[sy][sx] == src[sy%h][sx%w]`;
+  `virge_be_tex_image_2d` replicates rectangular uploads into the `max(w,h)`
+  square (square textures upload verbatim, byte-for-byte unchanged), and
+  `bind_texture` programs the source stride from the square side, not
+  `tex->width`. VRAM cost = `max(w,h)² / (w·h) = max/min`:
+
+  | Rectangle | Stored square | VRAM cost |
+  |-----------|---------------|-----------|
+  | W×W       | W×W           | 1×        |
+  | W×W/2     | W×W           | 2×        |
+  | W×W/4     | W×W           | 4×        |
+  | W×W/8     | W×W           | 8×        |
+
+  Quake world textures are predominantly square or 2:1, so the typical
+  overhead is 1–2×; tall or wide slivers (8:1+) are rare and pay the full
+  square. `GL_CLAMP` on the replicated (short) axis stretches wrong because
+  the sampler maps the axis over the whole square; `GL_REPEAT` is exact.
+
 *Acceptance:* swrast renders repeated and clamped rectangular textures
 correctly under new pixel tests in `make check`; the ViRGE path has a
 replication unit test on the stored image plus a human hardware run of a
 new `demos/` rectangle-texture proof; square-texture behavior is
 unchanged byte-for-byte.
+
+*Status (Q3, swrast gate):* DONE — frontend accepts rectangular POT
+(`test_gl.c`), swrast repeat+clamp pixel tests on both axes
+(`test_swrast.c`), ViRGE replication unit test (`test_virge_mode.c`),
+square path byte-for-byte unchanged. DEFERRED — the `demos/` rectangle
+proof and ViRGE silicon run are a human hardware gate (Q11 era).
 
 ### Q4. `glTexSubImage2D`
 

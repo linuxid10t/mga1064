@@ -1969,6 +1969,41 @@ void virge_draw_line(struct virge_ctx *ctx,
  * upward. A simple bump allocator is sufficient for demos.
  * ======================================================================== */
 
+/*
+ * virge_replicate_to_square - Tile a rectangular image into a square.
+ * @src:  Source texels, w*h elements of @bpt bytes each, row-major.
+ * @w:    Source width (power of two).
+ * @h:    Source height (power of two).
+ * @bpt:  Bytes per texel.
+ * @side: Square side; must be a common multiple of w and h. For two powers
+ *        of two that is max(w,h), which is itself a power of two.
+ * @dst:  Destination texels, side*side elements of @bpt bytes each.
+ *
+ * DB019-B §19.4 programs the texture engine with a single square 2^s, and
+ * the sampler (virge_draw_textured_triangle) applies one tex_scale to both
+ * axes, addressing the whole square. A rectangular WxH image is therefore
+ * stored as its bounding square with the short axis tile-replicated to fill
+ * it. Because both dimensions are powers of two, side is an exact multiple
+ * of each, so the source repeats whole: GL_REPEAT on the short axis stays
+ * exact, at the cost of side*side texels in VRAM. GL_CLAMP on a replicated
+ * (short) axis is inexact and documented as a limitation. A square source
+ * (w == h == side) is a straight copy, byte-for-byte identical.
+ */
+void virge_replicate_to_square(const void *src, int w, int h, int bpt,
+                                int side, void *dst)
+{
+    const uint8_t *s = src;
+    uint8_t *d = dst;
+    size_t src_row = (size_t)w * (size_t)bpt;
+
+    for (int y = 0; y < side; y++) {
+        const uint8_t *srow = s + (size_t)(y % h) * src_row;
+        uint8_t *drow = d + (size_t)y * (size_t)side * (size_t)bpt;
+        for (int x = 0; x < side; x += w)
+            memcpy(drow + (size_t)x * (size_t)bpt, srow, src_row);
+    }
+}
+
 void virge_upload_texture(struct virge_ctx *ctx, uint32_t dest,
                            const void *data, size_t size)
 {

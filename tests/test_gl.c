@@ -431,6 +431,29 @@ static void test_texture_objects(struct l10gl_ctx *ctx)
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 3, 3, 0,
                  GL_RGBA, GL_UNSIGNED_BYTE, rgba);
     expect_int("non-power-of-two rejected", glGetError(), GL_INVALID_VALUE);
+
+    /* Rectangular power-of-two textures are accepted per-axis (Q3): each
+     * side independently POT and <= 512. Rejected sizes return before the
+     * pixel data is read, so a small buffer is safe for them. */
+    {
+        GLubyte rect_pixels[4 * 2 * 4];
+
+        memset(rect_pixels, 0, sizeof(rect_pixels));
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 4, 2, 0,
+                     GL_RGBA, GL_UNSIGNED_BYTE, rect_pixels);
+        expect_int("4x2 rectangle accepted", glGetError(), GL_NO_ERROR);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 2, 4, 0,
+                     GL_RGBA, GL_UNSIGNED_BYTE, rect_pixels);
+        expect_int("2x4 rectangle accepted", glGetError(), GL_NO_ERROR);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 6, 2, 0,
+                     GL_RGBA, GL_UNSIGNED_BYTE, rect_pixels);
+        expect_int("non-POT rectangle rejected", glGetError(),
+                   GL_INVALID_VALUE);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 1024, 512, 0,
+                     GL_RGBA, GL_UNSIGNED_BYTE, rect_pixels);
+        expect_int("oversize rectangle rejected", glGetError(),
+                   GL_INVALID_VALUE);
+    }
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER,
                     GL_LINEAR_MIPMAP_LINEAR);
     expect_int("mipmap magnification rejected", glGetError(), GL_INVALID_ENUM);

@@ -912,6 +912,15 @@ void virge_draw_line(struct virge_ctx *ctx,
                       int x0, int y0, int x1, int y1, uint32_t color);
 
 /*
+ * virge_replicate_to_square - Tile a rectangular image into a bounding square.
+ * See virge.c: DB019-B §19.4 stores a single square 2^s, so a WxH rectangle
+ * is represented by replicating its short axis. Pure (no hardware access),
+ * hence unit-tested independently of the upload path.
+ */
+void virge_replicate_to_square(const void *src, int w, int h, int bpt,
+                                int side, void *dst);
+
+/*
  * virge_upload_texture - Copy texture data into offscreen VRAM.
  * @ctx:      Driver context.
  * @dest:     Destination byte offset in VRAM (quadword aligned).

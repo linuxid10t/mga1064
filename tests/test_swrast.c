@@ -409,6 +409,123 @@ done:
     return failed ? -1 : 0;
 }
 
+/* Render a full-screen NEAREST textured quad with UV (0,0)-(u1,v1) over an
+ * fbw x fbh RGB888 buffer, dumping one frame. Used to probe per-axis texture
+ * addressing on rectangular images. */
+static int render_rect_texture(const char *path, int texw, int texh,
+                               const uint32_t *texels,
+                               enum l10gl_tex_wrap wrap,
+                               float u1, float v1, int fbw, int fbh)
+{
+    struct l10gl_texture texture = {0};
+    struct l10gl_ctx ctx;
+
+    if (setenv("L10GL_SWRAST_DUMP", path, 1) < 0)
+        return -1;
+    if (l10gl_create(&ctx, &swrast_backend, fbw, fbh, 3) < 0) {
+        unsetenv("L10GL_SWRAST_DUMP");
+        return -1;
+    }
+    l10gl_clear_color(&ctx, 0, 0, 0);
+    l10gl_clear_depth(&ctx, 1);
+    l10gl_clear(&ctx);
+    l10gl_enable_depth_test(&ctx, 0);
+    l10gl_enable_blend(&ctx, 0);
+    l10gl_cull_face(&ctx, L10GL_CULL_NONE);
+    l10gl_matrix_mode(&ctx, L10GL_MATRIX_MODELVIEW);
+    l10gl_load_identity(&ctx);
+    l10gl_matrix_mode(&ctx, L10GL_MATRIX_PROJECTION);
+    l10gl_load_identity(&ctx);
+    l10gl_viewport(&ctx, 0, 0, fbw, fbh);
+    if (l10gl_tex_image_2d(&ctx, &texture, texw, texh,
+                           L10GL_TEX_FMT_ARGB8888, texels) < 0) {
+        l10gl_destroy(&ctx);
+        unsetenv("L10GL_SWRAST_DUMP");
+        return -1;
+    }
+    l10gl_tex_parameter(&ctx, L10GL_FILTER_NEAREST, wrap);
+    l10gl_bind_texture(&ctx, &texture);
+    draw_quad(&ctx,
+              vertex(0, 0, 0, 1, 1, 1, 1, 1, 0, 0),
+              vertex(fbw, 0, 0, 1, 1, 1, 1, 1, u1, 0),
+              vertex(fbw, fbh, 0, 1, 1, 1, 1, 1, u1, v1),
+              vertex(0, fbh, 0, 1, 1, 1, 1, 1, 0, v1), 1);
+    l10gl_swap_buffers(&ctx);
+    l10gl_destroy(&ctx);
+    unsetenv("L10GL_SWRAST_DUMP");
+    return 0;
+}
+
+/* Rectangular textures must address each axis independently (Q3). A wide
+ * image spreads its colors horizontally and is uniform vertically; a tall
+ * image does the inverse. REPEAT tiles each axis; CLAMP stretches it. */
+static int test_rectangular_textures(const char *directory)
+{
+    static const uint32_t four[4] = {
+        0xffff0000, 0xff00ff00, 0xff0000ff, 0xffffffff,
+    };
+    static const uint32_t two[2] = { 0xffff0000, 0xff0000ff };
+    char path[256];
+    struct rgb *px;
+    int failed = 0;
+
+    /* Wide 4x1, CLAMP: four horizontal bands, uniform down the single row. */
+    snprintf(path, sizeof(path), "%s/wide_clamp.ppm", directory);
+    if (render_rect_texture(path, 4, 1, four, L10GL_WRAP_CLAMP, 1, 1, 16, 4))
+        return -1;
+    px = read_ppm(path, 16, 4);
+    if (!px) { unlink(path); return -1; }
+    failed |= expect_pixel(px, 16, 1, 0, 255, 0, 0, "wide clamp band 0");
+    failed |= expect_pixel(px, 16, 5, 0, 0, 255, 0, "wide clamp band 1");
+    failed |= expect_pixel(px, 16, 9, 0, 0, 0, 255, "wide clamp band 2");
+    failed |= expect_pixel(px, 16, 13, 0, 255, 255, 255, "wide clamp band 3");
+    failed |= expect_pixel(px, 16, 1, 3, 255, 0, 0, "wide clamp V-uniform");
+    free(px);
+    unlink(path);
+
+    /* Tall 1x4, CLAMP: four vertical bands, uniform across the single col. */
+    snprintf(path, sizeof(path), "%s/tall_clamp.ppm", directory);
+    if (render_rect_texture(path, 1, 4, four, L10GL_WRAP_CLAMP, 1, 1, 16, 4))
+        return -1;
+    px = read_ppm(path, 16, 4);
+    if (!px) { unlink(path); return -1; }
+    failed |= expect_pixel(px, 16, 0, 0, 255, 0, 0, "tall clamp band 0");
+    failed |= expect_pixel(px, 16, 0, 1, 0, 255, 0, "tall clamp band 1");
+    failed |= expect_pixel(px, 16, 0, 2, 0, 0, 255, "tall clamp band 2");
+    failed |= expect_pixel(px, 16, 0, 3, 255, 255, 255, "tall clamp band 3");
+    failed |= expect_pixel(px, 16, 8, 1, 0, 255, 0, "tall clamp U-uniform");
+    free(px);
+    unlink(path);
+
+    /* Wide 2x1, REPEAT over U=0..2: the two texels tile twice across. */
+    snprintf(path, sizeof(path), "%s/wide_repeat.ppm", directory);
+    if (render_rect_texture(path, 2, 1, two, L10GL_WRAP_REPEAT, 2, 1, 16, 4))
+        return -1;
+    px = read_ppm(path, 16, 4);
+    if (!px) { unlink(path); return -1; }
+    failed |= expect_pixel(px, 16, 1, 0, 255, 0, 0, "wide repeat u0 red");
+    failed |= expect_pixel(px, 16, 5, 0, 0, 0, 255, "wide repeat half blue");
+    failed |= expect_pixel(px, 16, 9, 0, 255, 0, 0, "wide repeat wrap red");
+    failed |= expect_pixel(px, 16, 13, 0, 0, 0, 255, "wide repeat wrap blue");
+    free(px);
+    unlink(path);
+
+    /* Tall 1x2, REPEAT over V=0..2: the two texels tile twice down. */
+    snprintf(path, sizeof(path), "%s/tall_repeat.ppm", directory);
+    if (render_rect_texture(path, 1, 2, two, L10GL_WRAP_REPEAT, 1, 2, 4, 16))
+        return -1;
+    px = read_ppm(path, 4, 16);
+    if (!px) { unlink(path); return -1; }
+    failed |= expect_pixel(px, 4, 0, 1, 255, 0, 0, "tall repeat v0 red");
+    failed |= expect_pixel(px, 4, 0, 5, 0, 0, 255, "tall repeat half blue");
+    failed |= expect_pixel(px, 4, 0, 9, 255, 0, 0, "tall repeat wrap red");
+    failed |= expect_pixel(px, 4, 0, 13, 0, 0, 255, "tall repeat wrap blue");
+    free(px);
+    unlink(path);
+
+    return failed ? -1 : 0;
+}
+
 int main(void)
 {
     char directory[] = "/tmp/l10gl-swrast-test.XXXXXX";
@@ -432,6 +549,7 @@ int main(void)
     failed |= test_rgb565_dump(rgb565_path);
     failed |= test_double_buffered_swaps(directory);
     failed |= test_polygon_matches_fan(directory);
+    failed |= test_rectangular_textures(directory);
 
     unlink(reference_path);
     unlink(rgb565_path);
@@ -441,6 +559,7 @@ int main(void)
         return 1;
     }
     printf("test-swrast: PASS (coverage, blend, depth, perspective, "
-           "bilinear, RGB565, PPM, double buffering, polygon==fan)\n");
+           "bilinear, RGB565, PPM, double buffering, polygon==fan, "
+           "rectangular textures)\n");
     return 0;
 }

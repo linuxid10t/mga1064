@@ -446,7 +446,13 @@ static int virge_be_tex_image_2d(struct l10gl_ctx *ctx,
     struct virge_ctx *hw = &priv->hw;
 
     int bpt = virge_tex_bytes_per_texel(format);
-    uint32_t tex_size = width * height * bpt;
+    /* DB019-B §19.4 stores a square 2^s, so a WxH rectangle is uploaded as
+     * its bounding square with the short axis tile-replicated. side is the
+     * square side (the larger dimension); both dims are powers of two, so
+     * side is itself a power of two and an exact multiple of each. Square
+     * textures upload verbatim -- byte-for-byte unchanged. */
+    int side = width > height ? width : height;
+    uint32_t tex_size = (uint32_t)side * (uint32_t)side * (uint32_t)bpt;
 
     /* Align to quadword */
     uint32_t tex_addr = (hw->tex_heap_next + 7) & ~7;
@@ -458,8 +464,17 @@ static int virge_be_tex_image_2d(struct l10gl_ctx *ctx,
         return -1;
     }
 
-    /* Upload to VRAM */
-    virge_upload_texture(hw, tex_addr, data, tex_size);
+    /* Upload to VRAM: replicate rectangles into the square, copy squares. */
+    if (width == height) {
+        virge_upload_texture(hw, tex_addr, data, tex_size);
+    } else {
+        void *square = malloc(tex_size);
+        if (!square)
+            return -1;
+        virge_replicate_to_square(data, width, height, bpt, side, square);
+        virge_upload_texture(hw, tex_addr, square, tex_size);
+        free(square);
+    }
 
     /* Bump allocator */
     hw->tex_heap_next = tex_addr + tex_size;
@@ -496,10 +511,13 @@ static void virge_be_bind_texture(struct l10gl_ctx *ctx,
      * reason to force a standalone MMIO write at bind time. */
     hw->tex_base = tex_addr & ~0x7;
 
-    /* Cache the texture SOURCE stride (row pitch = width * bytes/texel) so
-     * program_3d_state can program DEST_SRC_STR bits 11:0 with the TEXTURE
-     * pitch, not the screen stride (datasheet 3d_regs.txt:292-294). */
-    hw->tex_stride = tex->width * tex->bytes_per_texel;
+    /* Cache the texture SOURCE stride so program_3d_state can program
+     * DEST_SRC_STR bits 11:0 with the TEXTURE pitch, not the screen stride
+     * (datasheet 3d_regs.txt:292-294). The stored image is always a square
+     * of side max(w,h) (Q3 replication), so the row pitch is the square
+     * side, not tex->width -- a tall rectangle's pitch is its height. */
+    int side = tex->width > tex->height ? tex->width : tex->height;
+    hw->tex_stride = side * tex->bytes_per_texel;
 
     /* Cache CMD_SET bits for this texture's format.
      *

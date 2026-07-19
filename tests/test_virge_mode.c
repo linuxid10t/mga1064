@@ -3,6 +3,8 @@
 #include <errno.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 
 #include "backends/virge/virge.h"
 #include "backends/virge/virge_mode.h"
@@ -531,6 +533,63 @@ static void test_triangle_reuse_config(void)
            "null triangle reuse destination is rejected");
 }
 
+/* virge_replicate_to_square tiles a WxH image into its bounding square by
+ * repeating the short axis. The contract is dst[sy][sx] == src[sy%h][sx%w];
+ * each source texel encodes its (y,x) position so copies are identifiable. */
+#define REP_TEXEL(y, x) (0xFF000000u | ((uint32_t)(y) << 8) | (uint32_t)(x))
+
+static void test_texture_replication(void)
+{
+    /* Square source: a 2x2 image into a 2x2 square is an exact copy. */
+    {
+        uint32_t src[4] = {
+            REP_TEXEL(0, 0), REP_TEXEL(0, 1),
+            REP_TEXEL(1, 0), REP_TEXEL(1, 1),
+        };
+        uint32_t dst[4];
+        virge_replicate_to_square(src, 2, 2, 4, 2, dst);
+        EXPECT(dst[0] == REP_TEXEL(0, 0) && dst[1] == REP_TEXEL(0, 1) &&
+               dst[2] == REP_TEXEL(1, 0) && dst[3] == REP_TEXEL(1, 1),
+               "square texture replicates as an exact copy");
+    }
+
+    /* Wide 4x2 into 4x4: the two source rows alternate down the square. */
+    {
+        uint32_t src[8] = {
+            REP_TEXEL(0, 0), REP_TEXEL(0, 1), REP_TEXEL(0, 2), REP_TEXEL(0, 3),
+            REP_TEXEL(1, 0), REP_TEXEL(1, 1), REP_TEXEL(1, 2), REP_TEXEL(1, 3),
+        };
+        uint32_t dst[16];
+        int ok = 1;
+        virge_replicate_to_square(src, 4, 2, 4, 4, dst);
+        for (int y = 0; y < 4; y++)
+            for (int x = 0; x < 4; x++)
+                if (dst[y * 4 + x] != REP_TEXEL(y % 2, x))
+                    ok = 0;
+        EXPECT(ok, "wide rectangle tiles its short (height) axis");
+    }
+
+    /* Tall 2x4 into 4x4: the two source columns repeat across each row. */
+    {
+        uint32_t src[8] = {
+            REP_TEXEL(0, 0), REP_TEXEL(0, 1),
+            REP_TEXEL(1, 0), REP_TEXEL(1, 1),
+            REP_TEXEL(2, 0), REP_TEXEL(2, 1),
+            REP_TEXEL(3, 0), REP_TEXEL(3, 1),
+        };
+        uint32_t dst[16];
+        int ok = 1;
+        virge_replicate_to_square(src, 2, 4, 4, 4, dst);
+        for (int y = 0; y < 4; y++)
+            for (int x = 0; x < 4; x++)
+                if (dst[y * 4 + x] != REP_TEXEL(y, x % 2))
+                    ok = 0;
+        EXPECT(ok, "tall rectangle tiles its short (width) axis");
+    }
+}
+
+#undef REP_TEXEL
+
 int main(void)
 {
     test_fixed_modes();
@@ -543,8 +602,10 @@ int main(void)
     test_presentation_config();
     test_autoexecute();
     test_triangle_reuse_config();
+    test_texture_replication();
     if (failed)
         return 1;
-    printf("test-virge-mode: PASS (modes, CRTC, FIFO/state cache, presentation, triangle gates)\n");
+    printf("test-virge-mode: PASS (modes, CRTC, FIFO/state cache, presentation, "
+           "triangle gates, texture replication)\n");
     return 0;
 }

@@ -997,13 +997,19 @@ void glTexImage2D(GLenum target, GLint level, GLint internal_format,
         gl_record_error(GL_INVALID_ENUM);
         return;
     }
-    /* DB019-B section 19.4 (PDF p.251) defines one side as 2^s and caps
-     * s at 9, hence square power-of-two level-zero images up to 512x512. */
+    /* Each side must be a positive power of two up to 512. DB019-B §19.4
+     * (PDF p.251) caps a ViRGE texture side at 2^9; swrast has no such limit
+     * but the shim applies the conservative ViRGE maximum uniformly.
+     * Rectangular (width != height) POT images are accepted: swrast samples
+     * them natively, and the ViRGE backend represents a rectangle as its
+     * bounding square with the short axis tile-replicated (Q3). */
     if (level != 0 || border != 0 ||
         (internal_format != 3 && internal_format != 4 &&
          internal_format != (GLint)GL_RGB &&
          internal_format != (GLint)GL_RGBA) ||
-        width != height || width > 512 || !gl_is_power_of_two(width)) {
+        width < 1 || height < 1 ||
+        width > 512 || height > 512 ||
+        !gl_is_power_of_two(width) || !gl_is_power_of_two(height)) {
         gl_record_error(GL_INVALID_VALUE);
         return;
     }
