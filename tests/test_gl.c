@@ -574,6 +574,124 @@ static void test_swrast_texture_pixels(void)
     rmdir(directory);
 }
 
+static void test_quake_entry_points(struct l10gl_ctx *ctx)
+{
+    const GLubyte *s;
+    GLfloat m[16];
+    GLuint tex;
+    const GLubyte bytecolor[3] = {255, 0, 128};
+
+    (void)ctx;
+    memset(&capture, 0, sizeof(capture));
+
+    /* glGetString identifies backend and honest pre-1.1 tier. */
+    s = glGetString(GL_VENDOR);
+    expect_int("vendor string present", s != NULL, 1);
+    s = glGetString(GL_RENDERER);
+    expect_int("renderer names backend",
+               strstr((const char *)s, "gl-capture") != NULL, 1);
+    s = glGetString(GL_VERSION);
+    expect_int("version reports 1.0", strstr((const char *)s, "1.0") != NULL,
+               1);
+    expect_int("version does not claim 1.1",
+               strstr((const char *)s, "1.1") == NULL, 1);
+    s = glGetString(GL_EXTENSIONS);
+    expect_int("extensions empty", s[0] == '\0', 1);
+    glGetString(0x1234);
+    expect_int("bad string name", glGetError(), GL_INVALID_ENUM);
+
+    /* glGetFloatv serves the modelview capture GLQuake needs. */
+    glMatrixMode(GL_MODELVIEW);
+    glLoadIdentity();
+    glGetFloatv(GL_MODELVIEW_MATRIX, m);
+    expect_float("identity m[0]", m[0], 1.0f);
+    expect_float("identity m[12]", m[12], 0.0f);
+    glTranslatef(1.0f, 2.0f, 3.0f);
+    glGetFloatv(GL_MODELVIEW_MATRIX, m);
+    expect_float("translation m[12]", m[12], 1.0f);
+    expect_float("translation m[13]", m[13], 2.0f);
+    expect_float("translation m[14]", m[14], 3.0f);
+    glGetFloatv(GL_LIGHT0, m);
+    expect_int("unsupported query pname", glGetError(), GL_INVALID_ENUM);
+
+    /* glHint accepts the perspective target and rejects the rest. */
+    glHint(GL_PERSPECTIVE_CORRECTION_HINT, GL_FASTEST);
+    expect_int("hint accepted", glGetError(), GL_NO_ERROR);
+    glHint(0x1234, GL_NICEST);
+    expect_int("bad hint target", glGetError(), GL_INVALID_ENUM);
+    glHint(GL_PERSPECTIVE_CORRECTION_HINT, 0x1234);
+    expect_int("bad hint mode", glGetError(), GL_INVALID_ENUM);
+
+    /* glPolygonMode accepts only GL_FILL. */
+    glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+    expect_int("polygon fill accepted", glGetError(), GL_NO_ERROR);
+    glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+    expect_int("polygon line unsupported", glGetError(), GL_INVALID_ENUM);
+
+    /* glDrawBuffer accepts GL_BACK only. */
+    glDrawBuffer(GL_BACK);
+    expect_int("draw back accepted", glGetError(), GL_NO_ERROR);
+    glDrawBuffer(GL_FRONT);
+    expect_int("draw front unsupported", glGetError(),
+               GL_INVALID_OPERATION);
+
+    /* glReadBuffer accepts GL_FRONT/GL_BACK. */
+    glReadBuffer(GL_BACK);
+    expect_int("read back accepted", glGetError(), GL_NO_ERROR);
+    glReadBuffer(0x1234);
+    expect_int("bad read buffer", glGetError(), GL_INVALID_ENUM);
+
+    /* glReadPixels is a documented stub. */
+    glReadPixels(0, 0, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, m);
+    expect_int("readpixels unsupported", glGetError(), GL_INVALID_OPERATION);
+
+    /* glAlphaFunc records state; GL default (ALWAYS,0) is a no-op pass. */
+    glAlphaFunc(GL_GREATER, 0.666f);
+    expect_int("alpha func accepted", glGetError(), GL_NO_ERROR);
+    glAlphaFunc(0x1234, 0.5f);
+    expect_int("bad alpha func", glGetError(), GL_INVALID_ENUM);
+
+    /* glTexEnvf records env mode for the Q6 modes; BLEND env is deferred. */
+    glTexEnvf(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE);
+    expect_int("texenv replace accepted", glGetError(), GL_NO_ERROR);
+    glTexEnvf(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_BLEND);
+    expect_int("texenv blend deferred", glGetError(), GL_INVALID_ENUM);
+    glTexEnvf(0x1234, GL_TEXTURE_ENV_MODE, GL_MODULATE);
+    expect_int("bad texenv target", glGetError(), GL_INVALID_ENUM);
+
+    /* glColor3ubv converts bytes to float in [0,1] (particles). */
+    glDisable(GL_TEXTURE_2D);
+    glMatrixMode(GL_MODELVIEW);
+    glLoadIdentity();
+    memset(&capture, 0, sizeof(capture));
+    glColor3ubv(bytecolor);
+    glBegin(GL_TRIANGLES);
+    glVertex2f(-.25f, -.25f);
+    glVertex2f(.25f, -.25f);
+    glVertex2f(0.0f, .25f);
+    glEnd();
+    expect_int("byte-color triangle drawn", capture.triangles, 1);
+    expect_float("byte-color red", capture.triangle[0].r, 1.0f);
+    expect_float("byte-color green", capture.triangle[0].g, 0.0f);
+    expect_float("byte-color blue", capture.triangle[0].b, 128.0f / 255.0f);
+    glColor3ubv(NULL);
+    expect_int("null byte color", glGetError(), GL_INVALID_VALUE);
+
+    /* glTexParameterf delegates to the integer path and reaches the backend. */
+    glGenTextures(1, &tex);
+    glBindTexture(GL_TEXTURE_2D, tex);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 2, 2, 0,
+                 GL_RGBA, GL_UNSIGNED_BYTE,
+                 (const GLubyte[16]){0});
+    glEnable(GL_TEXTURE_2D);
+    glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    expect_int("TexParameterf delegates", glGetError(), GL_NO_ERROR);
+    expect_int("TexParameterf applies linear",
+               capture.texture_filter == L10GL_FILTER_LINEAR, 1);
+    glDisable(GL_TEXTURE_2D);
+    glDeleteTextures(1, &tex);
+}
+
 int main(void)
 {
     struct l10gl_ctx ctx;
@@ -592,6 +710,7 @@ int main(void)
     test_lighting_material(&ctx);
     test_shade_model(&ctx);
     test_texture_objects(&ctx);
+    test_quake_entry_points(&ctx);
     test_clear_and_sync(&ctx);
     test_stack_errors();
 

@@ -3,6 +3,7 @@
 #include <errno.h>
 #include <limits.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -37,6 +38,12 @@ struct l10gl_gl_state {
     int light0_enabled;
     int normalize_enabled;
     int texture_2d_enabled;
+    GLenum env_mode;        /* GL_MODULATE/REPLACE/DECAL (Q6 wires it in) */
+    GLenum alpha_func;      /* GL_ALPHA_TEST compare (Q5 wires it in) */
+    GLclampf alpha_ref;     /* GL_ALPHA_TEST reference (Q5 wires it in) */
+    GLenum draw_buffer;     /* GL_BACK; GL_FRONT unsupported (Q1) */
+    GLenum read_buffer;     /* GL_FRONT/GL_BACK (Q1) */
+    GLenum polygon_mode;    /* GL_FILL is the only drawn mode (Q1) */
 };
 
 static struct l10gl_gl_state gl_state = {
@@ -92,6 +99,12 @@ static void gl_reset_compat_state(void)
     gl_state.light0_enabled = 0;
     gl_state.normalize_enabled = 0;
     gl_state.texture_2d_enabled = 0;
+    gl_state.env_mode = GL_MODULATE;
+    gl_state.alpha_func = GL_ALWAYS;
+    gl_state.alpha_ref = 0.0f;
+    gl_state.draw_buffer = GL_BACK;
+    gl_state.read_buffer = GL_BACK;
+    gl_state.polygon_mode = GL_FILL;
     gl_init_texture(&gl_state.default_texture, 0);
     gl_state.bound_texture = &gl_state.default_texture;
     gl_state.next_texture_name = 1;
@@ -252,6 +265,17 @@ void glColor4fv(const GLfloat *v)
         return;
     }
     glColor4f(v[0], v[1], v[2], v[3]);
+}
+
+void glColor3ubv(const GLubyte *v)
+{
+    static const float scale = 1.0f / 255.0f;
+
+    if (!v) {
+        gl_record_error(GL_INVALID_VALUE);
+        return;
+    }
+    glColor3f(v[0] * scale, v[1] * scale, v[2] * scale);
 }
 
 void glNormal3f(GLfloat nx, GLfloat ny, GLfloat nz)
@@ -926,6 +950,13 @@ void glTexParameteri(GLenum target, GLenum pname, GLint param)
         gl_apply_texture_binding(ctx);
 }
 
+void glTexParameterf(GLenum target, GLenum pname, GLfloat param)
+{
+    /* GLQuake selects filters and wrap modes through the float entry point.
+     * The arguments are enum values, so this delegates to the integer path. */
+    glTexParameteri(target, pname, (GLint)param);
+}
+
 void glPixelStorei(GLenum pname, GLint param)
 {
     if (!gl_current())
@@ -1053,4 +1084,199 @@ void glFinish(void)
 
     if (ctx)
         l10gl_wait_engine(ctx);
+}
+
+const GLubyte *glGetString(GLenum name)
+{
+    static const GLubyte vendor[] = "L10GL";
+    /* Honest pre-1.1 tier: L10GL implements a GL 1.1 subset, not the whole
+     * 1.1 surface, so the version must not claim 1.1 (Phase 8 raises it). */
+    static const GLubyte version[] = "1.0 L10GL (Phase 7 compatibility)";
+    /* Empty-but-valid extensions string: GLQuake probes SGIS_multitexture
+     * and EXT_shared_texture_palette here and falls back cleanly. */
+    static const GLubyte extensions[] = "";
+    static GLubyte renderer[64];
+
+    switch (name) {
+    case GL_VENDOR:
+        return vendor;
+    case GL_VERSION:
+        return version;
+    case GL_EXTENSIONS:
+        return extensions;
+    case GL_RENDERER:
+        if (gl_state.current && gl_state.current->backend &&
+            gl_state.current->backend->name)
+            snprintf((char *)renderer, sizeof(renderer), "L10GL/%s",
+                     gl_state.current->backend->name);
+        else
+            snprintf((char *)renderer, sizeof(renderer), "L10GL");
+        return renderer;
+    default:
+        gl_record_error(GL_INVALID_ENUM);
+        return NULL;
+    }
+}
+
+void glGetFloatv(GLenum pname, GLfloat *params)
+{
+    struct l10gl_ctx *ctx = gl_current();
+
+    if (!params)
+        return;
+    if (!ctx)
+        return;
+    /* Full query family is Phase 8 C1; only the modelview capture GLQuake
+     * needs (gl_rmain.c: r_world_matrix) is served today. */
+    switch (pname) {
+    case GL_MODELVIEW_MATRIX:
+        l10gl_get_matrix(ctx, L10GL_MATRIX_MODELVIEW, params);
+        break;
+    default:
+        gl_record_error(GL_INVALID_ENUM);
+    }
+}
+
+void glHint(GLenum target, GLenum mode)
+{
+    if (!gl_current())
+        return;
+    if (target != GL_PERSPECTIVE_CORRECTION_HINT) {
+        gl_record_error(GL_INVALID_ENUM);
+        return;
+    }
+    if (mode != GL_DONT_CARE && mode != GL_FASTEST && mode != GL_NICEST) {
+        gl_record_error(GL_INVALID_ENUM);
+        return;
+    }
+    /* No-op: L10GL's perspective path is fixed, so the hint has no effect. */
+}
+
+void glPolygonMode(GLenum face, GLenum mode)
+{
+    if (!gl_current())
+        return;
+    if (face != GL_FRONT && face != GL_BACK && face != GL_FRONT_AND_BACK) {
+        gl_record_error(GL_INVALID_ENUM);
+        return;
+    }
+    if (mode != GL_FILL) {
+        /* GL_POINT/GL_LINE rasterization is not implemented. */
+        gl_record_error(GL_INVALID_ENUM);
+        return;
+    }
+    gl_state.polygon_mode = GL_FILL;
+}
+
+void glDrawBuffer(GLenum mode)
+{
+    if (!gl_current())
+        return;
+    if (mode != GL_BACK && mode != GL_FRONT && mode != GL_FRONT_AND_BACK) {
+        gl_record_error(GL_INVALID_ENUM);
+        return;
+    }
+    if (mode == GL_BACK) {
+        gl_state.draw_buffer = GL_BACK;
+        return;
+    }
+    /* Direct front-buffer drawing is the L10GL_VSYNC=0 path; the GL entry
+     * point reports unsupported until a use case needs it. */
+    gl_record_error(GL_INVALID_OPERATION);
+}
+
+void glReadBuffer(GLenum mode)
+{
+    if (!gl_current())
+        return;
+    if (mode != GL_FRONT && mode != GL_BACK) {
+        gl_record_error(GL_INVALID_ENUM);
+        return;
+    }
+    gl_state.read_buffer = mode;
+}
+
+void glReadPixels(GLint x, GLint y, GLsizei width, GLsizei height,
+                  GLenum format, GLenum type, GLvoid *data)
+{
+    (void)x;
+    (void)y;
+    (void)width;
+    (void)height;
+    (void)format;
+    (void)type;
+    (void)data;
+    /* Framebuffer readback is a Phase 8 C7 path (the ViRGE CPU aperture is
+     * an unreliable read path). Record the error and write nothing. */
+    gl_record_error(GL_INVALID_OPERATION);
+}
+
+void glAlphaFunc(GLenum func, GLclampf ref)
+{
+    if (!gl_current())
+        return;
+    switch (func) {
+    case GL_NEVER:
+    case GL_LESS:
+    case GL_EQUAL:
+    case GL_LEQUAL:
+    case GL_GREATER:
+    case GL_NOTEQUAL:
+    case GL_GEQUAL:
+    case GL_ALWAYS:
+        break;
+    default:
+        gl_record_error(GL_INVALID_ENUM);
+        return;
+    }
+    if (ref < 0.0f)
+        ref = 0.0f;
+    else if (ref > 1.0f)
+        ref = 1.0f;
+    gl_state.alpha_func = func;
+    gl_state.alpha_ref = ref;
+    /* Q5 wires alpha_func/ref into the swrast fragment stage. The GL
+     * default (ALWAYS, 0) passes every fragment, matching current behavior. */
+}
+
+void glTexEnvf(GLenum target, GLenum pname, GLfloat param)
+{
+    if (!gl_current())
+        return;
+    if (target != GL_TEXTURE_ENV || pname != GL_TEXTURE_ENV_MODE) {
+        gl_record_error(GL_INVALID_ENUM);
+        return;
+    }
+    switch ((GLenum)param) {
+    case GL_MODULATE:
+    case GL_DECAL:
+    case GL_REPLACE:
+        break;
+    default:
+        /* GL_BLEND/GL_ADD texture environments are out of scope (Phase 8). */
+        gl_record_error(GL_INVALID_ENUM);
+        return;
+    }
+    gl_state.env_mode = (GLenum)param;
+    /* Q6 wires env_mode into the fragment path; MODULATE is the current
+     * fixed behavior, so this is observationally a no-op until then. */
+}
+
+void glTexSubImage2D(GLenum target, GLint level, GLint xoffset, GLint yoffset,
+                     GLsizei width, GLsizei height, GLenum format,
+                     GLenum type, const GLvoid *pixels)
+{
+    (void)target;
+    (void)level;
+    (void)xoffset;
+    (void)yoffset;
+    (void)width;
+    (void)height;
+    (void)format;
+    (void)type;
+    (void)pixels;
+    /* Q4 retains each texture's converted CPU image and applies subrectangle
+     * updates through the existing tex_image_2d path. Until then this is a
+     * documented unsupported operation. */
+    gl_record_error(GL_INVALID_OPERATION);
 }

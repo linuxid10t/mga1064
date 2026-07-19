@@ -40,6 +40,7 @@ typedef void GLvoid;
 #define GL_TRIANGLE_FAN                  0x0006
 #define GL_QUADS                         0x0007
 #define GL_QUAD_STRIP                    0x0008
+#define GL_POLYGON                       0x0009
 
 #define GL_ZERO                          0
 #define GL_ONE                           1
@@ -82,12 +83,20 @@ typedef void GLvoid;
 #define GL_NORMALIZE                     0x0BA1
 #define GL_BLEND                         0x0BE2
 #define GL_TEXTURE_2D                    0x0DE1
+#define GL_ALPHA_TEST                    0x0BC0
+#define GL_PERSPECTIVE_CORRECTION_HINT   0x0C50
 
 #define GL_UNPACK_ALIGNMENT              0x0CF5
 
 #define GL_UNSIGNED_BYTE                 0x1401
+#define GL_FLOAT                         0x1406
+#define GL_COLOR_INDEX                   0x1900
 #define GL_RGB                           0x1907
 #define GL_RGBA                          0x1908
+#define GL_ALPHA                         0x1906
+#define GL_LUMINANCE                     0x1909
+#define GL_INTENSITY                     0x8049
+#define GL_RGBA4                         0x805B
 
 #define GL_NEAREST                       0x2600
 #define GL_LINEAR                        0x2601
@@ -112,6 +121,32 @@ typedef void GLvoid;
 #define GL_DIFFUSE                       0x1201
 #define GL_POSITION                      0x1203
 #define GL_AMBIENT_AND_DIFFUSE           0x1602
+
+/* Texture environment (glTexEnv). GL_BLEND (0x0BE2) is shared with the
+ * blend-enable cap, as in the OpenGL registry. */
+#define GL_TEXTURE_ENV                   0x2300
+#define GL_TEXTURE_ENV_MODE              0x2200
+#define GL_MODULATE                      0x2100
+#define GL_DECAL                         0x2101
+#define GL_REPLACE                       0x1E02
+
+/* Polygon mode. GL_POINT and GL_LINE are accepted only to report
+ * GL_INVALID_ENUM until a use case exists; GL_FILL is the drawn mode. */
+#define GL_POINT                         0x1B00
+#define GL_LINE                          0x1B01
+#define GL_FILL                          0x1B02
+
+/* Hints. Implemented as no-ops; L10GL's perspective path is fixed. */
+#define GL_DONT_CARE                     0x1100
+#define GL_FASTEST                       0x1101
+#define GL_NICEST                        0x1102
+
+/* Queries (glGetString / glGetFloatv). */
+#define GL_VENDOR                        0x1F00
+#define GL_RENDERER                      0x1F01
+#define GL_VERSION                       0x1F02
+#define GL_EXTENSIONS                    0x1F03
+#define GL_MODELVIEW_MATRIX              0x0BA6
 
 struct l10gl_ctx;
 
@@ -175,9 +210,27 @@ void glTexImage2D(GLenum target, GLint level, GLint internal_format,
                   GLsizei width, GLsizei height, GLint border,
                   GLenum format, GLenum type, const GLvoid *pixels);
 void glTexParameteri(GLenum target, GLenum pname, GLint param);
+void glTexParameterf(GLenum target, GLenum pname, GLfloat param);
 void glPixelStorei(GLenum pname, GLint param);
 void glFlush(void);
 void glFinish(void);
+
+const GLubyte *glGetString(GLenum name);
+void glGetFloatv(GLenum pname, GLfloat *params);
+void glHint(GLenum target, GLenum mode);
+
+void glColor3ubv(const GLubyte *v);
+void glPolygonMode(GLenum face, GLenum mode);
+void glDrawBuffer(GLenum mode);
+void glReadBuffer(GLenum mode);
+void glReadPixels(GLint x, GLint y, GLsizei width, GLsizei height,
+                  GLenum format, GLenum type, GLvoid *data);
+
+void glAlphaFunc(GLenum func, GLclampf ref);
+void glTexEnvf(GLenum target, GLenum pname, GLfloat param);
+void glTexSubImage2D(GLenum target, GLint level, GLint xoffset,
+                     GLint yoffset, GLsizei width, GLsizei height,
+                     GLenum format, GLenum type, const GLvoid *pixels);
 
 #ifdef __cplusplus
 }
