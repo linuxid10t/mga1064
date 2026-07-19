@@ -3,7 +3,12 @@
 This document is the execution plan for taking L10GL from its current small
 OpenGL-style shim to the fullest correct OpenGL 1.1 implementation practical
 on the S3 ViRGE/DX. It supplements `PLAN.md`; the numbered work below is
-Phase 7 of that roadmap.
+Phase 8 of that roadmap. Phase 7 (`docs/QUAKE_PLAN.md`) lands a
+Quake-scoped subset first — rectangular textures, alpha test,
+`glTexSubImage2D`, texture environment modes, texture lifetime, and a set
+of small entry points. The C-items below absorb and generalize those
+implementations rather than replacing them; where a Q-item has already
+landed, the corresponding C-item starts from its code and tests.
 
 The target is **correctness first, acceleration second**. A command must not
 silently degrade merely because the ViRGE cannot express it. Every feature
@@ -64,8 +69,10 @@ As of 2026-07-18, `src/l10gl_gl.c` exports 48 of the 336 OpenGL 1.1 command
 names (14.3% symbol coverage). The useful rendering coverage is higher than
 that number because the missing scalar/vector/type variants are mostly thin
 conversions, but semantic coverage has not yet been inventoried command by
-command. Phase 7 item C0 establishes the real baseline and replaces informal
-percentages with auditable counts.
+command. Phase 8 item C0 establishes the real baseline and replaces informal
+percentages with auditable counts. Phase 7's Quake work will have raised
+symbol coverage before this phase begins; C0 measures whatever the
+post-Quake baseline actually is.
 
 Already working through the GL shim on swrast and ViRGE:
 
@@ -113,7 +120,7 @@ alignment before accepting an image or enabling a mode. `GL_MAX_TEXTURE_SIZE`
 will be 512 on this backend even if a particular collection of live textures
 cannot all be resident simultaneously.
 
-## Phase 7 work items
+## Phase 8 work items
 
 Each item is one or more small, bisectable commits. A slice is complete only
 when its automated tests pass under swrast and its hardware-facing portion

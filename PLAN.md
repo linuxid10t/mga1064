@@ -16,8 +16,9 @@ handles the rest. Explicit non-goals: no DRM, no DRI, no Mesa integration, no
 kernel module, no X11/GLX. An application links against L10GL (optionally
 through a `gl.h`-compatible shim) and renders full-screen on the console. The
 library is responsible for the video mode: first by adopting/requesting it
-through fbdev, ultimately by programming the CRTC directly (Phase 3). The
-detailed OpenGL 1.1 expansion is Phase 7 in `docs/GL11_PLAN.md`.
+through fbdev, ultimately by programming the CRTC directly (Phase 3). Quake
+compatibility is Phase 7 in `docs/QUAKE_PLAN.md`; the detailed OpenGL 1.1
+expansion that follows it is Phase 8 in `docs/GL11_PLAN.md`.
 
 Priorities, in order:
 
@@ -1321,21 +1322,52 @@ final-average logs with every optimization checkpoint.
 
 ---
 
-## Phase 7 — Maximum OpenGL 1.1 compatibility
+## Phase 7 — Quake compatibility
 
-**Planned 2026-07-18.** The project now proceeds from the completed Phase 4
-shim and closed Phase 6 experiments toward the fullest correct OpenGL 1.1
-RGBA implementation practical on the ViRGE/DX. The detailed, normative plan
-is [`docs/GL11_PLAN.md`](docs/GL11_PLAN.md).
+**Planned 2026-07-19; reprioritized ahead of full OpenGL 1.1 work.** The
+project's next goal is running GLQuake — the canonical era-correct workload
+for this hardware class — on L10GL, up and running first. The detailed,
+normative plan is [`docs/QUAKE_PLAN.md`](docs/QUAKE_PLAN.md).
+
+GLQuake is a small GL 1.0-style immediate-mode client, and the Phase 4 shim
+already covers most of its state surface. The work is three staged groups of
+acceptance-gated items: **Stage 1** closes the API gaps (a GL-usage manifest
+and link gate, trivial entry points and tokens, `GL_POLYGON`, rectangular
+power-of-two textures, `glTexSubImage2D`, alpha test, texture environment
+modes); **Stage 2** proves the game correct on swrast — the headline
+milestone is `timedemo demo1` completing offscreen with correct captured
+frames — including lightmap formats, real `glDeleteTextures` storage
+release, and the GLQuake platform port itself; **Stage 3** brings it to the
+ViRGE/DX (16-bit texture uploads and VRAM budget, a fullbright first run, a
+measured decision on the lightmap strategy the chip can express, and a
+playable-E1M1 phase gate).
+
+GLQuake's source is GPL-2.0: per the 86Box precedent, the port lives in a
+separate repository and no GPL code enters this MIT tree — this repository
+gains only GL API features, tests, and documentation. The version string
+continues to report the honest pre-1.1 tier; running Quake does not make the
+driver OpenGL 1.1.
+
+---
+
+## Phase 8 — Maximum OpenGL 1.1 compatibility
+
+**Planned 2026-07-18 (as the former Phase 7); renumbered 2026-07-19 behind
+the Quake push.** After Quake runs, the project proceeds toward the fullest
+correct OpenGL 1.1 RGBA implementation practical on the ViRGE/DX. The
+detailed, normative plan is [`docs/GL11_PLAN.md`](docs/GL11_PLAN.md); its
+C-items absorb and generalize the Quake-scoped Phase 7 implementations
+rather than replacing them.
 
 The work is split into thirteen acceptance-gated items: an auditable 336-command
 coverage manifest; state/errors/queries; complete primitives and clipping;
 vertex arrays; full fixed-function lighting; OpenGL 1.1 texture behavior;
 per-fragment state and swrast completeness; raster/pixel transfer; display
 lists; evaluators/selection/feedback; honest ViRGE/software synchronization;
-ABI completion; and final behavior validation. The current shim exports 48
-OpenGL command symbols. It must not report an OpenGL 1.1 version until the
-applicable semantic and hardware gates pass.
+ABI completion; and final behavior validation. The shim exported 48 OpenGL
+command symbols before Phase 7 began; C0 re-measures the post-Quake
+baseline. It must not report an OpenGL 1.1 version until the applicable
+semantic and hardware gates pass.
 
 Native ViRGE acceleration remains the first choice for operations documented
 by DB019-B. Unsupported hardware state must use an exact software path, or an
@@ -1384,7 +1416,9 @@ Phase 3:
 Phase 4            — requires Phase 2 + 3
 Phase 5 (M1→M2→M3→M4) — M1 requires F1/F2 and P1; M4 requires P6
 Phase 6            — completed/rejected experiments feed the next baseline
-Phase 7 (C0→C12)   — active; see docs/GL11_PLAN.md for dependencies
+Phase 7 (Q0→Q13)   — active; see docs/QUAKE_PLAN.md; Q9 (swrast timedemo
+                     gate) strictly precedes the Q10→Q13 hardware stage
+Phase 8 (C0→C12)   — after Phase 7; see docs/GL11_PLAN.md for dependencies
 ```
 
 Good first parallel assignment for three agents: (1) Phase 0 fixes,

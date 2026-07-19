@@ -87,9 +87,11 @@ before/after comparisons.
 
 The detailed hardware history and test evidence live in
 [`docs/HANDOFF.md`](docs/HANDOFF.md). The implementation roadmap is
-[`PLAN.md`](PLAN.md). The active maximum OpenGL 1.1 compatibility roadmap,
-including the native-ViRGE/software-fallback boundary, is
-[`docs/GL11_PLAN.md`](docs/GL11_PLAN.md).
+[`PLAN.md`](PLAN.md). The active roadmap is Quake compatibility,
+[`docs/QUAKE_PLAN.md`](docs/QUAKE_PLAN.md) (Phase 7); the maximum OpenGL 1.1
+compatibility roadmap that follows it, including the
+native-ViRGE/software-fallback boundary, is
+[`docs/GL11_PLAN.md`](docs/GL11_PLAN.md) (Phase 8).
 
 ## Architecture
 

@@ -475,6 +475,21 @@ final behavior and hardware gates pass. Native ViRGE state is accelerated only
 when DB019-B supports an exact mapping; unsupported state must use a tested
 software path or an honestly absent context buffer.
 
+**Phases reprioritized 2026-07-19: Quake first.** By project decision, the
+maximum OpenGL 1.1 program above is renumbered to Phase 8 and the active
+Phase 7 is now GLQuake compatibility, planned in `docs/QUAKE_PLAN.md`.
+Rationale: GLQuake is a small immediate-mode GL client whose needs are a
+bounded subset of the C-items — roughly a dozen missing entry points plus
+rectangular power-of-two textures, alpha test, `glTexSubImage2D`, texture
+environment modes, and real `glDeleteTextures` storage release. The phase's
+headline milestone is `timedemo demo1` completing correctly on swrast
+(item Q9); only then does the hardware stage start, whose long pole is the
+lightmap multiply blend the ViRGE cannot express in silicon (Q12 decides
+between vQuake-style CPU compositing, vertex lighting, or deferring to
+Phase 8 C10). The GLQuake port itself is GPL-2.0 and lives in a separate
+repository, per the 86Box license rule; this tree gains only API features
+and tests. Every Q-item is written to feed, not fork, its Phase 8 C-item.
+
 ```
 sudo env L10GL_FRAMES=600 tools/l10gl-run -- ./cube 800 600 16
 sudo env L10GL_FRAMES=600 tools/l10gl-run -- ./textured_cube 800 600 16
