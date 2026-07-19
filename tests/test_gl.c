@@ -597,6 +597,141 @@ static void test_swrast_texture_pixels(void)
     rmdir(directory);
 }
 
+/* Read a 4x4 P6 PPM into out (48 bytes). Returns 0 on success. */
+static int read_ppm_4x4(const char *path, unsigned char *out)
+{
+    char magic[3];
+    int w, h, maxval;
+    FILE *f = fopen(path, "rb");
+
+    if (!f)
+        return -1;
+    if (fscanf(f, "%2s%d%d%d", magic, &w, &h, &maxval) != 4 ||
+        strcmp(magic, "P6") != 0 || w != 4 || h != 4 || maxval != 255 ||
+        fgetc(f) == EOF || fread(out, 4 * 4 * 3, 1, f) != 1) {
+        fclose(f);
+        return -1;
+    }
+    fclose(f);
+    return 0;
+}
+
+static void draw_full_textured_quad(void)
+{
+    glDisable(GL_DEPTH_TEST);
+    glDisable(GL_CULL_FACE);
+    glClearColor(0, 0, 0, 1);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glEnable(GL_TEXTURE_2D);
+    glColor3f(1, 1, 1);
+    glBegin(GL_QUADS);
+    glTexCoord2f(0, 0); glVertex2f(-1, -1);
+    glTexCoord2f(1, 0); glVertex2f( 1, -1);
+    glTexCoord2f(1, 1); glVertex2f( 1,  1);
+    glTexCoord2f(0, 1); glVertex2f(-1,  1);
+    glEnd();
+    l10glSwapBuffers();
+}
+
+/* Render a full-screen quad textured with a 4x4 image F. When via_subimage
+ * is set, F is installed by uploading solid white and then rebuilding it
+ * with glTexSubImage2D (two half-image subrects + one single-texel interior
+ * subrect); otherwise F is uploaded whole. Both must rasterize identically. */
+static int render_subimage_scene(const char *path, int via_subimage)
+{
+    GLubyte F[4 * 4 * 4];
+    GLubyte init[4 * 4 * 4];
+    GLuint tex;
+    struct l10gl_ctx ctx;
+    int x, y;
+
+    for (y = 0; y < 4; y++)
+        for (x = 0; x < 4; x++) {
+            GLubyte *t = &F[(y * 4 + x) * 4];
+            t[0] = (GLubyte)(x * 60);
+            t[1] = (GLubyte)(y * 60);
+            t[2] = (GLubyte)((x + y) * 30);
+            t[3] = 255;
+        }
+    memset(init, 0xff, sizeof(init));
+
+    setenv("L10GL_SWRAST_DUMP", path, 1);
+    if (l10gl_create(&ctx, &swrast_backend, 4, 4, 3) != 0) {
+        unsetenv("L10GL_SWRAST_DUMP");
+        return -1;
+    }
+    l10glMakeCurrent(&ctx);
+    glViewport(0, 0, 4, 4);
+    glMatrixMode(GL_PROJECTION);
+    glLoadIdentity();
+    glMatrixMode(GL_MODELVIEW);
+    glLoadIdentity();
+
+    glGenTextures(1, &tex);
+    glBindTexture(GL_TEXTURE_2D, tex);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+
+    if (!via_subimage) {
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 4, 4, 0,
+                     GL_RGBA, GL_UNSIGNED_BYTE, F);
+    } else {
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 4, 4, 0,
+                     GL_RGBA, GL_UNSIGNED_BYTE, init);
+        /* Rebuild F via subrectangles covering the whole image. */
+        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 4, 2,
+                        GL_RGBA, GL_UNSIGNED_BYTE, F);
+        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 2, 4, 2,
+                        GL_RGBA, GL_UNSIGNED_BYTE, F + 2 * 4 * 4);
+        /* An interior single-texel subrect (idempotent here) exercises the
+         * 1x1 path without changing the result. */
+        glTexSubImage2D(GL_TEXTURE_2D, 0, 1, 1, 1, 1,
+                        GL_RGBA, GL_UNSIGNED_BYTE, &F[(1 * 4 + 1) * 4]);
+    }
+    draw_full_textured_quad();
+
+    glDeleteTextures(1, &tex);
+    l10glMakeCurrent(NULL);
+    l10gl_destroy(&ctx);
+    unsetenv("L10GL_SWRAST_DUMP");
+    return glGetError() == GL_NO_ERROR ? 0 : -1;
+}
+
+static void test_swrast_subimage_equivalence(void)
+{
+    char directory[] = "/tmp/l10gl-gl-sub.XXXXXX";
+    char whole_path[PATH_MAX];
+    char sub_path[PATH_MAX];
+    unsigned char whole[4 * 4 * 3];
+    unsigned char sub[4 * 4 * 3];
+
+    if (!mkdtemp(directory)) {
+        fprintf(stderr, "test-gl: cannot create subimage temp directory\n");
+        failures++;
+        return;
+    }
+    snprintf(whole_path, sizeof(whole_path), "%s/whole.ppm", directory);
+    snprintf(sub_path, sizeof(sub_path), "%s/sub.ppm", directory);
+
+    if (render_subimage_scene(whole_path, 0) ||
+        render_subimage_scene(sub_path, 1)) {
+        fprintf(stderr, "test-gl: subimage equivalence render failed\n");
+        failures++;
+    } else if (read_ppm_4x4(whole_path, whole) ||
+               read_ppm_4x4(sub_path, sub)) {
+        fprintf(stderr, "test-gl: cannot read subimage equivalence frames\n");
+        failures++;
+    } else if (memcmp(whole, sub, sizeof(whole)) != 0) {
+        fprintf(stderr,
+                "test-gl: subimage scene differs from whole-upload scene\n");
+        failures++;
+    }
+
+    unlink(whole_path);
+    unlink(sub_path);
+    rmdir(directory);
+}
+
 static void test_quake_entry_points(struct l10gl_ctx *ctx)
 {
     const GLubyte *s;
@@ -715,6 +850,101 @@ static void test_quake_entry_points(struct l10gl_ctx *ctx)
     glDeleteTextures(1, &tex);
 }
 
+static void test_texture_subimage(struct l10gl_ctx *ctx)
+{
+    GLuint tex;
+    int uploads;
+    /* Base 2x2 RGBA image: A B / C D (grays). */
+    static const uint8_t base[16] = {
+        0x11, 0x11, 0x11, 0xff,  0x22, 0x22, 0x22, 0xff,
+        0x33, 0x33, 0x33, 0xff,  0x44, 0x44, 0x44, 0xff,
+    };
+    /* A 1x1 red subrectangle (RGB source) to drop at (1,0) -> index 1. */
+    static const uint8_t red[3] = { 255, 0, 0 };
+
+    (void)ctx;
+    glGenTextures(1, &tex);
+    glBindTexture(GL_TEXTURE_2D, tex);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 2, 2, 0,
+                 GL_RGBA, GL_UNSIGNED_BYTE, base);
+    expect_int("subimage base upload ok", glGetError(), GL_NO_ERROR);
+    expect_int("subimage base texel0", (int)capture.texture_pixels[0],
+               (int)0xff111111u);
+    expect_int("subimage base texel1", (int)capture.texture_pixels[1],
+               (int)0xff222222u);
+    expect_int("subimage base texel2", (int)capture.texture_pixels[2],
+               (int)0xff333333u);
+    expect_int("subimage base texel3", (int)capture.texture_pixels[3],
+               (int)0xff444444u);
+
+    /* Interior 1x1 subrect: one re-upload, only the touched texel changes. */
+    uploads = capture.texture_uploads;
+    glTexSubImage2D(GL_TEXTURE_2D, 0, 1, 0, 1, 1, GL_RGB, GL_UNSIGNED_BYTE, red);
+    expect_int("subimage ok", glGetError(), GL_NO_ERROR);
+    expect_int("subimage re-uploads once", capture.texture_uploads, uploads + 1);
+    expect_int("subimage updated texel", (int)capture.texture_pixels[1],
+               (int)0xffff0000u);
+    expect_int("subimage left texel0", (int)capture.texture_pixels[0],
+               (int)0xff111111u);
+    expect_int("subimage left texel3", (int)capture.texture_pixels[3],
+               (int)0xff444444u);
+
+    /* Edge subrect covering the whole bottom row (y=1). */
+    {
+        static const uint8_t row[6] = { 5, 6, 7, 8, 9, 10 };
+
+        uploads = capture.texture_uploads;
+        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 1, 2, 1, GL_RGB, GL_UNSIGNED_BYTE,
+                        row);
+        expect_int("edge subimage ok", glGetError(), GL_NO_ERROR);
+        expect_int("edge re-uploads once", capture.texture_uploads, uploads + 1);
+        expect_int("edge updated texel2", (int)capture.texture_pixels[2],
+                   (int)0xff050607u);
+        expect_int("edge updated texel3", (int)capture.texture_pixels[3],
+                   (int)0xff08090au);
+    }
+
+    /* Unpack alignment: a 2x2 RGB subrect whose 6-byte rows pad to 8. The
+     * second source row must begin at byte offset 8, not 6. */
+    {
+        static const uint8_t padded[16] = {
+            10, 20, 30, 40, 50, 60,  0xff, 0xff,
+            70, 80, 90, 100, 110, 120, 0, 0,
+        };
+
+        glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 2, 2, GL_RGB, GL_UNSIGNED_BYTE,
+                        padded);
+        expect_int("aligned subimage ok", glGetError(), GL_NO_ERROR);
+        expect_int("aligned row0 texel0", (int)capture.texture_pixels[0],
+                   (int)0xff0a141eu);
+        expect_int("aligned row0 texel1", (int)capture.texture_pixels[1],
+                   (int)0xff28323cu);
+        expect_int("aligned row1 texel0", (int)capture.texture_pixels[2],
+                   (int)0xff46505au);
+        expect_int("aligned row1 texel1", (int)capture.texture_pixels[3],
+                   (int)0xff646e78u);
+    }
+
+    /* Error cases. GL_TEXTURE_1D (0x0DE0) is not in the shim's enum set. */
+    glTexSubImage2D((GLenum)0x0DE0, 0, 0, 0, 1, 1, GL_RGB, GL_UNSIGNED_BYTE, red);
+    expect_int("subimage bad target", glGetError(), GL_INVALID_ENUM);
+    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 1, 1, GL_LUMINANCE,
+                    GL_UNSIGNED_BYTE, red);
+    expect_int("subimage bad format", glGetError(), GL_INVALID_ENUM);
+    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 1, 1, GL_RGB, GL_FLOAT, red);
+    expect_int("subimage bad type", glGetError(), GL_INVALID_ENUM);
+    glTexSubImage2D(GL_TEXTURE_2D, 0, -1, 0, 1, 1, GL_RGB, GL_UNSIGNED_BYTE, red);
+    expect_int("subimage negative offset", glGetError(), GL_INVALID_VALUE);
+    glTexSubImage2D(GL_TEXTURE_2D, 0, 1, 0, 2, 1, GL_RGB, GL_UNSIGNED_BYTE, red);
+    expect_int("subimage out of bounds", glGetError(), GL_INVALID_VALUE);
+
+    glDeleteTextures(1, &tex);
+    /* With the bound texture deleted there is no retained level to update. */
+    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 1, 1, GL_RGB, GL_UNSIGNED_BYTE, red);
+    expect_int("subimage without texture", glGetError(), GL_INVALID_OPERATION);
+}
+
 int main(void)
 {
     struct l10gl_ctx ctx;
@@ -733,6 +963,7 @@ int main(void)
     test_lighting_material(&ctx);
     test_shade_model(&ctx);
     test_texture_objects(&ctx);
+    test_texture_subimage(&ctx);
     test_quake_entry_points(&ctx);
     test_clear_and_sync(&ctx);
     test_stack_errors();
@@ -740,6 +971,7 @@ int main(void)
     l10glMakeCurrent(NULL);
     l10gl_destroy(&ctx);
     test_swrast_texture_pixels();
+    test_swrast_subimage_equivalence();
 
     if (failures) {
         fprintf(stderr, "test-gl: %d failure(s)\n", failures);

@@ -19,6 +19,11 @@ struct l10gl_gl_texture {
     enum l10gl_tex_wrap wrap;
     int is_texture;
     int uploaded;
+    /* Q4: retained converted ARGB8888 image so glTexSubImage2D can update a
+     * subrectangle in shim-side memory and re-upload the whole level. */
+    uint32_t *retained;
+    GLsizei retained_width;
+    GLsizei retained_height;
 };
 
 struct l10gl_gl_state {
@@ -68,6 +73,7 @@ static void gl_release_textures(void)
     while (texture) {
         struct l10gl_gl_texture *next = texture->next;
 
+        free(texture->retained);
         free(texture);
         texture = next;
     }
@@ -833,7 +839,9 @@ void glDeleteTextures(GLsizei n, const GLuint *textures)
             }
             /* Backend allocations intentionally live until context teardown:
              * swrast owns its allocation list and ViRGE uses a VRAM bump
-             * allocator. Only the GL name/object metadata is reclaimed here. */
+             * allocator. Only the GL name/object metadata (and the Q4
+             * retained CPU image) is reclaimed here. */
+            free(dead->retained);
             free(dead);
         }
     }
@@ -978,6 +986,26 @@ static int gl_is_power_of_two(GLsizei value)
     return value > 0 && (value & (value - 1)) == 0;
 }
 
+/* Pack one source texel (GL_RGB or GL_RGBA, GL_UNSIGNED_BYTE) into the
+ * ARGB8888 word the backends store. A NULL texel yields the same defaults
+ * glTexImage2D uses for an unpack source of NULL (zero RGB; alpha 255 for
+ * GL_RGB, 0 for GL_RGBA). Shared by glTexImage2D and glTexSubImage2D. */
+static uint32_t gl_pack_texel_argb(const uint8_t *texel, GLenum format)
+{
+    uint8_t red = 0, green = 0, blue = 0;
+    uint8_t alpha = format == GL_RGB ? 255 : 0;
+
+    if (texel) {
+        red = texel[0];
+        green = texel[1];
+        blue = texel[2];
+        if (format == GL_RGBA)
+            alpha = texel[3];
+    }
+    return ((uint32_t)alpha << 24) | ((uint32_t)red << 16) |
+           ((uint32_t)green << 8) | blue;
+}
+
 void glTexImage2D(GLenum target, GLint level, GLint internal_format,
                   GLsizei width, GLsizei height, GLint border,
                   GLenum format, GLenum type, const GLvoid *pixels)
@@ -1048,31 +1076,27 @@ void glTexImage2D(GLenum target, GLint level, GLint internal_format,
 
     for (GLsizei y = 0; y < height; y++) {
         for (GLsizei x = 0; x < width; x++) {
-            uint8_t red = 0, green = 0, blue = 0;
-            uint8_t alpha = format == GL_RGB ? 255 : 0;
-
-            if (source) {
-                const uint8_t *texel = source + (size_t)y * source_stride +
-                                       (size_t)x * components;
-                red = texel[0];
-                green = texel[1];
-                blue = texel[2];
-                if (format == GL_RGBA)
-                    alpha = texel[3];
-            }
+            const uint8_t *texel = source ? source + (size_t)y * source_stride +
+                                                 (size_t)x * components
+                                          : NULL;
             converted[(size_t)y * (size_t)width + (size_t)x] =
-                ((uint32_t)alpha << 24) | ((uint32_t)red << 16) |
-                ((uint32_t)green << 8) | blue;
+                gl_pack_texel_argb(texel, format);
         }
     }
 
     ret = l10gl_tex_image_2d(ctx, &object->texture, width, height,
                              L10GL_TEX_FMT_ARGB8888, converted);
-    free(converted);
     if (ret) {
+        free(converted);
         gl_record_error(GL_OUT_OF_MEMORY);
         return;
     }
+    /* Retain the converted image for glTexSubImage2D, replacing any prior
+     * retained copy from a previous upload of this name. */
+    free(object->retained);
+    object->retained = converted;
+    object->retained_width = width;
+    object->retained_height = height;
     object->uploaded = 1;
     object->is_texture = object->name != 0;
     if (gl_state.texture_2d_enabled)
@@ -1273,17 +1297,73 @@ void glTexSubImage2D(GLenum target, GLint level, GLint xoffset, GLint yoffset,
                      GLsizei width, GLsizei height, GLenum format,
                      GLenum type, const GLvoid *pixels)
 {
-    (void)target;
-    (void)level;
-    (void)xoffset;
-    (void)yoffset;
-    (void)width;
-    (void)height;
-    (void)format;
-    (void)type;
-    (void)pixels;
-    /* Q4 retains each texture's converted CPU image and applies subrectangle
-     * updates through the existing tex_image_2d path. Until then this is a
-     * documented unsupported operation. */
-    gl_record_error(GL_INVALID_OPERATION);
+    struct l10gl_ctx *ctx = gl_current();
+    struct l10gl_gl_texture *object = gl_state.bound_texture;
+    const uint8_t *source = pixels;
+    size_t components, row_bytes, source_stride;
+
+    if (!ctx)
+        return;
+    if (target != GL_TEXTURE_2D ||
+        (format != GL_RGB && format != GL_RGBA) ||
+        type != GL_UNSIGNED_BYTE) {
+        gl_record_error(GL_INVALID_ENUM);
+        return;
+    }
+    if (level != 0 || width < 0 || height < 0 || xoffset < 0 || yoffset < 0) {
+        gl_record_error(GL_INVALID_VALUE);
+        return;
+    }
+    /* No retained level image (no prior glTexImage2D on this name) means
+     * there is nothing to update. */
+    if (!object || !object->uploaded || !object->retained) {
+        gl_record_error(GL_INVALID_OPERATION);
+        return;
+    }
+    if (xoffset + width > object->retained_width ||
+        yoffset + height > object->retained_height) {
+        gl_record_error(GL_INVALID_VALUE);
+        return;
+    }
+    /* An empty subrectangle is a no-op (and avoids a needless re-upload). */
+    if (width == 0 || height == 0)
+        return;
+
+    components = format == GL_RGBA ? 4u : 3u;
+    if ((size_t)width > SIZE_MAX / components) {
+        gl_record_error(GL_OUT_OF_MEMORY);
+        return;
+    }
+    row_bytes = (size_t)width * components;
+    if (row_bytes > SIZE_MAX - (size_t)(gl_state.unpack_alignment - 1)) {
+        gl_record_error(GL_OUT_OF_MEMORY);
+        return;
+    }
+    source_stride = (row_bytes + (size_t)(gl_state.unpack_alignment - 1)) &
+                    ~(size_t)(gl_state.unpack_alignment - 1);
+
+    /* Apply the subrectangle to the retained ARGB8888 image in place. */
+    for (GLsizei y = 0; y < height; y++) {
+        for (GLsizei x = 0; x < width; x++) {
+            const uint8_t *texel = source ? source + (size_t)y * source_stride +
+                                                 (size_t)x * components
+                                          : NULL;
+            object->retained[(size_t)(yoffset + y) *
+                                 (size_t)object->retained_width +
+                             (size_t)(xoffset + x)] =
+                gl_pack_texel_argb(texel, format);
+        }
+    }
+
+    /* Re-upload the whole level through the existing backend path. The
+     * per-frame full re-upload on ViRGE is a known cost (Q12), not a
+     * correctness issue. */
+    if (l10gl_tex_image_2d(ctx, &object->texture, object->retained_width,
+                           object->retained_height, L10GL_TEX_FMT_ARGB8888,
+                           object->retained)) {
+        gl_record_error(GL_OUT_OF_MEMORY);
+        return;
+    }
+    if (gl_state.texture_2d_enabled)
+        gl_apply_texture_binding(ctx);
 }
