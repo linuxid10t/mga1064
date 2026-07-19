@@ -675,10 +675,14 @@ struct virge_ctx {
      * 3D values proven clobbered on DX silicon (Z_STRIDE and TEX_BASE). */
     struct virge_state_cache state_2d;
     struct virge_state_cache state_3d;
+    struct virge_state_cache state_3d_cmd;
     uint64_t state_2d_considered;
     uint64_t state_2d_emitted;
     uint64_t state_3d_considered;
     uint64_t state_3d_emitted;
+    uint64_t state_3d_cmd_considered;
+    uint64_t state_3d_cmd_emitted;
+    int      autoexec_enabled; /* 1 = B57C kick; 0 = legacy B500 kick */
 
     /* Cached CMD_SET Z-buffering bits for the 3D triangle paths:
      * ZB mode [25-24], Z compare code [22-20], Z update [23]. Built by
@@ -800,10 +804,13 @@ struct virge_buffer_layout {
 };
 
 int virge_parse_vsync(const char *value, int *enabled);
+int virge_parse_autoexec(const char *value, int *enabled);
 int virge_buffer_layout_compute(uint32_t stride, uint32_t height,
                                 uint32_t z_bytes, uint32_t vram_size,
                                 int vsync_enabled,
                                 struct virge_buffer_layout *layout);
+uint32_t virge_autoexec_command(uint32_t command);
+uint32_t virge_autoexec_disable_command(void);
 
 /*
  * virge_cleanup - Unmap memory, close fds.
@@ -940,13 +947,5 @@ static inline uint32_t virge_read32(struct virge_ctx *ctx, uint32_t offset)
         ((char *)ctx->mmio + offset);
     return *reg;
 }
-
-/*
- * virge_kick_3d - Execute a 3D triangle command.
- *
- * With autoexecute off (CMD_SET bit 0 = 0), writing the CMD_SET register
- * itself triggers execution. This is the simplest approach for single
- * triangle draws.
- */
 
 #endif /* VIRGE_H */

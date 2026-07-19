@@ -463,6 +463,53 @@ static void test_presentation_config(void)
            "layout rejects null result");
 }
 
+static void test_autoexecute(void)
+{
+    struct virge_state_cache command_cache = {0};
+    uint32_t command = VIRGE_CMD_3D | VIRGE_3D_GOURAUD |
+                       VIRGE_DEST_16BPP | VIRGE_ZBC_LESS;
+    uint32_t enabled = virge_autoexec_command(command);
+    uint32_t desired[1] = { enabled };
+
+    EXPECT(virge_parse_autoexec("0", NULL) == -EINVAL,
+           "null autoexecute destination is rejected");
+    {
+        int value = -1;
+        EXPECT(virge_parse_autoexec(NULL, &value) == 0 && value == 1,
+               "autoexecute defaults enabled");
+        EXPECT(virge_parse_autoexec("1", &value) == 0 && value == 1,
+               "autoexecute one enables optimization");
+        EXPECT(virge_parse_autoexec("0", &value) == 0 && value == 0,
+               "autoexecute zero selects legacy kick");
+        EXPECT(virge_parse_autoexec("yes", &value) == -EINVAL,
+               "invalid autoexecute value is rejected");
+    }
+
+    EXPECT((enabled & VIRGE_CMD_AUTOEXEC) != 0 &&
+           (enabled & ~VIRGE_CMD_AUTOEXEC) == command,
+           "autoexecute command sets only AE bit");
+    EXPECT(virge_autoexec_disable_command() ==
+           (VIRGE_CMD_3D | VIRGE_3D_NOP) &&
+           !(virge_autoexec_disable_command() & VIRGE_CMD_AUTOEXEC),
+           "autoexecute disable is AE-clear 3D NOP");
+    EXPECT(VIRGE_3D_TY01_Y12 == 0xB57Cu &&
+           VIRGE_3D_TY01_Y12 > VIRGE_3D_TYS,
+           "B57C is highest triangle register and autoexecute kick");
+
+    EXPECT(virge_state_dirty_mask(&command_cache, desired, 1) == 1u,
+           "first autoexecute command is dirty");
+    virge_state_commit(&command_cache, 0, enabled);
+    EXPECT(virge_state_dirty_mask(&command_cache, desired, 1) == 0,
+           "unchanged autoexecute command is reused");
+    desired[0] ^= VIRGE_ZUP_ENABLE;
+    EXPECT(virge_state_dirty_mask(&command_cache, desired, 1) == 1u,
+           "3D command-state change is detected");
+    virge_state_commit(&command_cache, 0, desired[0]);
+    virge_state_invalidate(&command_cache, 1u);
+    EXPECT(virge_state_dirty_mask(&command_cache, desired, 1) == 1u,
+           "2D kick invalidates cached autoexecute command");
+}
+
 int main(void)
 {
     test_fixed_modes();
@@ -473,8 +520,9 @@ int main(void)
     test_fifo_status_decode();
     test_state_cache();
     test_presentation_config();
+    test_autoexecute();
     if (failed)
         return 1;
-    printf("test-virge-mode: PASS (modes, PLL, CRTC, FIFO/state cache, presentation layout)\n");
+    printf("test-virge-mode: PASS (modes, CRTC, FIFO/state cache, presentation, autoexecute)\n");
     return 0;
 }

@@ -1247,16 +1247,32 @@ unchanged, changed-value, and targeted-invalidation behavior. All three
 emitted 1203/4800 2D writes in every run and only 1806/19033, 2566/19033, and
 1806/1643579 3D shared writes respectively.
 
-**Direct-front raw-performance gate implemented 2026-07-18; real-hardware
-validation pending.** Strict `L10GL_VSYNC=0` selects a visible ViRGE front
+**Direct-front raw-performance gate hardware-exercised 2026-07-18.** Strict
+`L10GL_VSYNC=0` selects a visible ViRGE front
 buffer at offset 0. End-of-frame swaps still drain the engine so FPS counts
 completed work, but they do not write the CRTC display start or wait for
 vertical retrace. The one-color-buffer layout moves Z and the texture heap one
 frame earlier in VRAM. The synchronized double-buffer path remains the
 default (`L10GL_VSYNC=1`). `test-virge-mode` pins parsing, both 800x600 layout
 images, reclaimed capacity, and rejection of invalid/overflowing layouts.
-Tearing and visible partial clears are expected in direct mode. Establish raw
-600-frame cube/textured/gears numbers before evaluating item 3.
+Tearing and visible partial clears are expected in direct mode. Hardware
+results were `cube` 63.85 FPS over all 600 frames, `textured_cube` 32.24 FPS
+over 297 frames, and `gears` 34.56 FPS over 217 frames; the latter two were
+manually stopped because of the severe expected tearing, but their interval
+rates were stable. Console recovery succeeded after every run.
+
+**Item 3 autoexecute implemented 2026-07-18; real-hardware validation
+pending.** DB019-B section 15.4.3 and CMD_SET bit 0 (absolute PDF pp.110 and
+250) define B57C/TY01_Y12 as the triangle kick while AE is set. A one-entry
+command cache writes B500 only after a 2D command or when 3D command state
+changes, then every triangle ends with B57C. Cleanup uses the documented
+AE-clear 3D NOP. Autoexecute is the default; strict `L10GL_AUTOEXEC=0` retains
+the old B500 kick for same-binary A/B testing. Tests pin parsing, AE/NOP command
+images, B57C identity, cache reuse/change, and conservative 2D invalidation.
+After item 2 already removed shared-state rewrites, the remaining saving is one
+B500 write per same-state triangle, not half of all triangle MMIO traffic;
+gears should show the clearest effect because it submits roughly 391 triangles
+per frame.
 
 Ordered by expected win/effort on the ViRGE:
 
@@ -1272,9 +1288,9 @@ Ordered by expected win/effort on the ViRGE:
    values in `virge_ctx`, invalidate on Z-clear's base swap.
    Hardware-verified; synchronized presentation remains the dominant limiter.
 3. **Autoexecute mode.** Program CMD_SET once per state change with
-   `VIRGE_CMD_AUTOEXEC`, then per-triangle write only the geometry
-   registers ending at the TY01_Y12 kick (`virge.h:295`) — roughly halves
-   register traffic per triangle.
+   `VIRGE_CMD_AUTOEXEC`, then end each triangle at the TY01_Y12 kick. After
+   dirty-state tracking, this saves one B500 write per same-state triangle;
+   implemented, real-hardware correctness and raw A/B validation pending.
 4. **Triangle-strip aware register reuse** and, much later, the ViRGE DMA
    command queue (probably not worth it for this project's goals).
 

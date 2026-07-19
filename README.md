@@ -334,6 +334,20 @@ are expected. This mode uses one color buffer, places Z immediately after it,
 and reclaims one 960,000-byte 800x600 RGB555 page for textures. Omit the
 variable (or set `L10GL_VSYNC=1`) for normal tear-free presentation.
 
+The first direct-front hardware results were 63.85 FPS for `cube`, 32.24 FPS
+for `textured_cube`, and 34.56 FPS for `gears`. The latter two runs were
+interrupted at 297 and 217 frames because direct-front tearing is intentionally
+severe, but their interval rates were stable. These values show that the two
+30-FPS synchronized results occupied the same two-retrace presentation bucket,
+not that the workloads cost the same.
+
+ViRGE 3D triangles now use DB019-B autoexecute by default. CMD_SET is emitted
+only after a 2D clear or when depth/blend/texture command state changes; B57C
+is the per-triangle kick. Cleanup disables autoexecute with the documented 3D
+NOP. Set `L10GL_AUTOEXEC=0` to restore the former B500-per-triangle launch for
+same-binary A/B measurements. The cleanup log reports emitted versus
+considered CMD_SET writes.
+
 An unknown override is rejected and prints the available backend names. If no
 supported card is present, automatic selection uses offscreen swrast without
 attempting MMIO access; it prints a reminder when no dump path was configured.

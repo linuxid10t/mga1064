@@ -410,15 +410,50 @@ console. Final averages were `cube` 58.49, `textured_cube` 30.11, and `gears`
 correct and eliminates nearly all redundant gear state traffic, but the
 synchronized FPS values remain quantized by presentation.
 
-**Phase 6 direct-front raw-performance gate implemented 2026-07-18;
-hardware validation pending.** `L10GL_VSYNC=0` is a strict ViRGE-only opt-in.
+**Phase 6 direct-front raw-performance gate hardware-exercised 2026-07-18.**
+`L10GL_VSYNC=0` is a strict ViRGE-only opt-in.
 It renders at visible VRAM offset 0, drains the engine at every swap, and skips
 the per-frame display-start write and vertical-retrace wait. The default stays
 tear-free synchronized double buffering. Direct mode allocates one color page,
 then Z, then textures; at 800x600 RGB555 it reclaims exactly 960,000 bytes.
 `test-virge-mode` pins env parsing, both layouts, capacity, and overflow cases.
 Tearing and partial clears are expected; correctness means complete geometry,
-normal termination/console recovery, and substantially unquantized FPS.
+normal termination/console recovery, and substantially unquantized FPS. David's
+first runs produced `cube` 63.85 FPS for 600 frames, `textured_cube` 32.24 FPS
+for 297 frames, and `gears` 34.56 FPS for 217 frames. The latter two were
+manually stopped because tearing was severe, but interval rates were stable;
+all three runs restored the console normally. The two formerly equal 30-FPS
+workloads are therefore distinct raw costs hidden in the same two-vblank bin.
+
+**Phase 6 item 3 autoexecute implemented 2026-07-18; hardware validation
+pending.** DB019-B section 15.4.3 and CMD_SET bit 0 (absolute PDF pp.110 and
+250) specify that AE moves the triangle launch from B500 to the highest-address
+triangle register, B57C/TY01_Y12. The driver caches the complete AE-enabled
+command word, re-arms it after every 2D command or 3D state change, and writes
+B57C last for each Gouraud/textured triangle. Cleanup writes the required
+AE-clear 3D NOP before returning the card. `L10GL_AUTOEXEC=0` selects the old
+B500 launch for same-binary comparison; default is enabled. `test-virge-mode`
+pins both parser paths, AE and disable-NOP images, B57C, command reuse/change,
+and 2D invalidation. The cleanup metric `autoexecute emitted X/Y 3D CMD_SET
+writes` directly reports the saved B500 traffic.
+
+Validate normal presentation first, then collect the raw optimized checkpoint:
+
+```
+sudo env L10GL_FRAMES=600 tools/l10gl-run -- ./cube 800 600 16
+sudo env L10GL_FRAMES=600 tools/l10gl-run -- ./textured_cube 800 600 16
+sudo env L10GL_FRAMES=600 tools/l10gl-run -- ./gears 800 600 16
+
+sudo env L10GL_VSYNC=0 L10GL_FRAMES=600 tools/l10gl-run -- ./cube 800 600 16
+sudo env L10GL_VSYNC=0 L10GL_FRAMES=600 tools/l10gl-run -- ./textured_cube 800 600 16
+sudo env L10GL_VSYNC=0 L10GL_FRAMES=600 tools/l10gl-run -- ./gears 800 600 16
+```
+
+Expect `3D triangle submission: autoexecute (B57C kick;
+L10GL_AUTOEXEC=1)`, complete geometry in the synchronized runs, normal console
+recovery, and one `autoexecute emitted` line per run. If anything is visually
+wrong, repeat the affected command with `L10GL_AUTOEXEC=0`; that is the exact
+legacy B500 trigger path in the same binary and is the decisive A/B control.
 
 ```
 sudo env L10GL_FRAMES=600 tools/l10gl-run -- ./cube 800 600 16
@@ -1195,11 +1230,11 @@ never copy):
   (0xB0xx line / 0xB4xx triangle) have their own separate file**. A
   2D kick does not invalidate 3D dest/stride/clip/Z state; one-time
   `engine_init_3d` programming is architecturally sound.
-- **3D kick semantics:** with autoexecute OFF, the triangle launches
-  on the **CMD_SET (0xB500) write** — all parameters must be written
-  before it. 0xB57C (TY01/TY12 + L/R in bit 31) merely latches, and
-  kicks only when AE is ON. L10GL's order (params → TY01_Y12 →
-  CMD_SET last) is correct.
+- **3D kick semantics:** with autoexecute OFF, the triangle launches on the
+  **CMD_SET (0xB500) write** after all parameters. With AE ON, CMD_SET becomes
+  persistent state and 0xB57C (TY01/TY12 + L/R in bit 31) is the kick. L10GL
+  now defaults to AE on (changed CMD_SET → parameters → B57C last), while
+  `L10GL_AUTOEXEC=0` retains the old parameters → B57C → CMD_SET sequence.
 - **3D clip is dead state with HC off** (the rasterizer applies
   clip_t/b/l/r only when the triangle's CMD_SET has HC set; L10GL
   disables HC everywhere). The clip registers cannot cause cutoffs.

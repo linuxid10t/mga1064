@@ -1095,7 +1095,7 @@ void virge_swap_buffers(struct virge_ctx *ctx)
     ctx->fb_base = ctx->current_back ? ctx->fb_base_back : 0;
 }
 
-int virge_parse_vsync(const char *value, int *enabled)
+static int parse_enabled_default(const char *value, int *enabled)
 {
     if (!enabled)
         return -EINVAL;
@@ -1108,6 +1108,29 @@ int virge_parse_vsync(const char *value, int *enabled)
         return 0;
     }
     return -EINVAL;
+}
+
+int virge_parse_vsync(const char *value, int *enabled)
+{
+    return parse_enabled_default(value, enabled);
+}
+
+int virge_parse_autoexec(const char *value, int *enabled)
+{
+    return parse_enabled_default(value, enabled);
+}
+
+uint32_t virge_autoexec_command(uint32_t command)
+{
+    return command | VIRGE_CMD_AUTOEXEC;
+}
+
+uint32_t virge_autoexec_disable_command(void)
+{
+    /* DB019-B sec.15.4.3 / CMD_SET (absolute PDF pp.110, 250-252):
+     * clear AE and select 3D NOP so writing B500 cannot launch the command
+     * whose parameters remain in the triangle register bank. */
+    return VIRGE_CMD_3D | VIRGE_3D_NOP;
 }
 
 int virge_buffer_layout_compute(uint32_t stride, uint32_t height,
@@ -1254,10 +1277,26 @@ static void program_3d_state(struct virge_ctx *ctx,
                       &ctx->state_3d_emitted);
 }
 
+static void program_3d_autoexec_command(struct virge_ctx *ctx,
+                                        uint32_t command,
+                                        unsigned trailing_writes)
+{
+    static const uint32_t offset[1] = { VIRGE_3D_CMD_SET };
+    uint32_t desired[1] = { virge_autoexec_command(command) };
+
+    emit_cached_state(ctx, &ctx->state_3d_cmd, offset, desired, 1,
+                      trailing_writes, &ctx->state_3d_cmd_considered,
+                      &ctx->state_3d_cmd_emitted);
+}
+
 static void invalidate_3d_after_2d(struct virge_ctx *ctx)
 {
     virge_state_invalidate(&ctx->state_3d,
                            VIRGE_3D_STATE_2D_CLOBBER_MASK);
+    /* DX silicon proves that 2D kicks clobber selected 3D-bank values.
+     * Conservatively re-arm autoexecute CMD_SET before the first following
+     * triangle as well; subsequent same-state triangles reuse it. */
+    virge_state_invalidate(&ctx->state_3d_cmd, 1u);
 }
 
 /* ========================================================================
@@ -1394,8 +1433,8 @@ void virge_clear_z(struct virge_ctx *ctx, float z)
  *   2. Compute edge slopes (dX/dY) for sides 02, 01, 12
  *   3. Compute Gouraud color gradients (dR/dX, dR/dY, etc.) via plane eq
  *   4. Compute Z gradients
- *   5. Program CMD_SET, color/Z registers, edge registers
- *   6. Kick by writing CMD_SET (autoexecute off)
+ *   5. Program CMD_SET only when state changes, then color/Z/edge registers
+ *   6. Kick by writing TY01_Y12 with autoexecute on
  * ======================================================================== */
 
 /*
@@ -1596,6 +1635,15 @@ void virge_draw_triangle_gouraud(struct virge_ctx *ctx,
     if (z_s < 0.0f) z_s = 0.0f;
     if (z_s > 1.0f) z_s = 1.0f;
 
+    /* With AE set, CMD_SET is persistent state rather than the launch write.
+     * DB019-B sec.15.4.3 and CMD_SET bit 0 (absolute PDF pp.110, 250)
+     * define B57C/TY01_Y12 as the triangle kick. */
+    uint32_t cmd = VIRGE_CMD_3D
+                 | VIRGE_3D_GOURAUD
+                 | ctx->dest_format
+                 | ctx->z_cmd_bits
+                 | ctx->gouraud_blend_bits;
+
     /* Reserve dirty shared state plus the nine color/Z writes below.  After
      * a 2D clear, Z_STRIDE/TEX_BASE are forced dirty; subsequent triangles
      * usually need no shared-state writes at all. */
@@ -1641,8 +1689,13 @@ void virge_draw_triangle_gouraud(struct virge_ctx *ctx,
     virge_write32(ctx, VIRGE_3D_TdZdX, (uint32_t)VIRGE_Z_FIXED(sx * dzdx));
     virge_write32(ctx, VIRGE_3D_TdZdY, (uint32_t)VIRGE_Z_FIXED(ew_z));
 
-    /* Nine remaining writes: eight geometry registers and the command kick. */
-    virge_wait_fifo(ctx, 9);
+    /* Autoexecute writes changed CMD_SET state before reserving the eight
+     * geometry writes; TY01_Y12 is last and launches the triangle. The
+     * fallback retains the former eight-geometry-plus-B500 sequence. */
+    if (ctx->autoexec_enabled)
+        program_3d_autoexec_command(ctx, cmd, 8);
+    else
+        virge_wait_fifo(ctx, 9);
 
     /* --- Program edge geometry --- */
     virge_write32(ctx, VIRGE_3D_TdXdY02, (uint32_t)dXdY02);
@@ -1655,24 +1708,16 @@ void virge_draw_triangle_gouraud(struct virge_ctx *ctx,
     virge_write32(ctx, VIRGE_3D_TXS, (uint32_t)x_start);
     virge_write32(ctx, VIRGE_3D_TYS, (uint32_t)y_bot);
 
-    /* --- Program scan counts and L/R direction --- */
+    /* --- Program scan counts and L/R direction ---
+     * This is the highest-address triangle register and therefore the AE
+     * kick (DB019-B CMD_SET, absolute PDF p.250; B57C on PDF p.273). */
     virge_write32(ctx, VIRGE_3D_TY01_Y12,
                   ((uint32_t)lr_direction << 31) |
                   ((scan_01 & 0x7FF) << 16) |
                   (scan_12 & 0x7FF));
 
-    /* --- Program Command Set and execute ---
-     * Z-buffering bits come from ctx->z_cmd_bits (built by the glue from
-     * the cached depth func/test/mask state); the GL default is LESS, not
-     * the LEQUAL hardcoded here before.
-     * No VIRGE_CMD_CLIP_ENABLE -- see the comment in virge.h. */
-    uint32_t cmd = VIRGE_CMD_3D
-                 | VIRGE_3D_GOURAUD
-                 | ctx->dest_format
-                 | ctx->z_cmd_bits
-                 | ctx->gouraud_blend_bits;
-
-    virge_write32(ctx, VIRGE_3D_CMD_SET, cmd);
+    if (!ctx->autoexec_enabled)
+        virge_write32(ctx, VIRGE_3D_CMD_SET, cmd);
 }
 
 /* ========================================================================
@@ -2031,6 +2076,17 @@ void virge_draw_textured_triangle(struct virge_ctx *ctx,
     int default_ufrac = ctx->tex_dbg_nopersp ? (27 - s_val) : 12;
     int ufrac = (ctx->tex_dbg_ufrac >= 0) ? ctx->tex_dbg_ufrac : default_ufrac;
 
+    /* Persistent 3D command state for autoexecute. tex_dbg_nopersp changes
+     * the command and therefore naturally misses the one-entry cache. */
+    uint32_t tex_cmd = ctx->tex_dbg_nopersp ? VIRGE_3D_LIT_TEX
+                                            : VIRGE_3D_LIT_TEX_PERSP;
+    uint32_t cmd = VIRGE_CMD_3D
+                 | tex_cmd
+                 | ctx->dest_format
+                 | ctx->tex_cmd_bits
+                 | ctx->z_cmd_bits
+                 | ctx->textured_blend_bits;
+
     /* Dirty shared state plus nine color/Z writes form the first FIFO group. */
     program_3d_state(ctx, 9);
 
@@ -2114,8 +2170,12 @@ void virge_draw_textured_triangle(struct virge_ctx *ctx,
     virge_write32(ctx, VIRGE_3D_TdXdY02, (uint32_t)dXdY02);
     virge_write32(ctx, VIRGE_3D_TdXdY01, (uint32_t)dXdY01);
 
-    /* Seven final writes: remaining slope, five edge/count values, command. */
-    virge_wait_fifo(ctx, 7);
+    /* Six final geometry writes remain, ending in the B57C AE kick. A
+     * changed command consumes one additional FIFO slot before them. */
+    if (ctx->autoexec_enabled)
+        program_3d_autoexec_command(ctx, cmd, 6);
+    else
+        virge_wait_fifo(ctx, 7);
     virge_write32(ctx, VIRGE_3D_TdXdY12, (uint32_t)dXdY12);
     /* TXEND01 = edge 01 X at the bottom scanline; TXEND12 = edge 12 X at
      * the middle scanline -- prestepped. See gouraud path for derivation. */
@@ -2129,22 +2189,8 @@ void virge_draw_textured_triangle(struct virge_ctx *ctx,
                   ((scan_01 & 0x7FF) << 16) |
                   (scan_12 & 0x7FF));
 
-    /* --- Command Set: lit texture triangle (perspective by default) ---
-     * Z-buffering bits come from ctx->z_cmd_bits (cached depth state);
-     * texture format/filter/blend/wrap come from ctx->tex_cmd_bits.
-     * No VIRGE_CMD_CLIP_ENABLE -- see the comment in virge.h.
-     * tex_dbg_nopersp swaps in the NON-perspective command (0001) whose sampler
-     * uses U/V directly -- a diagnostic for the border-color bug (texprobe v8). */
-    uint32_t tex_cmd = ctx->tex_dbg_nopersp ? VIRGE_3D_LIT_TEX      /* 0001 */
-                                            : VIRGE_3D_LIT_TEX_PERSP; /* 0101 */
-    uint32_t cmd = VIRGE_CMD_3D
-                 | tex_cmd
-                 | ctx->dest_format
-                 | ctx->tex_cmd_bits         /* texture format, filter, blend, wrap */
-                 | ctx->z_cmd_bits           /* ZB mode, compare code, Z update */
-                 | ctx->textured_blend_bits; /* ABC: tex alpha / src alpha / none */
-
-    virge_write32(ctx, VIRGE_3D_CMD_SET, cmd);
+    if (!ctx->autoexec_enabled)
+        virge_write32(ctx, VIRGE_3D_CMD_SET, cmd);
 }
 
 /* ========================================================================
@@ -2157,9 +2203,11 @@ int virge_init(struct virge_ctx *ctx, int width, int height, int bpp)
     const char *modeset = getenv("L10GL_MODESET");
     const char *refresh = getenv("L10GL_REFRESH");
     const char *vsync = getenv("L10GL_VSYNC");
+    const char *autoexec = getenv("L10GL_AUTOEXEC");
     unsigned native_refresh = 60;
     int native_requested = 0;
     int vsync_enabled;
+    int autoexec_enabled;
     int ret;
     /* The S3d engine's destination format field (2D CMD_SET bits 4-2)
      * only encodes 8/16/24bpp -- there is no 32bpp mode on this chip
@@ -2181,6 +2229,14 @@ int virge_init(struct virge_ctx *ctx, int width, int height, int bpp)
     if (ret) {
         fprintf(stderr, "S3 ViRGE: invalid L10GL_VSYNC '%s' "
                         "(supported: 0 or 1)\n", vsync ? vsync : "");
+        return ret;
+    }
+
+    ret = virge_parse_autoexec(autoexec, &autoexec_enabled);
+    if (ret) {
+        fprintf(stderr, "S3 ViRGE: invalid L10GL_AUTOEXEC '%s' "
+                        "(supported: 0 or 1)\n",
+                autoexec ? autoexec : "");
         return ret;
     }
 
@@ -2239,6 +2295,7 @@ int virge_init(struct virge_ctx *ctx, int width, int height, int bpp)
     ctx->height = height;
     ctx->bpp = bpp;
     ctx->vsync_enabled = vsync_enabled;
+    ctx->autoexec_enabled = autoexec_enabled;
     ctx->fb_fd = -1;
     ctx->bar_fd = -1;
 
@@ -2505,6 +2562,10 @@ int virge_init(struct virge_ctx *ctx, int width, int height, int bpp)
                : "direct front buffer (L10GL_VSYNC=0; tearing expected)");
     printf("S3 ViRGE: FIFO-aware submission enabled (16-slot S3d FIFO).\n");
     printf("S3 ViRGE: dirty-state tracking enabled (2D target + 3D shared).\n");
+    printf("S3 ViRGE: 3D triangle submission: %s\n",
+           ctx->autoexec_enabled
+               ? "autoexecute (B57C kick; L10GL_AUTOEXEC=1)"
+               : "legacy CMD_SET kick (L10GL_AUTOEXEC=0)");
     printf("  Screen: %dx%d, %d bpp (stride %u)\n",
            ctx->width, ctx->height, bpp * 8, ctx->stride);
     printf("  FB base: 0x%x (back buf 0x%x), Z base: 0x%x\n",
@@ -2517,13 +2578,28 @@ void virge_cleanup(struct virge_ctx *ctx)
 {
     virge_wait_engine(ctx);
 
-    if (ctx->state_2d_considered || ctx->state_3d_considered) {
+    if (ctx->state_2d_considered || ctx->state_3d_considered ||
+        ctx->state_3d_cmd_considered) {
         printf("S3 ViRGE: state cache emitted %llu/%llu 2D and %llu/%llu "
                "3D shared-register writes\n",
                (unsigned long long)ctx->state_2d_emitted,
                (unsigned long long)ctx->state_2d_considered,
                (unsigned long long)ctx->state_3d_emitted,
                (unsigned long long)ctx->state_3d_considered);
+        if (ctx->autoexec_enabled)
+            printf("S3 ViRGE: autoexecute emitted %llu/%llu 3D CMD_SET "
+                   "writes\n",
+                   (unsigned long long)ctx->state_3d_cmd_emitted,
+                   (unsigned long long)ctx->state_3d_cmd_considered);
+    }
+
+    if (ctx->autoexec_enabled && ctx->state_3d_cmd.valid_mask) {
+        /* DB019-B requires AE=0 + 3D NOP to leave autoexecute without
+         * launching the stale triangle in B400-B57C (absolute PDF p.250). */
+        virge_wait_fifo(ctx, 1);
+        virge_write32(ctx, VIRGE_3D_CMD_SET,
+                      virge_autoexec_disable_command());
+        virge_wait_engine(ctx);
     }
 
     if (ctx->native_mode_owned && ctx->mmio) {

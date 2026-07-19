@@ -70,6 +70,13 @@ Key facts verified against this document (2026-07):
   (PDF p. 197). Bits are strap-sampled; writable only after CR39 unlock.
 - **MM8504 read**: bit 13 = 1 means S3d engine *idle*; bits 12-8 = S3d
   FIFO slots free, FIFO is 16 deep (PDF p. 300).
+- **3D triangle autoexecute**: CMD_SET bit 0 selects the launch write
+  (section 15.4.3 and section 19.4, PDF pp.110 and 250). With AE=0, writing
+  B500 executes; with AE=1, writing the highest-address triangle register,
+  TY01_Y12 at B57C, executes. To leave autoexecute without accidentally
+  launching stale parameters, write B500 with AE clear and 3D command 1111b
+  (NOP). This permits CMD_SET reuse across triangles whose command state is
+  unchanged.
 - **Display start address**: CRC/CRD (bits 15-0) + CR31 bits 5-4 (16-17)
   + CR51 bits 1-0 (18-19); a non-zero CR69 bits 3-0 supersedes the
   CR31/CR51 extension bits entirely (PDF p. 193). **The unit is a DWORD
