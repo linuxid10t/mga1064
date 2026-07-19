@@ -8,13 +8,16 @@ acceptance criteria.
 
 ## Goal and guiding principles
 
-The end state is a **userspace OpenGL 1.1-subset driver** that talks directly
-to vintage fixed-function hardware over PCI MMIO — exactly the way the current
-demos work. Explicit non-goals: no DRM, no DRI, no Mesa integration, no kernel
-module, no X11/GLX. An application links against L10GL (optionally through a
-thin `gl.h`-compatible shim) and renders full-screen on the console. The
+The end state is a **maximum-practical OpenGL 1.1-compatible userspace
+driver** that talks directly to vintage fixed-function hardware over PCI MMIO
+— exactly the way the current demos work. Exact native acceleration is used
+where the hardware supports it; correct common frontend or software behavior
+handles the rest. Explicit non-goals: no DRM, no DRI, no Mesa integration, no
+kernel module, no X11/GLX. An application links against L10GL (optionally
+through a `gl.h`-compatible shim) and renders full-screen on the console. The
 library is responsible for the video mode: first by adopting/requesting it
-through fbdev, ultimately by programming the CRTC directly (Phase 3).
+through fbdev, ultimately by programming the CRTC directly (Phase 3). The
+detailed OpenGL 1.1 expansion is Phase 7 in `docs/GL11_PLAN.md`.
 
 Priorities, in order:
 
@@ -1318,6 +1321,31 @@ final-average logs with every optimization checkpoint.
 
 ---
 
+## Phase 7 — Maximum OpenGL 1.1 compatibility
+
+**Planned 2026-07-18.** The project now proceeds from the completed Phase 4
+shim and closed Phase 6 experiments toward the fullest correct OpenGL 1.1
+RGBA implementation practical on the ViRGE/DX. The detailed, normative plan
+is [`docs/GL11_PLAN.md`](docs/GL11_PLAN.md).
+
+The work is split into thirteen acceptance-gated items: an auditable 336-command
+coverage manifest; state/errors/queries; complete primitives and clipping;
+vertex arrays; full fixed-function lighting; OpenGL 1.1 texture behavior;
+per-fragment state and swrast completeness; raster/pixel transfer; display
+lists; evaluators/selection/feedback; honest ViRGE/software synchronization;
+ABI completion; and final behavior validation. The current shim exports 48
+OpenGL command symbols. It must not report an OpenGL 1.1 version until the
+applicable semantic and hardware gates pass.
+
+Native ViRGE acceleration remains the first choice for operations documented
+by DB019-B. Unsupported hardware state must use an exact software path, or an
+honestly absent context buffer, rather than silently degrading. OpenGL 1.1
+permits contexts with zero stencil and accumulation bits; their command and
+query semantics still belong in the API. GLX/X11 and other window-system
+integration remain out of scope.
+
+---
+
 ## Cross-cutting rules for implementing agents
 
 - **Branching/commits:** one logical change per commit, imperative summary
@@ -1355,7 +1383,8 @@ Phase 3:
   P6 (native modeset) — last in phase; requires P1, P2, V8 resolved
 Phase 4            — requires Phase 2 + 3
 Phase 5 (M1→M2→M3→M4) — M1 requires F1/F2 and P1; M4 requires P6
-Phase 6            — last
+Phase 6            — completed/rejected experiments feed the next baseline
+Phase 7 (C0→C12)   — active; see docs/GL11_PLAN.md for dependencies
 ```
 
 Good first parallel assignment for three agents: (1) Phase 0 fixes,

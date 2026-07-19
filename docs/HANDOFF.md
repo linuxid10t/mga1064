@@ -463,6 +463,18 @@ only as a reproducibility diagnostic and logs that corruption is expected.
 Do not combine it with normal testing or performance measurements. Item 4 is
 closed as rejected; no additional hardware runs are required.
 
+**Phase 7 maximum OpenGL 1.1 compatibility planned 2026-07-18.** The active
+roadmap is `docs/GL11_PLAN.md`. It starts with C0: a normative manifest of all
+336 OpenGL 1.1 command names, header/token coverage, semantic status, and test
+ownership. Later slices complete common state and queries, clipping and
+primitives, vertex arrays, lighting, textures, fragment operations, pixel
+transfer, display lists, evaluators, selection/feedback, and finally the
+ViRGE/software synchronization needed for exact fallback. The shim currently
+exports 48 command symbols and must not claim an OpenGL 1.1 version before the
+final behavior and hardware gates pass. Native ViRGE state is accelerated only
+when DB019-B supports an exact mapping; unsupported state must use a tested
+software path or an honestly absent context buffer.
+
 ```
 sudo env L10GL_FRAMES=600 tools/l10gl-run -- ./cube 800 600 16
 sudo env L10GL_FRAMES=600 tools/l10gl-run -- ./textured_cube 800 600 16
